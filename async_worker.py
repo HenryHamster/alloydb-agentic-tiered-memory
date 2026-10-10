@@ -3,12 +3,14 @@ import logging
 import queue
 import threading
 import time
-from typing import Dict, Any, Optional
-import psycopg2
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-def build_temporal_rules_prompt(active_session_id: str, prev_session_id: Optional[str] = None) -> str:
+
+def build_temporal_rules_prompt(
+    active_session_id: str, prev_session_id: Optional[str] = None
+) -> str:
     """REUSABLE PROMPT HELPER: Defines temporal coreference rules for both Read and Write paths."""
     return f"""TEMPORAL COREFERENCE RULES:
 1. Do not use relative temporal words like 'currently', 'now', 'this session', 'previous session', or 'last session'.
@@ -17,8 +19,10 @@ def build_temporal_rules_prompt(active_session_id: str, prev_session_id: Optiona
    - Previous Session: '{prev_session_id if prev_session_id else active_session_id}'
    (e.g., write 'User prefers Python in session {active_session_id}' instead of 'User currently prefers Python')."""
 
+
 class AsyncMemoryWorker:
     """Off-thread daemon queue worker performing background entity extraction and upserts into AlloyDB."""
+
     def __init__(self, conn_factory, llm_client):
         self.conn_factory = conn_factory
         self.llm_client = llm_client
@@ -28,7 +32,12 @@ class AsyncMemoryWorker:
         self.worker_thread.start()
 
     def enqueue_extraction(
-        self, user_id: str, session_id: str, user_msg: str, ai_msg: str, prev_session_id: Optional[str] = None
+        self,
+        user_id: str,
+        session_id: str,
+        user_msg: str,
+        ai_msg: str,
+        prev_session_id: Optional[str] = None,
     ):
         self.work_queue.put((user_id, session_id, user_msg, ai_msg, prev_session_id))
 
@@ -46,7 +55,12 @@ class AsyncMemoryWorker:
                 self.work_queue.task_done()
 
     def _extract_and_upsert(
-        self, user_id: str, session_id: str, user_msg: str, ai_msg: str, prev_session_id: Optional[str] = None
+        self,
+        user_id: str,
+        session_id: str,
+        user_msg: str,
+        ai_msg: str,
+        prev_session_id: Optional[str] = None,
     ):
         temporal_rules = build_temporal_rules_prompt(session_id, prev_session_id)
         json_fmt = '[{"entity_name": "...", "project_id": "...", "scope": "global|project|session", "summary": "..."}]'
@@ -73,12 +87,12 @@ Output (JSON array only):"""
                 response = self.llm_client.models.generate_content(
                     model="gemini-3.5-flash",
                     contents=prompt,
-                    config={"response_mime_type": "application/json"}
+                    config={"response_mime_type": "application/json"},
                 )
                 break
             except Exception as e:
                 if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 3:
-                    time.sleep(3 * (2 ** attempt))
+                    time.sleep(3 * (2**attempt))
                 else:
                     raise
         content = str(response.text).strip()
@@ -111,7 +125,9 @@ Output (JSON array only):"""
                         s_scope = item.get("scope", "project")
                         summary = item.get("summary", "")
                         if e_name and summary:
-                            cur.execute(upsert_sql, (user_id, e_name, p_id, session_id, s_scope, summary))
+                            cur.execute(
+                                upsert_sql, (user_id, e_name, p_id, session_id, s_scope, summary)
+                            )
             logger.info("Saved %d entities for user %s", len(extracted_list), user_id)
         finally:
             conn.close()

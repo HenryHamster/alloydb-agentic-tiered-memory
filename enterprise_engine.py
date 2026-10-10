@@ -2,10 +2,11 @@ import hashlib
 import logging
 import re
 from typing import Any, Dict, Tuple
-import psycopg2
+
 import redis
 
 logger = logging.getLogger(__name__)
+
 
 class AgentMemoryEngine:
     """Framework-agnostic Enterprise Memory Engine for tool execution permissions & safe compaction."""
@@ -20,7 +21,7 @@ class AgentMemoryEngine:
         project_id: str,
         session_id: str,
         tool_name: str,
-        tool_args: Dict[str, Any]
+        tool_args: Dict[str, Any],
     ) -> Tuple[str, str]:
         """Evaluates 3-tier execution permissions: Allow-Once (Valkey), Project (AlloyDB), Global (AlloyDB)."""
         command_str = str(tool_args.get("CommandLine", "") or tool_args)
@@ -28,7 +29,7 @@ class AgentMemoryEngine:
         # Tier 1: Allow-Once (Single-Use Valkey Check with 300s TTL)
         cmd_hash = hashlib.sha256(command_str.encode("utf-8")).hexdigest()[:16]
         valkey_key = f"one_time_perm:{session_id}:{cmd_hash}"
-        
+
         if self.valkey_client.get(valkey_key):
             self.valkey_client.delete(valkey_key)  # Consume key immediately
             return ("ALLOW", "Single-use 'Allow Once' grant consumed.")

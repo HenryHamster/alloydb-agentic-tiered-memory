@@ -1,19 +1,21 @@
-import os
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
-import psycopg2
+
 from psycopg2.extras import RealDictCursor
+
 from async_worker import build_temporal_rules_prompt
 
 logger = logging.getLogger(__name__)
+
 
 def rewrite_and_decompose_query(
     conn: Any,
     llm_client: Any,
     text: str,
     active_session_id: str,
-    prev_session_id: Optional[str] = None
+    prev_session_id: Optional[str] = None,
 ) -> List[str]:
     """Read-Path LLM Query Normalizer & Sub-Query Decomposer using AlloyDB AI ai.generate() directly in PostgreSQL."""
     temporal_rules = build_temporal_rules_prompt(active_session_id, prev_session_id)
@@ -36,13 +38,21 @@ JSON Output:"""
     try:
         with conn.cursor() as cur:
             cur.execute("SET google_ml_integration.enable_preview_ai_functions = true;")
-            cur.execute("SELECT ai.generate(prompt => %s::text, model_id => 'gemini-3.5-flash'::varchar(100));", (prompt,))
+            cur.execute(
+                "SELECT ai.generate(prompt => %s::text, model_id => 'gemini-3.5-flash'::varchar(100));",
+                (prompt,),
+            )
             row = cur.fetchone()
             if row and row[0]:
                 res_text = str(row[0]).strip()
                 clean_text = res_text
                 if clean_text.startswith("```"):
-                    clean_text = clean_text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                    clean_text = (
+                        clean_text.removeprefix("```json")
+                        .removeprefix("```")
+                        .removesuffix("```")
+                        .strip()
+                    )
                 parsed = json.loads(clean_text)
                 if isinstance(parsed, list) and len(parsed) > 0:
                     return [str(q).strip() for q in parsed]
@@ -51,16 +61,20 @@ JSON Output:"""
         logger.error("Error in in-database ai.generate sub-query decomposition: %s", e)
         return [text]
 
+
 def rewrite_temporal_query(
     conn: Any,
     llm_client: Any,
     text: str,
     active_session_id: str,
-    prev_session_id: Optional[str] = None
+    prev_session_id: Optional[str] = None,
 ) -> str:
     """Backward-compatible wrapper returning first decomposed query string."""
-    queries = rewrite_and_decompose_query(conn, llm_client, text, active_session_id, prev_session_id)
+    queries = rewrite_and_decompose_query(
+        conn, llm_client, text, active_session_id, prev_session_id
+    )
     return queries[0] if queries else text
+
 
 def retrieve_hybrid_entities(
     conn,
@@ -71,17 +85,25 @@ def retrieve_hybrid_entities(
     query_embedding: Optional[List[float]] = None,
     prev_session_id: Optional[str] = None,
     project_id: Optional[str] = None,
-    k: int = 20
+    k: int = 20,
 ) -> Dict[str, Any]:
     """Queries long-term entities using Sub-Query Decomposition, metadata scope filtering, and parameterized AlloyDB hybrid search."""
     sub_queries = rewrite_and_decompose_query(
-        conn=conn, llm_client=llm_client, text=query_text, active_session_id=active_session_id, prev_session_id=prev_session_id
+        conn=conn,
+        llm_client=llm_client,
+        text=query_text,
+        active_session_id=active_session_id,
+        prev_session_id=prev_session_id,
     )
     all_search_queries = list(dict.fromkeys(sub_queries + [query_text]))
 
     retrieved_entities: Dict[str, Any] = {}
 
-    filter_cond = f"user_id = '{user_id}' AND (project_id = '{project_id}' OR scope = 'global')" if project_id else f"user_id = '{user_id}'"
+    filter_cond = (
+        f"user_id = '{user_id}' AND (project_id = '{project_id}' OR scope = 'global')"
+        if project_id
+        else f"user_id = '{user_id}'"
+    )
 
     query_sql = """
         SELECT e.entity_name, e.summary, e.project_id, e.scope, e.updated_at
@@ -95,10 +117,9 @@ def retrieve_hybrid_entities(
     """
 
     from google import genai
+
     embed_client = genai.Client(
-        vertexai=True,
-        project=os.getenv("PROJECT_ID"),
-        location=os.getenv("REGION", "us-east1")
+        vertexai=True, project=os.getenv("PROJECT_ID"), location=os.getenv("REGION", "us-east1")
     )
 
     for sq in all_search_queries:
@@ -113,28 +134,32 @@ def retrieve_hybrid_entities(
             vector_literal = f"'{sq_embedding}'::vector"
 
         search_inputs = [
-            json.dumps({
-                "data_type": "vector",
-                "weight": 0.4,
-                "table_name": "agent_entities",
-                "key_column": "entity_name",
-                "vec_column": "summary_embedding",
-                "distance_operator": "public.<=>",
-                "limit": 20,
-                "query_vector": vector_literal,
-                "filter_condition": filter_cond
-            }),
-            json.dumps({
-                "data_type": "text",
-                "weight": 0.6,
-                "table_name": "agent_entities",
-                "key_column": "entity_name",
-                "text_column": "summary_tsv",
-                "limit": 20,
-                "ranking_function": "ts_rank",
-                "query_text_input": sq,
-                "filter_condition": filter_cond
-            })
+            json.dumps(
+                {
+                    "data_type": "vector",
+                    "weight": 0.4,
+                    "table_name": "agent_entities",
+                    "key_column": "entity_name",
+                    "vec_column": "summary_embedding",
+                    "distance_operator": "public.<=>",
+                    "limit": 20,
+                    "query_vector": vector_literal,
+                    "filter_condition": filter_cond,
+                }
+            ),
+            json.dumps(
+                {
+                    "data_type": "text",
+                    "weight": 0.6,
+                    "table_name": "agent_entities",
+                    "key_column": "entity_name",
+                    "text_column": "summary_tsv",
+                    "limit": 20,
+                    "ranking_function": "ts_rank",
+                    "query_text_input": sq,
+                    "filter_condition": filter_cond,
+                }
+            ),
         ]
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -150,7 +175,9 @@ def retrieve_hybrid_entities(
                             "summary": row["summary"],
                             "project_id": row["project_id"],
                             "scope": row["scope"],
-                            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None
+                            "updated_at": row["updated_at"].isoformat()
+                            if row["updated_at"]
+                            else None,
                         }
             except Exception as e:
                 logger.error("Error executing hybrid search for sub-query '%s': %s", sq, e)

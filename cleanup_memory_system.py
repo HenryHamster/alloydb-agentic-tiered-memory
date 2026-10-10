@@ -1,8 +1,10 @@
 import logging
+
 from db_clients import get_db_connection, get_valkey_client
 from valkey_buffer import IN_MEMORY_VALKEY_FALLBACK
 
 logging.basicConfig(level=logging.INFO)
+
 
 def reset_memory_system():
     # 1. Flush short-term Valkey cache or clear local in-memory fallback
@@ -27,6 +29,7 @@ def reset_memory_system():
         conn.close()
     except Exception as e:
         print(f"✖ AlloyDB cleanup error: {e}")
+
 
 if __name__ == "__main__":
     reset_memory_system()
