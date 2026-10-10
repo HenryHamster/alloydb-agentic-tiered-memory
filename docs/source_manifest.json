@@ -1,0 +1,83 @@
+{
+  "source_url": "https://codelabs.developers.google.com/alloydb-agentic-tiered-memory",
+  "retrieved_date": "2026-10-10",
+  "source_html_sha256": "2b14e22a590137dd1b1d6b037e2925ba0933406c8f1006f930252501119c7321",
+  "code_license": "Apache-2.0",
+  "extracted_files": [
+    {
+      "file": "db_clients.py",
+      "step": "7. Configure AlloyDB and Valkey Connection Clients",
+      "original_sha256": "c7894203fe2de0e0c56b878723a83e603cb33f3bb7ae51fb39200bd2210d74c5"
+    },
+    {
+      "file": "valkey_buffer.py",
+      "step": "8. Cache Short-term Session State in Memorystore for Valkey",
+      "original_sha256": "4ef911857f1fc32d97b2f56c5984245f8f62611e19db2edd9f696c3f8450489c"
+    },
+    {
+      "file": "async_worker.py",
+      "step": "9. Extract Entities Off-Thread (Background Memory Worker)",
+      "original_sha256": "7d514075e60ecb860cd39825b48cad55b32b866da672ea8aaf0ff87c03e96ac9"
+    },
+    {
+      "file": "hybrid_retriever.py",
+      "step": "10. Query Long-Term Memory with Native Hybrid Search",
+      "original_sha256": "1d354f7a368cf782bc9f045d4b0e6d9bc35c02302a579c49730424e518612df2"
+    },
+    {
+      "file": "agent_orchestrator.py",
+      "step": "11. Build and Run the End-to-End Agent Memory Loop",
+      "original_sha256": "37a857c7b0a3b478c13d998d3db597df4ac93a8f7669704dcecf9ab83e4d22eb"
+    },
+    {
+      "file": "enterprise_engine.py",
+      "step": "12. Implement Enterprise Permission Controls and Memory Compaction",
+      "original_sha256": "32742bf777cfe2f75d7ee73ecb5b24299e93ce7f118863067cd88335745651ae"
+    },
+    {
+      "file": "test_memory_system.py",
+      "step": "13. Run End-to-End Multi-Turn Memory Verification",
+      "original_sha256": "3f754c515c4964372a79a2c7e198709f395bce7ff19476654773b7d261bb0375"
+    },
+    {
+      "file": "cleanup_memory_system.py",
+      "step": "13. Run End-to-End Multi-Turn Memory Verification",
+      "original_sha256": "a7a4d7b2fff2fd599299356416673c48924899f5b768b892ebaef6d759205b69"
+    },
+    {
+      "file": "adk_memory_provider.py",
+      "step": "15. Ambient memory provider",
+      "original_sha256": "defd16bffa94cef8c5598fcbbfe516a9eb4aaee488ab5fbd74c9835fe98a5a78"
+    },
+    {
+      "file": "adk_memory_tools.py",
+      "step": "16. On-demand long-term memory tool",
+      "original_sha256": "cfd7101ab33a482a53bcdef237c0d2fa11f1be9ab9b31b3a4d9366c6e004a875"
+    },
+    {
+      "file": "adk_guardrails.py",
+      "step": "17. Enterprise permission guardrails",
+      "original_sha256": "23f9425a5fdd8d966fba7198aa8c13fbf869267f069e991bba7ba9e2fa1cc665"
+    },
+    {
+      "file": "test_adk_agent.py",
+      "step": "18. Running the ADK agent test",
+      "original_sha256": "b16d1e53830562bf544bc4d715173ef78b5c671942a8ea77775a72564389e59a"
+    },
+    {
+      "file": "sql/001_schema.sql",
+      "step": "6. Set up AlloyDB AI Schema and Transactional Auto-Embeddings",
+      "original_sha256": "a65b93ae82c03f943e3b9b4ecf348cb7ed8be1cfc5bf91f16912dffeaa63afe6"
+    },
+    {
+      "file": "sql/002_register_model.sql",
+      "step": "6. Set up AlloyDB AI Schema and Transactional Auto-Embeddings",
+      "original_sha256": "745c0ad16032e3f6bd5adc310874d55bbb5c6fd1a35b828d8254bee603db7675"
+    },
+    {
+      "file": "sql/003_auto_embeddings.sql",
+      "step": "6. Set up AlloyDB AI Schema and Transactional Auto-Embeddings",
+      "original_sha256": "88fd35114c5eb4064aa875730d3383b12a88e8e845b9067b0d35e0935bf8667a"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+AlloyDB agentic tiered memory
+
+This repository contains code samples from Google's codelab:
+How to build long-term AI agent memory with AlloyDB AI
+https://codelabs.developers.google.com/alloydb-agentic-tiered-memory
+Retrieved October 10, 2026.
+
+The source page states that code samples are licensed under the Apache License,
+Version 2.0. Tutorial prose is licensed separately under CC BY 4.0. Repository
+documentation is newly written; upstream prose is not reproduced wholesale.
+
+Repository adaptations include formatting, import cleanup, dependency packaging,
+SQL and setup extraction, configuration examples, offline tests, and CI.
+See docs/SOURCE.md for provenance and a description of changes.
+
