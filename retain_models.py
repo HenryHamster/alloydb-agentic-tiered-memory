@@ -73,7 +73,11 @@ def require_aware(*values: datetime | None) -> None:
 
 @dataclass(frozen=True)
 class Scope:
-    """Trusted caller context, never selected by the extraction model."""
+    """Trusted visibility label plus origin metadata, never selected by the model.
+
+    GLOBAL means user-wide, not shared between users. Fact origins are immutable;
+    read contexts may omit project/session IDs.
+    """
 
     user_id: str
     project_id: str | None = None
@@ -90,6 +94,20 @@ class Scope:
             raise ValueError("Project scope requires project_id")
         if self.scope == MemoryScope.SESSION and not self.session_id:
             raise ValueError("Session scope requires session_id")
+
+    def visible_to(self, context: "Scope") -> bool:
+        """Pure visibility predicate; adapters must apply it to facts and link endpoints."""
+        if self.user_id != context.user_id:
+            return False
+        if self.scope == MemoryScope.GLOBAL:
+            return True
+        if self.project_id != context.project_id:
+            return False
+        return self.scope == MemoryScope.PROJECT or self.session_id == context.session_id
+
+    def can_reconcile_with(self, other: "Scope") -> bool:
+        """Same visibility domain, independent of origin for project/user-wide facts."""
+        return self.scope == other.scope and self.visible_to(other) and other.visible_to(self)
 
 
 @dataclass(frozen=True)
@@ -162,6 +180,7 @@ class MemoryFact:
 
     def __post_init__(self):
         require_text(self.id, self.source_episode_id, *self.entity_ids, *self.supporting_ids)
+        require_text(self.scope.project_id, self.scope.session_id)
         Speaker(self.speaker)
         require_aware(self.recorded_at, self.valid_to)
         if self.valid_to is not None and (
@@ -218,8 +237,10 @@ class MemoryUpdate:
         elif self.previous is None:
             raise ValueError("Non-ADD updates require a previous fact")
         if self.previous is not None:
-            if self.previous.id == self.memory.id or self.previous.scope != self.memory.scope:
-                raise ValueError("Updates need distinct IDs and identical scope")
+            if self.previous.id == self.memory.id or not self.previous.scope.can_reconcile_with(
+                self.memory.scope
+            ):
+                raise ValueError("Updates need distinct IDs and the same visibility domain")
         if self.category == UpdateCategory.SUPERSEDE:
             if self.change_kind is None or self.effective_at is None:
                 raise ValueError("Supersession needs a change kind and effective timestamp")

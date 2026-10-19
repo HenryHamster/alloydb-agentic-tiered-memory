@@ -9,7 +9,14 @@ no branches were switched or merged. No SQL, database tables or cloud calls are 
 - `shared/chunking.py`: `chunk_conversation` preserves each original message, trusted
   scope, speaker, timestamp, episode/source ID and exact character offsets. Splits at
   paragraph/sentence/whitespace boundaries when practical, with a hard character limit
-  even for unbroken text. Default 2,000 characters approximates 500 tokens; no tokenizer,
+  even for unbroken text. Lengths and half-open offsets count Python Unicode code
+  points, not UTF-8 bytes or grapheme clusters. A full window searches separators in
+  priority order: double newline, period-space, newline, space. It uses the last
+  occurrence of the first eligible separator starting at or after floor(window length / 2),
+  including that separator in the preceding chunk; otherwise it cuts at the hard limit.
+  Chunks are contiguous, with no stripping: concatenating their text reconstructs each
+  input message exactly, including whitespace and Unicode. Grapheme clusters may split.
+  Default 2,000 characters only roughly approximates 500 tokens, language dependent; no tokenizer,
   overlap, cross-message grouping or semantic topic detection. Chunk IDs are deterministic
   for the same source, content, scope and offsets. Source IDs must be unique per scope.
 - `retain_models.py`: frozen dataclasses and value sets, nonempty identifiers/text,
@@ -73,7 +80,7 @@ required before Recall's get_episode contract can be satisfied.
 | Logical record | Proposed fields / responsibilities |
 | --- | --- |
 | memory_facts | id, text, category, claim_type, speaker, user_id, project_id, session_id, scope, occurred_at, recorded_at, valid_from, valid_to, optional embedding, source_episode_id, provenance/chunk references, entity_ids, supporting_ids |
-| memory_links | source memory ID, target memory ID, typed relationship, trusted scope; no weight yet |
+| memory_links | source memory ID, target memory ID, typed relationship, trusted visibility/origin scope; weights optional and deferred |
 | source documents / episodes (optional physical design) | stable episode/source IDs, original text, speaker, timestamp, scope, chunk offsets; retrievable original conversation round |
 | entities / memory_entities (optional) | canonical scoped entity IDs, aliases and membership; resolver shared with query-time entity search |
 | observations (future, Reflect/Dreaming) | stable observation ID, text, dates, scope, supporting fact IDs and optional embedding |
@@ -102,16 +109,39 @@ RecallStore requires four scope-filtered read methods, all using bound SQL param
 - `get_episode`: episode ID to original conversation round, filtered by caller scope.
 - `get_supporting`: observation ID to its supporting facts, with scope enforcement.
 
-Proposed visibility for agreement: always constrain user_id; global memories visible
-within that user; project memories only for matching project; session memories only for
-matching session AND matching project (including null project). Preserve origin project/
-session metadata even for global facts. Scope is never supplied by an LLM. This policy is
-provisional and is not yet an implemented read adapter or an authorization claim.
-Retain's Scope includes a memory visibility label; Recall's Scope is caller read context
-without that label. They are distinct contracts, not interchangeable dataclasses.
-Updates currently require exact Scope equality, including origin project/session IDs.
-Thus global/project facts from different origin sessions cannot yet reconcile. Separating
-visibility identity from origin metadata is deferred; do not drop provenance to bypass it.
+Implemented pure scope policy: always constrain user_id; GLOBAL means user-wide and
+is visible across that user's projects and sessions. Project memories require the same
+project; session memories require the same project AND session. `Scope.visible_to`
+checks this policy against caller context (its visibility label is ignored). Every
+MemoryFact requires user, origin project and origin session IDs, including GLOBAL facts.
+Sources must agree with that full origin scope; no provenance is dropped or rewritten.
+Inputs without project provenance must be mapped to an agreed explicit project identity
+before creating facts; nullable project read contexts do not invent that identity.
+
+`Scope.can_reconcile_with` requires the same user and visibility level. Project memories
+can reconcile across origin sessions within the same project; session memories require
+matching project/session. User-wide memories can reconcile across origin projects and
+sessions for that user because their visibility domain is user-wide. Different projects
+remain isolated for project/session memories. All cross-visibility updates are rejected,
+including confirmation and supersession: project/session facts cannot overwrite global
+facts, nor are they automatically promoted. GLOBAL must be explicitly chosen by trusted
+caller code. New evidence retains its own origin and source references; previous versions
+retain theirs when their validity interval closes.
+
+These predicates and update validation are implemented offline, not a database read or
+authorization adapter. Retain's Scope carries visibility plus provenance; Recall's caller
+Scope has no visibility label and requires an explicit mapping. Agree how these policies
+map to persisted columns and Recall filters before integration.
+
+Graph relationships remain `memory_links` rows: source memory ID, destination memory ID
+(`target_id` in Python), relationship type and scope. Ordinary AlloyDB PostgreSQL tables
+and foreign keys suffice; no separate graph engine or extensions are required. Edge
+weights are optional and currently absent. Explicit update links are implemented; advanced
+traversal, inferred links and ranking are deferred. A future store must validate both
+endpoints and their reconciliation domain even when their origin sessions differ.
+Traversal must filter the edge AND both endpoints with the same caller visibility policy
+at every hop, plus Recall's temporal/type filters, so a visible seed cannot leak hidden
+neighbors. No executable traversal or database endpoint enforcement exists yet.
 
 Recall treats occurred_at as a point event, so source message timestamps must not be
 copied there for ongoing preferences/states. Those use valid_from when known. The future
@@ -125,7 +155,8 @@ remains an integration decision.
 
 1. Approve physical tables, keys, foreign keys, provenance normalization and episode
    persistence. Define expired/deleted episode responses and source retention policy.
-2. Approve visibility rules above, project/session null semantics, and claim eligibility
+2. Coordinate the implemented visibility policy with Recall, missing-project input
+   handling and persisted origin fields; agree claim eligibility
    filters (proposed/rejected facts must not be presented as established user preferences).
 3. Choose embedding model/dimensions and write mechanism. Existing codelab uses 768-dim
    text-embedding-005 on agent_entities; its auto-embedding trigger does not cover new facts.

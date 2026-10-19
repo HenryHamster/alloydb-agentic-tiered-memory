@@ -264,3 +264,117 @@ def test_classifier_cannot_replace_validated_memory(change):
     with pytest.raises(ValueError, match="preserve validated memory"):
         retain([message()], extractor=extractor, store=store, classify_updates=classify)
     store.write.assert_not_called()
+
+
+def scoped_memory(scope):
+    chunks = chunk_conversation([replace(message(), scope=scope)])
+    return validate_facts([fact(chunks, valid_from=NOW)], chunks, recorded_at=NOW)[0]
+
+
+@pytest.mark.parametrize("visibility", list(MemoryScope))
+@pytest.mark.parametrize(
+    "user,project,session",
+    [
+        ("user", "project", "session"),
+        ("user", "project", "other-session"),
+        ("user", "other-project", "session"),
+        ("other-user", "project", "session"),
+        ("user", None, None),
+    ],
+)
+def test_scope_visibility(visibility, user, project, session):
+    scope = replace(SCOPE, scope=visibility)
+    context = Scope(user, project, session, MemoryScope.GLOBAL)
+    expected = user == "user" and (
+        visibility == MemoryScope.GLOBAL
+        or project == "project"
+        and (visibility == MemoryScope.PROJECT or session == "session")
+    )
+    assert scope.visible_to(context) == expected
+
+
+@pytest.mark.parametrize("visibility", [MemoryScope.GLOBAL, MemoryScope.PROJECT])
+def test_cross_session_reconciliation_preserves_history_and_origin(visibility):
+    old = scoped_memory(replace(SCOPE, scope=visibility))
+    new = scoped_memory(replace(SCOPE, session_id="new-session", scope=visibility))
+    effective = NOW + timedelta(days=1)
+    new = replace(new, fact=replace(new.fact, valid_from=effective))
+    batch = reconcile_memory_updates(
+        [MemoryUpdate(new, UpdateCategory.SUPERSEDE, old, ChangeKind.HISTORICAL, effective)]
+    )
+    assert batch.replacements == (replace(old, valid_to=effective),)
+    assert batch.insertions == (new,)
+    assert batch.expected_previous == (old,)
+    assert batch.links[0].scope == new.scope
+    assert old.scope.session_id == "session"
+    assert new.scope.session_id == "new-session"
+    assert batch.replacements[0].sources == old.sources
+    assert batch.insertions[0].sources == new.sources
+
+
+@pytest.mark.parametrize("old_scope", list(MemoryScope))
+@pytest.mark.parametrize("new_scope", list(MemoryScope))
+def test_cross_visibility_updates_rejected(old_scope, new_scope):
+    if old_scope == new_scope:
+        return
+    old = scoped_memory(replace(SCOPE, scope=old_scope))
+    new = scoped_memory(replace(SCOPE, scope=new_scope))
+    for category in set(UpdateCategory) - {UpdateCategory.ADD}:
+        with pytest.raises(ValueError, match="visibility domain"):
+            MemoryUpdate(new, category, old)
+
+
+@pytest.mark.parametrize("visibility", list(MemoryScope))
+@pytest.mark.parametrize("field", ["user_id", "project_id", "session_id"])
+def test_reconciliation_isolation(visibility, field):
+    old = scoped_memory(replace(SCOPE, scope=visibility))
+    other = replace(old.scope, **{field: "other"})
+    allowed = field != "user_id" and (
+        visibility == MemoryScope.GLOBAL
+        or visibility == MemoryScope.PROJECT
+        and field == "session_id"
+    )
+    assert old.scope.can_reconcile_with(other) == allowed
+    if not allowed:
+        with pytest.raises(ValueError, match="visibility domain"):
+            MemoryUpdate(scoped_memory(other), UpdateCategory.CONFIRM, old)
+
+
+@pytest.mark.parametrize("field", ["project_id", "session_id"])
+def test_facts_require_complete_origin_even_when_user_wide(field):
+    scope = replace(SCOPE, scope=MemoryScope.GLOBAL, **{field: None})
+    with pytest.raises(ValueError, match="nonempty"):
+        scoped_memory(scope)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 7, 20, 2000])
+def test_unicode_chunk_offsets_reconstruct_every_source(limit):
+    sources = [message("é🙂漢字e\u0301. \n\n" * 30), replace(message("x" * 81), source_id="second")]
+    chunks = chunk_conversation(sources, max_chars=limit)
+    for source in sources:
+        spans = [chunk for chunk in chunks if chunk.message is source]
+        assert spans[0].start == 0
+        assert spans[-1].end == len(source.text)
+        assert all(left.end == right.start for left, right in zip(spans, spans[1:]))
+        assert all(0 < chunk.end - chunk.start <= limit for chunk in spans)
+        assert "".join(source.text[chunk.start : chunk.end] for chunk in spans) == source.text
+
+
+@pytest.mark.parametrize(
+    "text,end",
+    [
+        ("abcdefghij\n\nkl. mn opqrstuv", 12),
+        ("abcdefghij. kl mn opqrstuv", 12),
+        ("abcdefghij\nkl mn opqrstuv", 11),
+        ("abcdefghij kl mn opqrstuv", 17),
+        ("a bbbbbbbbbbbbbbbbbbbbbbbbb", 20),
+    ],
+)
+def test_chunk_boundary_priority_and_half_window(text, end):
+    assert chunk_conversation([message(text)], max_chars=20)[0].end == end
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_invalid_chunk_limit(limit):
+    with pytest.raises(ValueError, match="positive"):
+        chunk_conversation([message()], max_chars=limit)

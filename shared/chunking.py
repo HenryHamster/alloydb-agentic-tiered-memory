@@ -11,7 +11,11 @@ def chunk_conversation(
 ) -> list[ConversationChunk]:
     """Keep messages separate; prefer paragraph, sentence, then whitespace boundaries.
 
-    Character limits approximate token budgets (roughly four characters per token).
+    Length/offsets use Python Unicode code points, not bytes, graphemes or tokens.
+    In a full window, use the last separator of the first matching priority
+    (double newline, period-space, newline, space) starting in its second half;
+    include that separator in the preceding chunk, otherwise cut at the limit.
+    Character limits only roughly approximate token budgets, depending on language.
     No overlap or semantic topic detection yet. Even unbroken strings obey the limit.
     """
     if max_chars <= 0:
