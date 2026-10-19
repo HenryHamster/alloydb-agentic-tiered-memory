@@ -30,8 +30,9 @@ Run them after provisioning and SQL initialization to validate your deployment.
 - The entity key is `(user_id, entity_name)`. The same entity name across a user's
   projects can overwrite an earlier row. Project/session metadata does not provide
   versioned memory history or database-level tenant isolation.
-- Hybrid search builds SQL filter expressions from IDs. The sample is unsuitable
-  as an isolation boundary for arbitrary untrusted IDs. Permissions also use
+- Hybrid search builds SQL filter expressions from IDs. IDs are now quoted with
+  `mogrify` rather than formatted into the text, but the filter is still not a
+  database-level isolation boundary. Permissions also use
   regex matches and a non-atomic get/delete for single-use grants; no production
   authorization guarantee is established by the offline checks.
 - Several errors are logged and replaced with fallbacks, which can hide a failed

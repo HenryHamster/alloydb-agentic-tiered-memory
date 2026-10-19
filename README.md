@@ -48,6 +48,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `valkey_buffer.py` | Recent turns and summarize-before-trim |
 | `async_worker.py` | Background fact extraction and upserts |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
+| `recall.py`, `recall_tools.py` | Recall read path and its agent tools; open dependencies in [docs/RECALL_NOTES.md](docs/RECALL_NOTES.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |
