@@ -47,6 +47,8 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `db_clients.py` | IAM-authenticated AlloyDB and Valkey connections |
 | `valkey_buffer.py` | Recent turns and summarize-before-trim |
 | `async_worker.py` | Background fact extraction and upserts |
+| `retain.py`, `retain_models.py`, `retain_store.py` | Retain pipeline skeleton; see [Retain notes](docs/RETAIN_NOTES.md) |
+| `shared/chunking.py` | Reusable conversation chunking utility |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
