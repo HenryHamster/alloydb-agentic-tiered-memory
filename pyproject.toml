@@ -24,10 +24,12 @@ Codelab = "https://codelabs.developers.google.com/alloydb-agentic-tiered-memory"
 Repository = "https://github.com/HenryHamster/alloydb-agentic-tiered-memory"
 
 [tool.setuptools]
+packages = ["shared"]
 py-modules = [
     "db_clients", "valkey_buffer", "async_worker", "hybrid_retriever",
     "agent_orchestrator", "enterprise_engine", "adk_memory_provider",
     "adk_memory_tools", "adk_guardrails",
+    "retain", "retain_models", "retain_store",
 ]
 
 [tool.pytest.ini_options]
