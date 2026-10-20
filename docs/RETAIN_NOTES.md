@@ -1,182 +1,316 @@
-# Retain skeleton
+# Retain implementation and integration notes
 
-This is an offline, synchronous write-path scaffold. It does not replace the codelab
-worker or change Valkey, Recall or Reflect. Inspected `origin/recall` using `git show`;
-no branches were switched or merged. No SQL, database tables or cloud calls are added.
+Retain is a synchronous, injectable fact extraction and linking pipeline. It does not
+replace the codelab worker, change Recall/Reflect, or create database tables. Changes
+are confined to Retain, its tests, and shared chunking. No migration has been applied.
 
-## Implemented and deferred
+## Review findings and reuse
 
-- `shared/chunking.py`: `chunk_conversation` preserves each original message, trusted
-  scope, speaker, timestamp, episode/source ID and exact character offsets. Splits at
-  paragraph/sentence/whitespace boundaries when practical, with a hard character limit
-  even for unbroken text. Lengths and half-open offsets count Python Unicode code
-  points, not UTF-8 bytes or grapheme clusters. A full window searches separators in
-  priority order: double newline, period-space, newline, space. It uses the last
-  occurrence of the first eligible separator starting at or after floor(window length / 2),
-  including that separator in the preceding chunk; otherwise it cuts at the hard limit.
-  Chunks are contiguous, with no stripping: concatenating their text reconstructs each
-  input message exactly, including whitespace and Unicode. Grapheme clusters may split.
-  Default 2,000 characters only roughly approximates 500 tokens, language dependent; no tokenizer,
-  overlap, cross-message grouping or semantic topic detection. Chunk IDs are deterministic
-  for the same source, content, scope and offsets. Source IDs must be unique per scope.
-- `retain_models.py`: frozen dataclasses and value sets, nonempty identifiers/text,
-  timezone-aware dates, provenance consistency, finite embeddings and validity checks.
-  Facts target 8–15 words through the extraction contract, with no hard length restriction.
-- `retain.py`: injected extraction, source validation, optional entity resolver, explicit
-  temporal update planning, typed update links, one atomic store call. `retain` defaults
-  to ADD for every extracted fact; it does not detect duplicates or contradictions.
-- `retain_store.py`: atomic write protocol and an AlloyDB adapter that explicitly raises
-  `NotImplementedError`. `GeminiFactExtractor` also raises `NotImplementedError`.
-  These are boundaries, not working cloud integrations.
-- `tests/test_retain.py`: offline models, chunking, provenance, explicit update planning
-  and orchestration using a mock persistence boundary.
+The starting implementation provided frozen records, source/scope validation, a chunker
+with a 2,000-character limit, explicit update classification hooks, and validity-interval
+planning. Gemini and AlloyDB adapters raised NotImplementedError. Entity resolution was
+only a caller callback. There was no actual entity/semantic discovery, persistence,
+retry deduplication, or automatic conflict detection.
 
-A minimal caller provides `extractor.extract(chunks) -> Sequence[AtomicFact]` and
-`store.write(batch) -> None`, then calls `retain(messages, extractor=..., store=...)`.
-An optional entity resolver maps a memory to canonical entity IDs. An optional
-`classify_updates(memories)` returns explicit `MemoryUpdate` decisions, including old
-records loaded under trusted scope. No entity alias matching or LLM conflict classifier
-is provided. A resolver/classifier is trusted application code, not raw model output.
-The returned batch describes the persisted changes; it is not a Recall search result.
-Classification may choose an update category and previous record, but must preserve the
-validated new memory, including its text, scope and provenance.
+The repository's extracted codelab code was reviewed directly:
 
-Validation binds scope/speaker/episode to source chunks rather than accepting these
-fields from the extractor. Multiple sources must belong to the same scope, speaker and
-episode; separate facts are required otherwise. Source modality is preserved; assistant
-recommendations remain assistant claims. Extraction must label proposals/hypotheticals/
-rejections correctly. Validation does not determine semantic truth or infer user adoption.
-Unknown occurrence/validity dates stay null; recorded_at is ingestion time, not event time.
+- `async_worker.py` already calls an injected `llm_client.models.generate_content` with
+  JSON output. Retain adapts that client pattern, not its entity-summary prompt or upsert.
+  The worker combines user/assistant text and lets the model choose scope; Retain keeps
+  speaker and scope under application control. Its temporal helper substitutes session
+  identifiers, which would lose event dates, so Retain uses source timestamps instead.
+- `db_clients.py:get_db_connection` is reusable as a future connection factory. Importing
+  it does not fetch credentials, but calling it invokes gcloud. Offline Retain never does.
+- The existing embedding path uses `models.embed_content`, `text-embedding-005`, and
+  768-dimensional database vectors. `GeminiEmbedder` adapts that call with an injected
+  client and configurable model; it propagates failures instead of inserting zero vectors.
+- Existing HNSW/RUM indexes and auto-embedding initialization are examples for later
+  fact storage. The current auto-embedding configuration covers only `agent_entities`.
 
-## Temporal semantics
+## Chunking algorithm and comparison
 
-All intervals are half-open `[valid_from, valid_to)`, with null end meaning open.
-All timestamps must include a timezone. Supersession requires an explicitly dated,
-open previous interval and an explicit effective timestamp later than its start.
-Historical SUPERSEDE plans closure of the previous row and insertion of a distinct new
-version starting at that timestamp, linked `new -> old`. It preserves the previous text
-and provenance. Atomic execution is a future store requirement, not implemented storage.
+Default `max_chars=700`, configurable in both `retain` and `chunk_conversation`.
+Messages stay separate. In each full window, search its second half for the last
+paragraph boundary, otherwise sentence punctuation followed by whitespace, otherwise
+newline, otherwise space. Include the separator in the preceding chunk. If none exists,
+cut at the character limit. Sentence detection excludes fenced code, inline code and
+URLs, and skips common title abbreviations and single-letter initials. Decimal points
+without following whitespace do not count as sentence ends.
 
-CONFIRM, REFINE, CONTEST and CONTEXT insert a new attributed fact and link it to the old
-fact; they do not overwrite evidence, silently resolve a dispute or change validity.
-CONFIRM does not yet aggregate evidence_count on the old record. ADD needs no old record.
-Corrections are distinct from historical changes: `ChangeKind.CORRECTION` is representable
-but reconciliation raises `NotImplementedError` until invalidation and audit semantics
-are agreed. Closing validity alone could falsely imply an incorrect fact was once true.
+Offsets are exact half-open Python Unicode code-point offsets, not bytes or graphemes.
+Chunks are contiguous, unstripped and nonoverlapping. Concatenation exactly reconstructs
+the source, including Markdown, unusual whitespace, emoji and combining characters.
+IDs are deterministic from source, scope, content and offsets. Metadata remains on the
+original message: speaker, timestamp (possibly unknown), source/episode IDs and scope.
 
-The store must compare `expected_previous` under locking/version checks and atomically
-write insertions, validity replacements, complete source provenance and links. Failed
-writes must roll back everything and propagate errors. The adapter must enforce scope,
-endpoint existence and uniqueness. No production retry, ingestion idempotency, batch
-scheduling or concurrency adapter is implemented. Fact IDs are fresh UUIDs per call;
-reprocessing the same messages can create duplicates. Episodes with no extracted facts
-are not persisted by this pipeline; source ingestion/retention needs a separate decision.
-Even when facts are extracted, the batch carries only cited messages. It cannot reconstruct
-an entire conversation round if other messages were not cited. Full-episode ingestion is
-required before Recall's get_episode contract can be satisfied.
+This is punctuation/length chunking, **not semantic topic detection**. Paragraphs provide
+an explicit topic hint; unrelated facts within a paragraph are separated by Gemini.
+Fallback cuts can split a long sentence, name, URL, code block, date or grapheme. The
+original message remains available for extraction; chunks alone must not be interpreted
+as independent complete claims. Protecting every long term while also enforcing an
+arbitrary hard character limit is impossible.
 
-## Provisional schema proposal — no migration
+An offline fixture contains 341 words / 2,116 characters, covering project architecture,
+gardening, travel, conditional preferences and music. Actual chunk counts:
 
-| Logical record | Proposed fields / responsibilities |
+| Limit | Chunk count |
 | --- | --- |
-| memory_facts | id, text, category, claim_type, speaker, user_id, project_id, session_id, scope, occurred_at, recorded_at, valid_from, valid_to, optional embedding, source_episode_id, provenance/chunk references, entity_ids, supporting_ids |
-| memory_links | source memory ID, target memory ID, typed relationship, trusted visibility/origin scope; weights optional and deferred |
-| source documents / episodes (optional physical design) | stable episode/source IDs, original text, speaker, timestamp, scope, chunk offsets; retrievable original conversation round |
-| entities / memory_entities (optional) | canonical scoped entity IDs, aliases and membership; resolver shared with query-time entity search |
-| observations (future, Reflect/Dreaming) | stable observation ID, text, dates, scope, supporting fact IDs and optional embedding |
+| 300 | 9 |
+| 350 | 7 |
+| 400 | 7 |
+| 600 | 5 |
+| 700 | 4 |
+| 800 | 3 |
+| 2,000 | 2 |
 
-`MemoryFact.fact` nests text/category/claim/dates; an adapter will flatten these to columns
-and expose Recall's `type="fact"`. Category is independent of Recall's memory type.
-`evidence_count` currently counts distinct source message IDs; supporting_ids are separate
-memory references. The future schema must decide how evidence is deduplicated/aggregated.
-Full source messages are retained by chunks in Python, not durably stored by this skeleton.
+700 is a provisional middle ground: fewer fragmented qualifications than 300–400, finer
+citation spans than 2,000. This is a deterministic boundary comparison, **not evidence
+of improved extraction accuracy**. Compare live extraction precision/recall and cost
+before tuning the default. The final short chunk is allowed; no artificial overlap.
 
-## Recall and Reflect handoff
+## Gemini extraction and validation
 
-Recall's `Memory` needs id, type, text, occurred_at, recorded_at, valid_from, valid_to,
+`GeminiFactExtractor(client, model=...)` uses the existing google-genai dependency and
+client interface. It requests JSON with a response JSON schema and validates the result
+locally. See Google's [structured-output documentation](https://ai.google.dev/gemini-api/docs/generate-content/structured-output).
+No clients or credentials are constructed implicitly. The default model follows the
+codelab; availability must be checked in the target Vertex AI project.
+
+The adapter groups chunks per message, then packs contiguous core windows up to
+`max_context_chars=4200`. Each request adds at most `neighbor_chars=350` source characters
+on each side, so supplied source text is at most 4,900 characters by default. Limits are
+configurable on GeminiFactExtractor; they count code points, not tokens or prompt overhead.
+Short messages are sent once. Long messages produce multiple bounded requests, with only
+neighboring text repeated. Chunks larger than the core budget fail before any model call;
+configure the chunker and extractor limits together.
+
+Payloads include absolute source_start/core_start/core_end and intersecting chunk IDs with
+original offsets. Facts may cite adjacent chunks, but quoted evidence must fit both the
+request text and contiguous cited spans. Only facts whose evidence starts inside the core
+are retained; neighboring context cannot create duplicate facts in another window. Local
+validation also rejects invented/hidden evidence. A very long fact or distant reference
+can exceed neighboring context and be missed; increase the limits for those workloads.
+No semantic chunking or additional dependencies are introduced. 700 controls citation
+spans; the separate extraction limits control source context. Prompt/response cost and
+live extraction quality still need measurement.
+
+Unknown fields stay null. Concision targets 8–15 words without enforcing a length limit.
+Relative dates are resolved by Gemini using source timestamp when unambiguous; precision
+and correctness are not guaranteed by schema validation. Month-only or ambiguous dates
+should remain text in `when`, with no invented day in occurred_at. No deterministic
+calendar parser or semantic entailment verifier is implemented. Missing source timestamps
+stay missing; recording time is never substituted for occurrence time.
+
+Local checks reject malformed JSON, wrong fields/enums/types, naive dates, empty text,
+unknown chunk IDs and evidence outside contiguous cited spans. Scope/speaker/episode
+come from sources, never model output. Assistant preference assertions are conservatively
+stored as proposals; they cannot establish user adoption. User assertions, hypotheses,
+rejections and tool claims retain their modality and source speaker. Tool output is not
+independently verified as successful or true. Exact quotes prove provenance, not that the
+generated sentence follows logically; mocked tests cannot verify Gemini's reasoning.
+
+Exact normalized same-message facts have deterministic IDs independent of chunk size.
+Duplicates in one extraction merge citation membership. Retrying unchanged extracted
+facts against the in-memory store returns no new insertions. Distinct source messages
+remain separate evidence, and differing text/conditions/negation remain distinct facts.
+Paraphrase deduplication and model-output drift across retries remain unresolved. There
+is no processed-message ingestion ledger, so retries still call extraction. A store with
+only `write` cannot provide candidate lookup or pipeline replay suppression.
+
+## Persistence and database proposal — approval required before migration
+
+`InMemoryRetainStore` is an executable reference: scoped candidate lookup, atomic batch
+writes under a lock, stale-previous comparisons, endpoint/scope checks, duplicate-ID
+checks and preservation of closed historical versions. Failed writes leave state
+unchanged. It is neither durable storage nor a vector index. `AlloyDBRetainStore` remains
+an explicit stub pending an agreed physical schema. No existing fields were altered.
+
+| Existing field/table | Reuse / limitation |
+| --- | --- |
+| agent_entities user_id/project_id/session_id/scope | Reuse names and visibility concepts. Global is user-wide. Existing project_id='global' sentinel needs explicit mapping to a missing project, not a new visibility level. |
+| entity_id/entity_name/summary | Existing entity summaries remain owned by worker/retriever; not atomic fact identities. UNIQUE(user_id, entity_name) cannot safely represent versions or differing project preferences. |
+| summary_embedding VECTOR(768), summary_tsv | Reuse model/dimension and index patterns, not the current entity-specific trigger for new facts. |
+| updated_at | Last mutation time; cannot substitute for occurred_at, recorded_at or validity intervals. |
+| episodic_memory_embeddings uuid/document/cmetadata/custom_id/created_at | Could hold source documents and metadata; currently no normalized source-message/episode contract or fact-link foreign keys. created_at is ingestion time, not an event date. |
+| episodic_memory_collections | Could group episodes after defining identity and retention semantics. |
+| user_permissions | Execution control; Retain has no reason to change it. |
+
+Minimal proposed additive storage is `memory_facts` plus `memory_links` and durable source
+messages (possibly mapped onto episodic documents). Keep existing tables unchanged:
+
+- Facts: UUID id; text; category; claim_type; speaker; user_id/project_id/session_id/scope;
+  source_episode_id; occurred_at/recorded_at/valid_from/valid_to; optional embedding;
+  source citations with message ID and exact offsets; canonical entity membership.
+- Links: source_id, target_id, relationship and trusted scope. Foreign keys and a unique
+  endpoint/type key; no graph extension or mandatory weight.
+- Sources: original text, speaker, timestamp and full scope, stable source/episode IDs.
+  Persist uncited messages too if Recall must retrieve a complete episode.
+
+Who/what/when/where/why are extraction audit fields; JSON metadata can avoid duplicating
+search columns. Exact evidence can be reconstructed from source spans if exact fact-level
+spans are normalized later; the current quote and chunk spans are intentionally distinct.
+`supporting_ids` and evidence_count can be derived from provenance/link membership, rather
+than separately mutable counters. Entity aliases can remain caller configuration initially;
+a durable shared alias registry is a later decision. Scope origin and visibility differ:
+global/project facts may retain origin session metadata without narrowing visibility.
+Global memories permit unknown project/session origin; scoped memories must supply IDs
+required by their visibility domain. No fabricated origin IDs are added.
+
+Existing worker writes agent_entities; hybrid_retriever reads those summaries and indexes;
+ADK tools and consolidation read/write episodic documents; cleanup truncates those tables.
+These dependencies make repurposing or deleting their columns unsafe. The additive proposal
+must define migrations, indexes and transaction behavior before a database adapter is built.
+
+## Linking status
+
+| Type | Actual behavior |
+| --- | --- |
+| Entity | Working offline. Gemini supplies name/kind/context. Unicode normalization, case folding and whitespace normalization precede exact matching. Caller-reviewed typed/contextual alias mapping supports canonical variants. Explicit memory-to-memory entity links are capped by top-k. |
+| Semantic | Working offline with injected/mock embeddings or GeminiEmbedder. Cosine top-k defaults to 3, threshold 0.92 configurable. Explicit links are persisted separately from embedding generation. No database vector indexing/search is implemented for facts. Threshold is provisional, not calibrated. |
+| Temporal | Explicit historical supersession works through injected classification: new → old; close old interval, keep old text/provenance, open new interval. No automatic before/after discovery. Equal/near timestamps alone produce no edges. |
+| Causal/evidence | Deferred discovery. caused_by/supported_by and generic causal/evidence relationship values are representable, but no extraction or creation path infers them. A why string is retained, not automatically converted to a causal edge. |
+
+Entity matching intentionally avoids fuzzy merging and inferred aliases. Berkeley the
+city and Berkeley the university need different kind/context. The same entity can still
+fragment if Gemini varies its context label; a shared reviewed registry/query resolver
+is needed before production. No additional NER dependency is introduced.
+
+Discovery considers only the same reconciliation/visibility domain, same speaker and same
+claim type, excludes closed candidates, and validates both endpoints on write. This is
+stricter than read visibility: visible global facts are not automatically linked or
+modified by project/session claims. Similarity can connect opposing or conditional claims;
+semantic links mean relatedness only, never equivalence, truth, supersession or causation.
+Do not use them as preference updates. No automatic contradiction classifier exists.
+No weights are stored; cosine scores select neighbors, not confidence in a claim.
+
+Supersession requires explicit change kind, effective timestamp and an older open interval
+with a known start. Intervals are half-open. Corrections still raise NotImplementedError
+because closing an interval would misleadingly imply a false claim was once valid.
+A replay of an already-applied explicit update batch is rejected as stale; normal retain
+message replay is suppressed through existing fact IDs. Concurrent retries with changed
+extraction need a durable ingestion/transaction strategy.
+
+## Recall contract and remaining integration
+
+Inspected local `origin/recall` with git show, without switching or merging branches.
+Recall's Memory needs id, type, text, occurred_at, recorded_at, valid_from, valid_to,
 speaker, claim_type, source_episode_id, supporting_ids, entity_ids and evidence_count.
-Retain preserves these concepts without importing branch-only code. An eventual adapter
-must translate `fact.*` into Recall's flat model and map enum values to strings.
-Reflect can follow old versions, typed links and supporting fact IDs without losing evidence.
-Observations and mental models remain owned by their respective components.
+Retain preserves those concepts; the adapter must flatten fact fields and set type='fact'.
+Category is independent of Recall memory type. No Recall/Reflect files were changed.
 
-RecallStore requires four scope-filtered read methods, all using bound SQL parameters:
+RecallStore requires scope-filtered `search`, `expand_neighbors`, `get_episode` and
+`get_supporting`, including endpoint checks at every graph hop. Its current scope fields
+are caller read context; Retain additionally records visibility and source origin. Agree
+SQL policy before wiring them together. Recall's stale/interval handling also needs
+agreement on valid_from filtering and half-open endpoints. Proposed/rejected/assistant
+claims must remain distinguishable in downstream answers. All SQL must bind parameters.
 
-- `search`: vector, keyword, query-entity and temporal channels, ranked lists by channel;
-  exclude expired facts before candidate limits unless include_invalid is requested.
-- `expand_neighbors`: one hop from seed memory IDs plus shared entities, with the same
-  scope, type, as-of and invalidity filters. Endpoint scope must also be checked.
-- `get_episode`: episode ID to original conversation round, filtered by caller scope.
-- `get_supporting`: observation ID to its supporting facts, with scope enforcement.
+Production integration needs schema approval, transactional AlloyDB persistence, durable
+full-episode ingestion, scoped vector/keyword indexes and Recall adapters. Query-time
+entity normalization must use the same registry. Worker integration should replace its
+write path deliberately, avoiding two independent writers silently diverging. Reflect
+and observation/mental-model creation remain outside this change. LongMemEval ingestion,
+quality evaluation and a codelab baseline are future work, not claimed results.
 
-Implemented pure scope policy: always constrain user_id; GLOBAL means user-wide and
-is visible across that user's projects and sessions. Project memories require the same
-project; session memories require the same project AND session. `Scope.visible_to`
-checks this policy against caller context (its visibility label is ignored). Every
-MemoryFact requires user, origin project and origin session IDs, including GLOBAL facts.
-Sources must agree with that full origin scope; no provenance is dropped or rewritten.
-Inputs without project provenance must be mapped to an agreed explicit project identity
-before creating facts; nullable project read contexts do not invent that identity.
+## Offline checks and live validation
 
-`Scope.can_reconcile_with` requires the same user and visibility level. Project memories
-can reconcile across origin sessions within the same project; session memories require
-matching project/session. User-wide memories can reconcile across origin projects and
-sessions for that user because their visibility domain is user-wide. Different projects
-remain isolated for project/session memories. All cross-visibility updates are rejected,
-including confirmation and supersession: project/session facts cannot overwrite global
-facts, nor are they automatically promoted. GLOBAL must be explicitly chosen by trusted
-caller code. New evidence retains its own origin and source references; previous versions
-retain theirs when their validity interval closes.
+Run `.venv/bin/pytest`, `.venv/bin/ruff check .` and
+`.venv/bin/ruff format --check .` (or equivalent uv commands with dev dependencies).
+Tests use fake extraction/embedding clients; no automated test contacts cloud services.
+Fixtures cover short/no-fact messages, multi-topic text, cross-boundary evidence, long
+unbroken text/sentences, code/URLs/lists, Unicode/whitespace, conflicting/conditional
+preferences, scope isolation, alias disambiguation, unrelated equal-time events,
+historical event dates, assistant suggestions, malformed responses, duplicate chunks,
+replays, stale updates, invalid embeddings and atomic rollback. These demonstrate local
+behavior, not live model quality.
 
-These predicates and update validation are implemented offline, not a database read or
-authorization adapter. Retain's Scope carries visibility plus provenance; Recall's caller
-Scope has no visibility label and requires an explicit mapping. Agree how these policies
-map to persisted columns and Recall filters before integration.
+For an optional live extraction smoke test, configure ADC and a Vertex-enabled project,
+construct the same google.genai.Client used by the codelab, inject it into
+GeminiFactExtractor and GeminiEmbedder, and use InMemoryRetainStore first. Select models
+available in that project; inspect evidence, modality, month/date precision and entities.
+No database is needed for this smoke test. AlloyDB integration additionally requires the
+approved additive schema, working store adapter, IAM connection factory, compatible vector
+dimensions/indexes and Recall mapping. Do not run the repository's live demo modules as
+part of offline pytest. No migration, commit, push or PR update is performed here.
 
-Graph relationships remain `memory_links` rows: source memory ID, destination memory ID
-(`target_id` in Python), relationship type and scope. Ordinary AlloyDB PostgreSQL tables
-and foreign keys suffice; no separate graph engine or extensions are required. Edge
-weights are optional and currently absent. Explicit update links are implemented; advanced
-traversal, inferred links and ranking are deferred. A future store must validate both
-endpoints and their reconciliation domain even when their origin sessions differ.
-Traversal must filter the edge AND both endpoints with the same caller visibility policy
-at every hop, plus Recall's temporal/type filters, so a visible seed cannot leak hidden
-neighbors. No executable traversal or database endpoint enforcement exists yet.
+## PR cleanup decisions and shared-model boundary
 
-Recall treats occurred_at as a point event, so source message timestamps must not be
-copied there for ongoing preferences/states. Those use valid_from when known. The future
-adapter must agree valid_from/as-of filtering and half-open interval boundaries with Recall;
-its current stale check only tests valid_to, and its overlap helper includes an end boundary.
-The categories and claim types in retain_models.py are provisional value sets; no separate
-world/experience fact-kind field is implemented. Canonicalizing these labels with Recall
-remains an integration decision.
+The review's comment cleanup, fixture defaults, behavior-focused testing, entity-helper
+placement, enum overlap and shared-model concerns were reviewed together. Long algorithm
+and integration explanations live here; code docstrings describe only local contracts.
 
-## Decisions still needed
+`resolve_entities` attaches canonical IDs after source validation and before link discovery.
+It now owns both the injected resolver path and default typed/contextual alias matching,
+removing inline canonicalization from orchestration. Without entities or a resolver it
+preserves existing IDs. This short Retain-specific step stays in retain.py; a new module
+would only move a small function without providing an independently reused service.
 
-1. Approve physical tables, keys, foreign keys, provenance normalization and episode
-   persistence. Define expired/deleted episode responses and source retention policy.
-2. Coordinate the implemented visibility policy with Recall, missing-project input
-   handling and persisted origin fields; agree claim eligibility
-   filters (proposed/rejected facts must not be presented as established user preferences).
-3. Choose embedding model/dimensions and write mechanism. Existing codelab uses 768-dim
-   text-embedding-005 on agent_entities; its auto-embedding trigger does not cover new facts.
-4. Choose generated text tsvector and GIN/RUM keyword index, HNSW embedding index and
-   scope/validity indexes (Recall suggests user_id, project_id, valid_to).
-5. Define entity identity/alias resolution for writes AND Recall query-entity search.
-6. Approve link directions, traversable types and Recall neighbor ordering/weight meaning.
-   ENTITY links here connect memory IDs; canonical entity membership uses entity_ids.
-   No all-pairs graph search, graph infrastructure or advanced weights are provided.
-7. Agree correction/invalidation audit model, unknown valid_from handling, evidence
-   aggregation, update lookup/classification, transaction conflict behavior and idempotency.
-8. Agree observation/mental-model storage and stale validity with Reflect. Expensive
-   semantic/entity/causal linking and observations can run in a future Dreaming stage.
+No enums have duplicate values within their own domain. UpdateCategory is a write decision;
+RelationshipType is a persisted edge label. ADD has no edge, while ENTITY/SEMANTIC have no
+update decision. CONFIRM becomes a new-to-old CONFIRMS edge, for example. They remain
+separate to prevent an entity/semantic edge from being accepted as a write operation.
+ChangeKind describes historical change versus correction, not an edge or decision.
+Generic TEMPORAL/CAUSAL/EVIDENCE labels overlap more specific reserved labels, but are
+existing exported values: removal or aliasing would change serialized strings. Keep them
+for compatibility and coordinate a single directed vocabulary before durable persistence.
+No unused placeholder vocabulary was added in this cleanup.
 
-The explicit setuptools configuration includes retain, retain_models, retain_store and
-shared so installed imports and the repository's plain pytest command work. No dependency
-changes are needed. Run `uv run --extra adk --extra dev pytest` and the Ruff checks listed
-in README.md for local validation.
+Candidate shared records: visibility/read context, memory identity and dates, immutable
+source references, entity identity and relationship vocabulary. Retain-only records:
+AtomicFact extraction output, ConversationChunk extraction spans, MemoryUpdate/ChangeKind
+write decisions, and WriteBatch transactional plans. Message/source references may become
+shared after full-episode ingestion is specified. Do not move models to a generic models.py
+yet: Recall's Scope is a three-field read context, while Retain's Scope additionally carries
+visibility/origin policy; Recall's flat mutable Memory supports multiple types, while
+Retain's frozen MemoryFact nests an AtomicFact. Preserve both interfaces and coordinate
+an explicit adapter/shared neutral contract with Recall and Reflect. A direct class move
+would not resolve these differences and could break imports or validity semantics.
 
-The existing worker, Valkey lifecycle and ADK wiring remain unchanged. A working cloud
-Retain → Recall → Reflect pipeline requires the schema, adapters and explicit wiring above.
-LongMemEval ingestion/evaluation and a codelab baseline remain future work; this skeleton
-makes no benchmark or end-to-end cloud claim.
+Tests now use concrete account/project/session/message/episode IDs. The visibility test
+uses explicit allowed domains rather than reproducing the visibility predicate. Removed
+per-enum construction repetitions and arbitrary separator-offset examples; retained tests
+for lossless offsets, sentence qualifications and exact update edge direction/type.
+Negative cases cover duplicate classifier decisions, nonadjacent/cross-message evidence,
+window-hidden evidence, oversized input chunks and atomic cross-user link rejection.
+Bounded-context tests check request slices, absolute offsets and single ownership of
+neighbor facts. Extraction/embedding responses remain mocked: these tests verify local
+contracts, not live Gemini fidelity. Historical updates remain explicit; automatic
+temporal/causal discovery, observation creation, AlloyDB writes and end-to-end Recall
+integration are deferred.
+
+## Final correctness pass
+
+Evidence attribution now requires exactly one occurrence of the quotation within the
+contiguous cited source spans. Repeated text elsewhere in the message does not override
+those citations. If the cited spans themselves contain multiple matches, extraction fails
+before storage: narrow the chunk citations or include distinguishing context in the quote.
+Ownership uses this unique occurrence, not the first occurrence in a broad citation range.
+This also applies to injected extraction outputs when they supply evidence. No new evidence
+offset fields or changes to shared models are introduced. Chunk citations plus the unique
+quote identify the source span; entailment is still not verified by string matching.
+
+A regression fixture repeats the same quotation under prototype and production contexts:
+broad ambiguous citations fail, while a specific citation or extended quote succeeds.
+Another fixture starts a qualified preference at a core-window boundary and places its
+production exclusion in the next core. Multiple overlapping requests return it, but only
+the owner retains it, with both source chunks preserved. This tests local ownership and
+validation with mock responses, not whether Gemini reliably notices the qualification.
+If required context lies beyond the supplied neighbors, a fact can still be missed or
+misinterpreted. Increase configured limits or reject the workload; no completeness or
+semantic-entailment guarantee is provided. One ambiguous row fails the entire extraction
+call rather than silently persisting other rows from that call.
+
+Visibility does not replace origin: a global memory is readable across the same user's
+projects while retaining known source project/session IDs unchanged. Existing scope,
+source-ID, timestamp and episode checks remain in place. Nullable project/session origins
+are useful for external imports that genuinely lack those identifiers, but no importer in
+this repository currently requires them. Keep the existing nullable contract; never erase
+known origin metadata or invent session identifiers. Whether production ingestion should
+require complete origin for native conversations, and which external import metadata is
+mandatory, remain policy decisions for the shared contract. Unknown origins do not permit
+cross-user access or cross-visibility reconciliation.
+
+Candidate lookup now checks the optional bound method once, without inspecting the store's
+class or expanding RetainStore. Write-only stores remain supported without discovery;
+lookup is still required when entity/semantic discovery is enabled. Test stores declare
+only their actual write capability so mocks do not manufacture candidate methods.

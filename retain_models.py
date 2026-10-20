@@ -35,6 +35,8 @@ class ClaimType(StrEnum):
 
 
 class UpdateCategory(StrEnum):
+    """Write decisions; ADD creates no edge."""
+
     ADD = "ADD"
     CONFIRM = "CONFIRM"
     REFINE = "REFINE"
@@ -49,11 +51,16 @@ class ChangeKind(StrEnum):
 
 
 class RelationshipType(StrEnum):
+    """Persisted edge labels, including reserved labels for future discovery."""
+
     ENTITY = "entity"
     SEMANTIC = "semantic"
     TEMPORAL = "temporal"
     CAUSAL = "causal"
     EVIDENCE = "evidence"
+    BEFORE = "before"
+    CAUSED_BY = "caused_by"
+    SUPPORTED_BY = "supported_by"
     SUPERSEDES = "supersedes"
     CONFIRMS = "confirms"
     REFINES = "refines"
@@ -116,7 +123,7 @@ class Message:
     episode_id: str
     text: str
     speaker: Speaker
-    timestamp: datetime
+    timestamp: datetime | None
     scope: Scope
 
     def __post_init__(self):
@@ -143,6 +150,16 @@ class ConversationChunk:
 
 
 @dataclass(frozen=True)
+class Entity:
+    name: str
+    kind: str
+    context: str
+
+    def __post_init__(self):
+        require_text(self.name, self.kind, self.context)
+
+
+@dataclass(frozen=True)
 class AtomicFact:
     """Extractor output: provenance is supplied as chunk IDs, not model-written scope."""
 
@@ -152,6 +169,13 @@ class AtomicFact:
     source_chunk_ids: tuple[str, ...]
     occurred_at: datetime | None = None
     valid_from: datetime | None = None
+    who: str | None = None
+    what: str | None = None
+    when: str | None = None
+    where: str | None = None
+    why: str | None = None
+    entities: tuple[Entity, ...] = ()
+    evidence: str | None = None
 
     def __post_init__(self):
         require_text(self.text, *self.source_chunk_ids)
@@ -162,6 +186,9 @@ class AtomicFact:
         ):
             raise ValueError("Facts require unique source chunk IDs")
         require_aware(self.occurred_at, self.valid_from)
+        for value in (self.who, self.what, self.when, self.where, self.why, self.evidence):
+            if value is not None:
+                require_text(value)
 
 
 @dataclass(frozen=True)
@@ -180,7 +207,6 @@ class MemoryFact:
 
     def __post_init__(self):
         require_text(self.id, self.source_episode_id, *self.entity_ids, *self.supporting_ids)
-        require_text(self.scope.project_id, self.scope.session_id)
         Speaker(self.speaker)
         require_aware(self.recorded_at, self.valid_to)
         if self.valid_to is not None and (
