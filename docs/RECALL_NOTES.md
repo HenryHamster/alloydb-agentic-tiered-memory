@@ -13,6 +13,27 @@ or a live cloud run. In the code, those gaps are marked `PLACEHOLDER(RETAIN)`,
 | `recall_tools.py` | `search_memory`, `get_episode`, `get_supporting` as plain callables (for Reflect) and as ADK `FunctionTool`s |
 | `tests/test_recall.py` | Offline tests with a fake store, covering every stage and the tool schemas |
 
+### Sliding window (short-term tier)
+
+`valkey_buffer.py` keeps each session's recent turns in Valkey. Past `trigger_limit` rounds (10),
+the oldest rounds are folded into a rolling summary and then trimmed, leaving the last
+`window_size` rounds (4) verbatim. Each round gets a `round_id`. `turn_context.build_turn_context`
+builds the per-turn context:
+
+1. Read the window; a new session with no summary starts from the previous session's summary.
+2. Charge the summary and recent turns to the turn budget (4,096 tokens) first.
+3. Call `recall()` (`depth="low"`) with the remaining budget (at least 512 tokens) and
+   `exclude_episode_ids` set to the window's round IDs. Memories drawn from those rounds are
+   dropped after fusion, before reranking, so they don't repeat what the window already shows
+   or take rerank slots.
+4. If Recall fails, the turn continues with the window alone.
+
+Fixed from the codelab buffer: a summary failure appended the turn a second time into the
+in-process fallback; the trim kept "the last N" and could drop a turn added during
+summarization (it now removes exactly the summarized count from the head); `window_size=0`
+summarized nothing; unreadable stored turns failed the whole read. The codelab functions
+`append_session_turn_with_rolling_summary` and `get_session_context_buffer` remain as wrappers.
+
 `search_memory` is a preset `recall()` call (`depth="mid"`, `max_tokens=4096`). It is not a
 second pipeline. It exists so the agent sees three arguments (`query`, `time_range`,
 `include_episodes`) and never sees scope; user, project and session are bound in code.
@@ -64,7 +85,10 @@ Boosts (multiplied in as `relevance * (1 + boost)`, total clipped to ±0.25): re
    applied to the query text. Either expose it as a SQL function, or let the store call it.
 5. **Value sets** for `claim_type` and fact kinds (the plan's "world or experience") so the
    packed lines use labels Retain actually writes.
-6. **`memory_links.weight` meaning** for ordering graph neighbours, and which link types the
+6. **Episode IDs from the window.** `SessionBuffer.append` returns the round's `round_id`.
+   Retain must store it as the episode ID / `source_episode_id`, or `exclude_episode_ids` never
+   matches. `AsyncMemoryWorker.enqueue_extraction` does not take it yet.
+7. **`memory_links.weight` meaning** for ordering graph neighbours, and which link types the
    one-hop expansion should follow (all of them, or semantic and causal only).
 
 ### Intended `RecallStore.search` SQL (sketch, table names from the plan)
@@ -127,6 +151,7 @@ Repeat `vec`/`kw` for each sub-query (at most 5), and union in the same subqueri
 
 ## Not yet wired
 
-`adk_memory_provider.py` still calls the old `retrieve_hybrid_entities`. Once a `RecallStore`
-implementation exists, switch its per-turn context to `recall()` (`depth="low"`, 2,048 tokens)
-and register `make_recall_tools(...)` on the agent.
+`adk_memory_provider.py` and `agent_orchestrator.py` still call the old
+`retrieve_hybrid_entities`. Once a `RecallStore` implementation exists, replace their per-turn
+context with `build_turn_context(...)`, pass the `round_id` from `SessionBuffer.append` to
+Retain, and register `make_recall_tools(...)` on the agent.

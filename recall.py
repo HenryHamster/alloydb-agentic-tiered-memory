@@ -575,6 +575,12 @@ def pack(
 # ---------------------------------------------------------------- pipeline
 
 
+def _from_episode(memory: Memory, episode_ids: set) -> bool:
+    if memory.type == "episode":
+        return memory.id in episode_ids
+    return memory.source_episode_id in episode_ids
+
+
 class _Tracer:
     def __init__(self):
         self.stages: List[StageTrace] = []
@@ -609,11 +615,16 @@ def recall(
     generate: Optional[Generate] = None,
     score_floor: float = SCORE_FLOOR,
     count_tokens: TokenCounter = estimate_tokens,
+    exclude_episode_ids: Sequence[str] = (),
 ) -> RecallResult:
     """Finds stored evidence for a query and returns it ranked, dated, typed and token-fitted.
 
     The score floor applies to reranker scores only; unreranked results are never abstained
     on score because fused ranks are not calibrated relevance.
+
+    exclude_episode_ids are rounds the caller already shows verbatim (the Valkey sliding
+    window). Memories drawn from them are dropped before reranking so they neither repeat
+    those turns nor take rerank slots.
     """
     if depth not in POOL_BY_DEPTH:
         raise ValueError(f"depth must be one of {sorted(POOL_BY_DEPTH)}, got {depth!r}")
@@ -672,7 +683,13 @@ def recall(
         stage.detail = {"seeds": len(seeds)}
 
     with tracer.stage("fuse_rrf") as stage:
-        fused = fuse_rrf(lists)[:pool]
+        fused = fuse_rrf(lists)
+        if exclude_episode_ids:
+            excluded = set(exclude_episode_ids)
+            before = len(fused)
+            fused = [scored for scored in fused if not _from_episode(scored.memory, excluded)]
+            stage.detail = {"in_window": before - len(fused)}
+        fused = fused[:pool]
         stage.count = len(fused)
 
     with tracer.stage("rerank") as stage:

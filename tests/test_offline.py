@@ -61,6 +61,7 @@ def test_library_modules_import_without_cloud_connections():
         "adk_guardrails",
         "recall",
         "recall_tools",
+        "turn_context",
     ]:
         importlib.import_module(module)
 
