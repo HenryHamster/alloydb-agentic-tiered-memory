@@ -12,6 +12,7 @@ from recall import (
     DEFAULT_TYPES,
     Embedder,
     Generate,
+    RecallDepth,
     RecallStore,
     Reranker,
     Scope,
@@ -20,7 +21,7 @@ from recall import (
     recall,
 )
 
-SEARCH_DEPTH = "mid"
+SEARCH_DEPTH = RecallDepth.MID
 SEARCH_MAX_TOKENS = 4096
 
 

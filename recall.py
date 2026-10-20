@@ -16,6 +16,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,19 @@ ALL_TYPES = ("fact", "observation", "episode", "mental_model")
 # PLACEHOLDER(REFLECT): the store has no mental-model table to read until Reflect defines one,
 # and mental-model staleness must be readable as valid_to (see docs/RECALL_NOTES.md).
 DEFAULT_TYPES = ("fact", "observation")
-POOL_BY_DEPTH = {"low": 100, "mid": 300, "high": 1000}
+
+
+class RecallDepth(StrEnum):
+    LOW = "low"
+    MID = "mid"
+    HIGH = "high"
+
+
+POOL_BY_DEPTH = {
+    RecallDepth.LOW: 100,
+    RecallDepth.MID: 300,
+    RecallDepth.HIGH: 1000,
+}
 RRF_K = 60
 # Cross-encoding the whole high-depth pool (1,000) is too slow; rerank the fused head only.
 RERANK_POOL = 150
@@ -604,7 +617,7 @@ def recall(
     query_time: Optional[datetime] = None,
     temporal_window: Optional[TimeWindow] = None,
     max_tokens: int = 2048,
-    depth: str = "low",
+    depth: RecallDepth | str = RecallDepth.LOW,
     types: Optional[Sequence[str]] = None,
     include_invalid: bool = False,
     decompose: bool = True,
@@ -626,8 +639,13 @@ def recall(
     window). Memories drawn from them are dropped before reranking so they neither repeat
     those turns nor take rerank slots.
     """
-    if depth not in POOL_BY_DEPTH:
-        raise ValueError(f"depth must be one of {sorted(POOL_BY_DEPTH)}, got {depth!r}")
+    if not isinstance(depth, RecallDepth):
+        try:
+            depth = RecallDepth(depth)
+        except ValueError:
+            raise ValueError(
+                f"depth must be one of {[d.value for d in RecallDepth]}, got {depth!r}"
+            ) from None
     types = tuple(types or DEFAULT_TYPES)
     unknown = set(types) - set(ALL_TYPES)
     if unknown:

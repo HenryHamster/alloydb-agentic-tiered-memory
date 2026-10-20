@@ -10,6 +10,7 @@ import pytest
 from recall import (
     MAX_BOOST,
     Memory,
+    RecallDepth,
     Scored,
     TimeWindow,
     analyze_query,
@@ -18,7 +19,7 @@ from recall import (
     parse_time_phrase,
     recall,
 )
-from recall_tools import RecallDeps, make_recall_tool_functions, make_recall_tools
+from recall_tools import SEARCH_DEPTH, RecallDeps, make_recall_tool_functions, make_recall_tools
 
 NOW = datetime(2026, 10, 18, 15, 30, tzinfo=timezone.utc)
 
@@ -254,7 +255,10 @@ def test_reranker_sees_at_most_the_rerank_pool_and_scores_against_each_sub_query
 
     generate = lambda prompt: '{"sub_queries": ["second"]}'  # noqa: E731
     result = run(
-        FakeStore({"vector:0": memories}), depth="mid", reranker=reranker, generate=generate
+        FakeStore({"vector:0": memories}),
+        depth=RecallDepth.MID,
+        reranker=reranker,
+        generate=generate,
     )
     assert seen == [("what stack?", 150), ("second", 150)]
     assert result.items[0].memory.id == "m149"
@@ -263,7 +267,7 @@ def test_reranker_sees_at_most_the_rerank_pool_and_scores_against_each_sub_query
 
 def test_depth_sets_the_candidate_pool_and_rejects_unknown_values():
     store = FakeStore()
-    run(store, depth="high")
+    run(store, depth=RecallDepth.HIGH)
     assert store.search_calls[0]["limit"] == 1000
     with pytest.raises(ValueError):
         run(store, depth="deep")
@@ -287,6 +291,7 @@ def test_search_memory_hides_scope_and_presets_a_deeper_recall():
         "stack", time_range="2026-01-01/2026-01-31", include_episodes=True
     )
     call = store.search_calls[0]
+    assert SEARCH_DEPTH is RecallDepth.MID
     assert call["limit"] == 300 and result["max_tokens"] == 4096
     assert "episode" in call["types"] and call["scope"].user_id == "user"
     assert result["window"] == {
