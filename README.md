@@ -47,15 +47,15 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `db_clients.py` | IAM-authenticated AlloyDB and Valkey connections |
 | `valkey_buffer.py` | Recent turns and summarize-before-trim |
 | `async_worker.py` | Background fact extraction and upserts |
-| `retain.py`, `retain_models.py`, `retain_store.py` | Retain pipeline skeleton; see [Retain notes](docs/RETAIN_NOTES.md) |
-| `shared/chunking.py` | Reusable conversation chunking utility |
+| `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
+| `shared/chunking.py` | Lossless length-bounded text chunking |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |
 | `test_memory_system.py`, `test_adk_agent.py` | Original cloud demonstrations |
 | `cleanup_memory_system.py` | Clears the demo memory tables and selected Valkey database |
-| `sql/` | Schema, model registration, and auto-embedding setup |
+| `sql/` | Schema, model registration, auto-embedding setup, and Retain tables |
 | `docs/` | Cloud setup, source provenance, and validation limits |
 | `tests/` | Offline checks of repository integration and memory behavior |
 
