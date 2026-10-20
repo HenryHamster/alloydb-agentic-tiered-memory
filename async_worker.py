@@ -3,7 +3,10 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Optional
+
+from retain.models import Scope
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +24,16 @@ def build_temporal_rules_prompt(
 
 
 class AsyncMemoryWorker:
-    """Off-thread daemon queue worker performing background entity extraction and upserts into AlloyDB."""
+    """Off-thread daemon queue worker performing background entity extraction and upserts into AlloyDB.
 
-    def __init__(self, conn_factory, llm_client):
+    With `retainer`, each turn runs the Retain pipeline instead of the codelab's agent_entities
+    upsert, so only one writer owns long-term memory.
+    """
+
+    def __init__(self, conn_factory, llm_client, retainer=None):
         self.conn_factory = conn_factory
         self.llm_client = llm_client
+        self.retainer = retainer
         self.work_queue = queue.Queue()
         self.total_extraction_tokens = 0
         self.worker_thread = threading.Thread(target=self._run_worker, daemon=True)
@@ -38,17 +46,25 @@ class AsyncMemoryWorker:
         user_msg: str,
         ai_msg: str,
         prev_session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ):
-        self.work_queue.put((user_id, session_id, user_msg, ai_msg, prev_session_id))
+        sent_at = datetime.now(timezone.utc)  # message time, not processing time
+        self.work_queue.put(
+            (user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at)
+        )
 
     def _run_worker(self):
         while True:
             item = self.work_queue.get()
             if item is None:
                 break
-            user_id, session_id, user_msg, ai_msg, prev_session_id = item
+            user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at = item
             try:
-                self._extract_and_upsert(user_id, session_id, user_msg, ai_msg, prev_session_id)
+                if self.retainer is not None:
+                    scope = Scope(user_id=user_id, project_id=project_id, session_id=session_id)
+                    self.retainer.retain_turn(scope, user_msg, ai_msg, timestamp=sent_at)
+                else:
+                    self._extract_and_upsert(user_id, session_id, user_msg, ai_msg, prev_session_id)
             except Exception as e:
                 logger.error("Background extraction failed: %s", e)
             finally:
