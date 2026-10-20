@@ -50,6 +50,10 @@ class RetainStore(Protocol):
         """Current, visible facts with occurred_at within `window` of `at`, nearest first."""
         ...
 
+    def get_facts(self, fact_ids: Sequence[str]) -> list[MemoryFact]:
+        """Stored facts by ID, current or not; unknown IDs are omitted. Callers check scope."""
+        ...
+
     def facts_with_entities(
         self, reader: Scope, entity_ids: Sequence[str], *, limit: int
     ) -> list[MemoryFact]:
@@ -109,6 +113,10 @@ class InMemoryRetainStore:
             if fact.occurred_at and abs(fact.occurred_at - at) <= window
         ]
         return sorted(near, key=lambda fact: (abs(fact.occurred_at - at), fact.fact_id))[:limit]
+
+    def get_facts(self, fact_ids):
+        with self._lock:
+            return [self.facts[i] for i in dict.fromkeys(fact_ids) if i in self.facts]
 
     def facts_with_entities(self, reader, entity_ids, *, limit):
         wanted = set(entity_ids)

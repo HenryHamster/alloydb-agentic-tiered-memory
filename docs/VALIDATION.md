@@ -8,6 +8,9 @@ exercises the in-process Valkey fallback, sends a real background queue exchange
 through fake model/database boundaries, checks permission outcomes, constructs a
 Google ADK agent with the callback and function tool, and checks prompt assembly.
 Ruff checks imports, undefined names, and consistent formatting.
+`tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
+with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
+atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.

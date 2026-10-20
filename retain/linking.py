@@ -1,26 +1,10 @@
 """Proposal step 3: semantic, temporal and causal links, plus supersession decisions."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Protocol
 
 from retain.models import ExtractedFact, MemoryFact, MemoryLink, Relation, UpdateDecision
-
-Embedder = Callable[[Sequence[str]], list[list[float]]]
-
-
-class GeminiEmbedder:
-    """text-embedding-005 (768 dims), batched; failures raise instead of writing zero vectors."""
-
-    def __init__(self, client, *, model: str = "text-embedding-005", batch_size: int = 100):
-        self.client = client
-        self.model = model
-        self.batch_size = batch_size
-
-    def __call__(self, texts: Sequence[str]) -> list[list[float]]:
-        # TODO(retain): client.models.embed_content(model=..., contents=list(batch)) per batch,
-        # retry 429 with backoff, check one 768-dim vector per input.
-        raise NotImplementedError("Gemini embeddings")
 
 
 class Linker(Protocol):
@@ -95,8 +79,8 @@ class GeminiSupersedeClassifier:
     Candidates per new fact: current facts visible to its scope, same claim type, either
     cosine >= `min_similarity` or sharing a subject entity in the same category; at most
     `candidates_k`. A new fact may supersede only facts whose visibility is no broader than its
-    own (a project rule never closes a global preference). Targets outside the candidate set
-    are rejected; facts with no candidates skip the LLM and are added.
+    own (a project rule never closes a global preference); Retainer re-checks both rules.
+    Targets outside the candidate set are rejected; facts with no candidates skip the LLM and are added.
     """
 
     def __init__(

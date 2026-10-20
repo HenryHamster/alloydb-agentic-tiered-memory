@@ -26,7 +26,7 @@ class GeminiFactExtractor:
     """Gemini structured-output extractor.
 
     Contract for each returned fact:
-    - 8-15 word self-contained sentence answering who/what/when/where/why where known.
+    - 8-15 word self-contained sentence; known who/what/when/where/why go in `details`.
     - `evidence` is an exact substring of the cited chunk; rows failing this are dropped.
     - Speaker, scope and episode come from the chunk's document, never from the model.
     - Assistant preferences are stored as `proposed`; tool output is attributed, not trusted.

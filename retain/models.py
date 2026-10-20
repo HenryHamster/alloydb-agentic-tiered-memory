@@ -131,6 +131,12 @@ def is_visible(visibility: Visibility, origin: Scope, reader: Scope) -> bool:
     return origin.session_id is not None and origin.session_id == reader.session_id
 
 
+def is_broader(left: Visibility, right: Visibility) -> bool:
+    """True when `left` is readable in strictly more contexts than `right`."""
+    order = list(Visibility)
+    return order.index(left) < order.index(right)
+
+
 def resolve_visibility(requested: Visibility, scope: Scope) -> Visibility:
     """Narrow a model-proposed visibility to what the context supports.
 
@@ -215,11 +221,7 @@ class ExtractedFact:
     visibility: Visibility
     occurred_at: datetime | None = None
     valid_from: datetime | None = None
-    who: str | None = None
-    what: str | None = None
-    when: str | None = None
-    where: str | None = None
-    why: str | None = None
+    details: dict[str, str] = field(default_factory=dict, compare=False)  # the 5 Ws
     entities: tuple[EntityMention, ...] = ()
     relations: tuple[RelationMention, ...] = ()
     caused_by: tuple[int, ...] = ()
@@ -230,12 +232,6 @@ class ExtractedFact:
             raise ValueError("Facts need text and evidence")
         _require_aware(self.occurred_at, self.valid_from)
 
-    @property
-    def details(self) -> dict[str, str]:
-        fields = {"who": self.who, "what": self.what, "when": self.when}
-        fields |= {"where": self.where, "why": self.why}
-        return {key: value for key, value in fields.items() if value}
-
 
 @dataclass(frozen=True)
 class Entity:
@@ -245,6 +241,14 @@ class Entity:
     canonical_name: str
     entity_type: EntityType
     aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EntityResolution:
+    """Resolver output: (normalized name, type) -> entity_id, plus rows to create or extend."""
+
+    entity_ids: dict[tuple[str, EntityType], str]
+    upserts: tuple[Entity, ...] = ()
 
 
 @dataclass(frozen=True)

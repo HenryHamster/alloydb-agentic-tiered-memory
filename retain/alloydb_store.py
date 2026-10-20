@@ -52,6 +52,11 @@ class AlloyDBRetainStore:
         #               ORDER BY abs(extract(epoch FROM f.occurred_at - at)) LIMIT %(limit)s
         raise NotImplementedError
 
+    def get_facts(self, fact_ids):
+        # TODO(retain): SELECT f.* (+ entity_ids via memory_entities)
+        #               FROM memory_facts f WHERE f.fact_id = ANY(%s::uuid[])
+        raise NotImplementedError
+
     def facts_with_entities(self, reader, entity_ids, *, limit):
         # TODO(retain): JOIN memory_entities USING (fact_id) WHERE VISIBLE_SQL
         #               AND entity_id = ANY(%s::uuid[]) ORDER BY recorded_at DESC

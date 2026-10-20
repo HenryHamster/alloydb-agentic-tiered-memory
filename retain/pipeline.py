@@ -4,14 +4,16 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
-from retain.entities import EntityResolution, EntityResolver, mention_key, normalize_name
+from retain.embeddings import Embedder
+from retain.entities import EntityResolver, mention_key, normalize_name
 from retain.extraction import FactExtractor, chunk_documents
-from retain.linking import Embedder, Linker, SupersedeClassifier, causal_links
+from retain.linking import Linker, SupersedeClassifier, causal_links
 from retain.models import (
     Category,
     ClaimType,
     Document,
     EntityRelation,
+    EntityResolution,
     ExtractedFact,
     FactEntity,
     MemoryFact,
@@ -26,6 +28,7 @@ from retain.models import (
     UpdateAction,
     UpdateDecision,
     WriteBatch,
+    is_broader,
     resolve_visibility,
     stable_id,
 )
@@ -109,21 +112,24 @@ class Retainer:
             else EntityResolution({})
         )
 
-        facts_by_key = {
+        built = {
             fact.key: _build_fact(fact, documents_by_chunk[fact.chunk_id], resolution, now)
             for fact in extracted
-        }
-        new_facts = list({fact.fact_id: fact for fact in facts_by_key.values()}.values())
+        }  # key -> (fact, entity rows, relation rows)
+        new_facts = list({fact.fact_id: fact for fact, _, _ in built.values()}.values())
         if new_facts:
             vectors = self.embedder([fact.text for fact in new_facts])
             if len(vectors) != len(new_facts):
                 raise ValueError("Embedder must return one vector per fact")
             new_facts = [replace(f, embedding=tuple(v)) for f, v in zip(new_facts, vectors)]
 
-        decisions = self._decide(new_facts)
-        kept, reinforced, supersessions, redirect = _apply_decisions(new_facts, decisions)
+        kept, reinforced, supersessions, redirect = _apply_decisions(
+            new_facts, self._decide(new_facts)
+        )
+        stored_id = {key: redirect.get(f.fact_id, f.fact_id) for key, (f, _, _) in built.items()}
         kept_ids = {fact.fact_id for fact in kept}
-        stored_id = {key: redirect.get(f.fact_id, f.fact_id) for key, f in facts_by_key.items()}
+        entity_rows = [r for f, rows, _ in built.values() if f.fact_id in kept_ids for r in rows]
+        relation_rows = [r for f, _, rows in built.values() if f.fact_id in kept_ids for r in rows]
 
         links = [
             MemoryLink(change.new_fact_id, change.old_fact_id, Relation.SUPERSEDES)
@@ -131,14 +137,13 @@ class Retainer:
         ]
         links += causal_links(extracted, stored_id)
         links += self.linker.link(kept) if kept else []
-        own = [fact for fact in extracted if stored_id[fact.key] in kept_ids]
 
         batch = WriteBatch(
             documents=tuple(documents),
             facts=tuple(kept),
             entities=resolution.upserts,
-            fact_entities=_fact_entities(own, stored_id, resolution),
-            entity_relations=_entity_relations(own, stored_id, resolution),
+            fact_entities=tuple(dict.fromkeys(entity_rows)),
+            entity_relations=tuple(dict.fromkeys(relation_rows)),
             links=tuple({(x.from_fact_id, x.to_fact_id, x.relation): x for x in links}.values()),
             supersessions=tuple(supersessions),
             reinforced_fact_ids=tuple(reinforced),
@@ -168,13 +173,29 @@ class Retainer:
         ]
 
     def _decide(self, facts: list[MemoryFact]) -> list[UpdateDecision]:
-        if not facts:
-            return []
-        if self.classifier is None:
+        """Classify new facts, then enforce the trust boundary on the model's targets.
+
+        Each target must be stored, current, and visible from the new fact's scope (so same
+        user); a supersede target must also be no broader than the new fact.
+        """
+        if self.classifier is None or not facts:
             return [UpdateDecision(fact.fact_id) for fact in facts]
         decisions = list(self.classifier.classify(facts))
         if sorted(d.fact_id for d in decisions) != sorted(f.fact_id for f in facts):
             raise ValueError("Classifier must return exactly one decision per new fact")
+        by_id = {fact.fact_id: fact for fact in facts}
+        target_ids = sorted({target for d in decisions for target in d.target_ids})
+        stored = {fact.fact_id: fact for fact in self.store.get_facts(target_ids)}
+        for decision in decisions:
+            new = by_id[decision.fact_id]
+            for target_id in decision.target_ids:
+                old = stored.get(target_id)
+                if old is None or not old.is_current or not old.visible_to(new.scope):
+                    raise ValueError(f"Invalid {decision.action} target {target_id}")
+                if decision.action == UpdateAction.SUPERSEDE and is_broader(
+                    old.visibility, new.visibility
+                ):
+                    raise ValueError(f"{new.visibility} fact cannot supersede {old.visibility}")
         return decisions
 
 
@@ -185,15 +206,27 @@ def _episode_id(scope: Scope, messages: Sequence[Message]) -> str:
 
 def _build_fact(
     fact: ExtractedFact, document: Document, resolution: EntityResolution, now: datetime
-) -> MemoryFact:
+) -> tuple[MemoryFact, list[FactEntity], list[EntityRelation]]:
+    """Stored fact plus its memory_entities and entity_relations rows."""
     claim_type = fact.claim_type
     # Trust boundary: an assistant can propose a preference, never assert the user's.
     if document.speaker != Speaker.USER and fact.category == Category.PREFERENCE:
         if claim_type == ClaimType.ASSERTED:
             claim_type = ClaimType.PROPOSED
-    entity_ids = {resolution.entity_ids[mention_key(m)] for m in fact.entities}
-    return MemoryFact(
-        fact_id=stable_id(document.document_id, normalize_name(fact.text), claim_type),
+    fact_id = stable_id(document.document_id, normalize_name(fact.text), claim_type)
+    by_name = {normalize_name(m.name): resolution.entity_ids[mention_key(m)] for m in fact.entities}
+    entity_rows = [
+        FactEntity(fact_id, resolution.entity_ids[mention_key(m)], m.role) for m in fact.entities
+    ]
+    relation_rows = [
+        EntityRelation(subject, r.predicate, obj, fact_id)
+        for r in fact.relations
+        if (subject := by_name.get(normalize_name(r.subject)))
+        and (obj := by_name.get(normalize_name(r.object)))
+        and subject != obj
+    ]
+    memory = MemoryFact(
+        fact_id=fact_id,
         scope=document.scope,
         visibility=resolve_visibility(fact.visibility, document.scope),
         fact_type=fact.fact_type,
@@ -208,8 +241,9 @@ def _build_fact(
         recorded_at=now,
         occurred_at=fact.occurred_at,
         valid_from=fact.valid_from or fact.occurred_at or document.occurred_at,
-        entity_ids=tuple(sorted(entity_ids)),
+        entity_ids=tuple(sorted(set(by_name.values()))),
     )
+    return memory, entity_rows, relation_rows
 
 
 def _apply_decisions(facts, decisions):
@@ -231,33 +265,13 @@ def _apply_decisions(facts, decisions):
     return kept, reinforced, supersessions, redirect
 
 
-def _fact_entities(facts, stored_id, resolution) -> tuple[FactEntity, ...]:
-    rows = {
-        FactEntity(stored_id[fact.key], resolution.entity_ids[mention_key(m)], m.role)
-        for fact in facts
-        for m in fact.entities
-    }
-    return tuple(sorted(rows, key=lambda row: (row.fact_id, row.entity_id, row.role)))
-
-
-def _entity_relations(facts, stored_id, resolution) -> tuple[EntityRelation, ...]:
-    rows = set()
-    for fact in facts:
-        ids = {normalize_name(m.name): resolution.entity_ids[mention_key(m)] for m in fact.entities}
-        for relation in fact.relations:
-            subject = ids.get(normalize_name(relation.subject))
-            obj = ids.get(normalize_name(relation.object))
-            if subject and obj and subject != obj:
-                rows.add(EntityRelation(subject, relation.predicate, obj, stored_id[fact.key]))
-    return tuple(sorted(rows, key=lambda row: (row.fact_id, row.subject_entity_id, row.predicate)))
-
-
 def build_retainer(conn_factory, genai_client, *, config: RetainConfig = RetainConfig()):
     """Production wiring: AlloyDB store with Gemini stages. Stages are skeletons for now."""
     from retain.alloydb_store import AlloyDBRetainStore
+    from retain.embeddings import GeminiEmbedder
     from retain.entities import FuzzyEntityResolver
     from retain.extraction import GeminiFactExtractor
-    from retain.linking import GeminiEmbedder, GeminiSupersedeClassifier, StoreLinker
+    from retain.linking import GeminiSupersedeClassifier, StoreLinker
     from retain.observations import GeminiObservationBuilder
 
     store = AlloyDBRetainStore(conn_factory)

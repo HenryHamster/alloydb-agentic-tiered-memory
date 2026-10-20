@@ -2,10 +2,9 @@
 
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Protocol
 
-from retain.models import Entity, EntityMention, EntityType
+from retain.models import EntityMention, EntityResolution, EntityType
 
 
 def normalize_name(name: str) -> str:
@@ -15,14 +14,6 @@ def normalize_name(name: str) -> str:
 
 def mention_key(mention: EntityMention) -> tuple[str, EntityType]:
     return normalize_name(mention.name), mention.entity_type
-
-
-@dataclass(frozen=True)
-class EntityResolution:
-    """`entity_ids` maps mention_key -> entity_id; `upserts` are new or alias-extended rows."""
-
-    entity_ids: dict[tuple[str, EntityType], str]
-    upserts: tuple[Entity, ...] = ()
 
 
 class EntityResolver(Protocol):

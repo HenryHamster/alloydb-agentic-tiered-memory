@@ -9,12 +9,13 @@ import pytest
 
 from async_worker import AsyncMemoryWorker
 from retain import InMemoryRetainStore, Retainer, Scope, build_retainer
-from retain.entities import EntityResolution, mention_key, normalize_name
+from retain.entities import mention_key, normalize_name
 from retain.models import (
     Category,
     ClaimType,
     Entity,
     EntityMention,
+    EntityResolution,
     EntityRole,
     EntityType,
     ExtractedFact,
@@ -277,15 +278,49 @@ def test_duplicate_reinforces_and_supersede_closes_validity():
 def test_failed_stage_writes_nothing_and_leaves_episode_retryable():
     extractor = ScriptedExtractor(dict(text="User prefers tabs.", evidence="tabs"))
     store = InMemoryRetainStore()
-    broken = retainer(extractor, store, classifier=ScriptedClassifier(lambda fact: None))
-    with pytest.raises(Exception):
-        broken.retain_turn(SCOPE, "I use tabs.", "Ok.", timestamp=T0)
+    wrong_id = ScriptedClassifier(lambda fact: UpdateDecision("not-a-new-fact"))
+    with pytest.raises(ValueError, match="one decision per new fact"):
+        retainer(extractor, store, classifier=wrong_id).retain_turn(
+            SCOPE, "I use tabs.", "Ok.", timestamp=T0
+        )
     assert not store.documents and not store.facts
-    assert (
-        not retainer(extractor, store)
-        .retain_turn(SCOPE, "I use tabs.", "Ok.", timestamp=T0)
-        .skipped
+    retry = retainer(extractor, store).retain_turn(SCOPE, "I use tabs.", "Ok.", timestamp=T0)
+    assert not retry.skipped and len(store.facts) == 1
+
+
+@pytest.mark.parametrize(
+    "action,target,error",
+    [
+        (UpdateAction.DUPLICATE, "missing", "Invalid duplicate target"),
+        (UpdateAction.SUPERSEDE, "other_user", "Invalid supersede target"),
+        (UpdateAction.SUPERSEDE, "other_project", "Invalid supersede target"),
+        (UpdateAction.SUPERSEDE, "closed", "Invalid supersede target"),
+        (UpdateAction.SUPERSEDE, "global", "project fact cannot supersede global"),
+    ],
+)
+def test_classifier_targets_are_checked_before_writing(action, target, error):
+    targets = {
+        "other_user": stored_fact("Intruder prefers Go.", scope=Scope("intruder", "CloudRetail")),
+        "other_project": stored_fact(
+            "Other project uses Go.",
+            scope=Scope("user_dev_42", "Other"),
+            visibility=Visibility.PROJECT,
+        ),
+        "closed": stored_fact("User preferred Go.", valid_to=T0),
+        "global": stored_fact("User prefers Go everywhere."),
+    }
+    store = InMemoryRetainStore()
+    store.write(WriteBatch((), facts=tuple(targets.values())))
+    target_id = targets[target].fact_id if target in targets else target
+    classifier = ScriptedClassifier(lambda fact: UpdateDecision(fact.fact_id, action, (target_id,)))
+    extractor = ScriptedExtractor(
+        dict(text="CloudRetail uses Rust.", evidence="Rust", visibility=Visibility.PROJECT)
     )
+    with pytest.raises(ValueError, match=error):
+        retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Rust here.", "Ok.")
+    assert not store.documents
+    assert not store.documents
+    assert store.facts == {fact.fact_id: fact for fact in targets.values()}
 
 
 def test_store_rejects_bad_batches_atomically():

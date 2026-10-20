@@ -35,7 +35,8 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
 | `retain/store.py` | `RetainStore` protocol, `InMemoryRetainStore` reference | Complete |
 | `retain/extraction.py` | `chunk_documents`; `GeminiFactExtractor` | Extractor stub |
 | `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Resolver stub |
-| `retain/linking.py` | `causal_links`; `GeminiEmbedder`, `StoreLinker`, `GeminiSupersedeClassifier` | Stubs except causal |
+| `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Stub |
+| `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Stubs except causal |
 | `retain/observations.py` | `GeminiObservationBuilder` | Stub |
 | `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Stub with SQL plan per method |
 | `async_worker.py` | `retainer=` replaces the `agent_entities` upsert; passes `project_id` and message time | Complete |
@@ -57,6 +58,8 @@ Each stub's docstring is its specification. Fill one without touching the others
   sets the old fact's `valid_to` to the new fact's `valid_from`, never earlier than the old start.
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
+- **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
+  same user and visible from the new fact; a fact never supersedes a broader one.
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
