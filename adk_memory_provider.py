@@ -17,13 +17,14 @@ class ADKTieredMemoryProvider:
         genai_client: Any,
         trigger_limit: int = 10,
         window_size: int = 4,
+        retainer=None,
     ):
         self.conn_factory = db_conn_factory
         self.valkey_client = valkey_client
         self.genai_client = genai_client
         self.trigger_limit = trigger_limit
         self.window_size = window_size
-        self.async_worker = AsyncMemoryWorker(db_conn_factory, genai_client)
+        self.async_worker = AsyncMemoryWorker(db_conn_factory, genai_client, retainer)
 
     def get_context_for_turn(
         self,
@@ -111,4 +112,5 @@ Memory persistence is managed automatically by the platform behind the scenes. D
             user_msg=user_msg,
             ai_msg=ai_msg,
             prev_session_id=prev_session_id,
+            project_id=project_id,
         )

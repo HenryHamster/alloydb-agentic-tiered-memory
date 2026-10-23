@@ -25,6 +25,13 @@ def reset_memory_system():
                 cur.execute("TRUNCATE TABLE episodic_memory_embeddings CASCADE;")
                 cur.execute("TRUNCATE TABLE episodic_memory_collections CASCADE;")
                 cur.execute("TRUNCATE TABLE user_permissions CASCADE;")
+                # Retain tables (sql/004_retain_schema.sql), if applied.
+                cur.execute("SELECT to_regclass('memory_facts') IS NOT NULL;")
+                if cur.fetchone()[0]:
+                    cur.execute(
+                        "TRUNCATE TABLE observations, entity_relations, memory_links, "
+                        "memory_entities, memory_facts, entities, documents CASCADE;"
+                    )
                 print("✔ Truncated AlloyDB long-term memory tables.")
         conn.close()
     except Exception as e:

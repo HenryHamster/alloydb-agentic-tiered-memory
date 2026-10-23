@@ -119,7 +119,9 @@ def run_agent_turn(
     )
 
     # 6. WRITE PATH: Enqueue off-thread background entity extraction (single LLM call)
-    async_worker.enqueue_extraction(user_id, session_id, user_query, ai_response, prev_session_id)
+    async_worker.enqueue_extraction(
+        user_id, session_id, user_query, ai_response, prev_session_id, project_id
+    )
 
     latency = time.time() - start_time
     return ai_response, system_prompt, latency

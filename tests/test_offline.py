@@ -62,6 +62,8 @@ def test_library_modules_import_without_cloud_connections():
         "recall",
         "recall_tools",
         "turn_context",
+        "retain",
+        "shared.chunking",
     ]:
         importlib.import_module(module)
 

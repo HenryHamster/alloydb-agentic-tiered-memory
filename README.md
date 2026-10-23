@@ -48,6 +48,8 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `valkey_buffer.py` | Sliding window of recent turns with summarize-before-trim |
 | `turn_context.py` | Per-turn context: the sliding window plus Recall under one token budget |
 | `async_worker.py` | Background fact extraction and upserts |
+| `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
+| `shared/chunking.py` | Lossless length-bounded text chunking |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall.py`, `recall_tools.py` | Recall read path and its agent tools; open dependencies in [docs/RECALL_NOTES.md](docs/RECALL_NOTES.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
@@ -55,7 +57,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |
 | `test_memory_system.py`, `test_adk_agent.py` | Original cloud demonstrations |
 | `cleanup_memory_system.py` | Clears the demo memory tables and selected Valkey database |
-| `sql/` | Schema, model registration, and auto-embedding setup |
+| `sql/` | Schema, model registration, auto-embedding setup, and Retain tables |
 | `docs/` | Cloud setup, source provenance, and validation limits |
 | `tests/` | Offline checks of repository integration and memory behavior |
 
