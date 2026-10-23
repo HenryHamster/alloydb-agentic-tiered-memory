@@ -108,7 +108,7 @@ def run_agent_turn(
     ai_response = str(response.text)
 
     # 5. Cache turn in short-term Valkey buffer (with Summarize-Before-Trim check)
-    append_session_turn_with_rolling_summary(
+    round_id = append_session_turn_with_rolling_summary(
         valkey_client=valkey_client,
         llm_client=genai_client,
         session_id=session_id,
@@ -120,7 +120,7 @@ def run_agent_turn(
 
     # 6. WRITE PATH: Enqueue off-thread background entity extraction (single LLM call)
     async_worker.enqueue_extraction(
-        user_id, session_id, user_query, ai_response, prev_session_id, project_id
+        user_id, session_id, user_query, ai_response, prev_session_id, project_id, round_id
     )
 
     latency = time.time() - start_time

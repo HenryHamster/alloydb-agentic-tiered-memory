@@ -11,6 +11,9 @@ Ruff checks imports, undefined names, and consistent formatting.
 `tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
 with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
 atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
+`tests/test_recall.py` and `tests/test_session_window.py` check Recall over Retain's in-memory
+tables: scope isolation, supersession, time windows, entity and graph reach, abstention, token
+budgets, the agent tools, and the sliding window feeding Recall. Its AlloyDB store is a stub.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.
@@ -33,8 +36,9 @@ Run them after provisioning and SQL initialization to validate your deployment.
 - The entity key is `(user_id, entity_name)`. The same entity name across a user's
   projects can overwrite an earlier row. Project/session metadata does not provide
   versioned memory history or database-level tenant isolation.
-- Hybrid search builds SQL filter expressions from IDs. The sample is unsuitable
-  as an isolation boundary for arbitrary untrusted IDs. Permissions also use
+- Hybrid search builds SQL filter expressions from IDs. IDs are now quoted with
+  `mogrify` rather than formatted into the text, but the filter is still not a
+  database-level isolation boundary. Permissions also use
   regex matches and a non-atomic get/delete for single-use grants; no production
   authorization guarantee is established by the offline checks.
 - Several errors are logged and replaced with fallbacks, which can hide a failed

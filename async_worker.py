@@ -47,10 +47,22 @@ class AsyncMemoryWorker:
         ai_msg: str,
         prev_session_id: Optional[str] = None,
         project_id: Optional[str] = None,
+        episode_id: Optional[str] = None,
     ):
+        """Queues one round. Pass the sliding window's round_id as `episode_id` so Recall can
+        skip memories from rounds the window still shows verbatim."""
         sent_at = datetime.now(timezone.utc)  # message time, not processing time
         self.work_queue.put(
-            (user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at)
+            (
+                user_id,
+                session_id,
+                user_msg,
+                ai_msg,
+                prev_session_id,
+                project_id,
+                sent_at,
+                episode_id,
+            )
         )
 
     def _run_worker(self):
@@ -58,11 +70,22 @@ class AsyncMemoryWorker:
             item = self.work_queue.get()
             if item is None:
                 break
-            user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at = item
+            (
+                user_id,
+                session_id,
+                user_msg,
+                ai_msg,
+                prev_session_id,
+                project_id,
+                sent_at,
+                episode_id,
+            ) = item
             try:
                 if self.retainer is not None:
                     scope = Scope(user_id=user_id, project_id=project_id, session_id=session_id)
-                    self.retainer.retain_turn(scope, user_msg, ai_msg, timestamp=sent_at)
+                    self.retainer.retain_turn(
+                        scope, user_msg, ai_msg, timestamp=sent_at, episode_id=episode_id
+                    )
                 else:
                     self._extract_and_upsert(user_id, session_id, user_msg, ai_msg, prev_session_id)
             except Exception as e:

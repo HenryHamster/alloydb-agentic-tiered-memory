@@ -99,11 +99,14 @@ def retrieve_hybrid_entities(
 
     retrieved_entities: Dict[str, Any] = {}
 
-    filter_cond = (
-        f"user_id = '{user_id}' AND (project_id = '{project_id}' OR scope = 'global')"
-        if project_id
-        else f"user_id = '{user_id}'"
-    )
+    # ai.hybrid_search() runs filter_condition as SQL text, so quote IDs as literals.
+    with conn.cursor() as cur:
+        if project_id:
+            filter_cond = cur.mogrify(
+                "user_id = %s AND (project_id = %s OR scope = 'global')", (user_id, project_id)
+            ).decode()
+        else:
+            filter_cond = cur.mogrify("user_id = %s", (user_id,)).decode()
 
     query_sql = """
         SELECT e.entity_name, e.summary, e.project_id, e.scope, e.updated_at
