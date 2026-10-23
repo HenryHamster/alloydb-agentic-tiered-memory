@@ -76,6 +76,8 @@ class Relation(StrEnum):
     SUPERSEDES = "supersedes"  # new -> old
     CAUSED_BY = "caused_by"  # effect -> cause
     EVIDENCED_BY = "evidenced_by"  # claim -> evidence
+    CONSOLIDATED_INTO = "consolidated_into"  # original -> merged fact (written by Reflect)
+    CONFLICTS_WITH = "conflicts_with"  # lower fact_id -> higher; symmetric (written by Reflect)
 
     @property
     def link_type(self) -> LinkType:
@@ -88,6 +90,8 @@ _LINK_TYPES = {
     Relation.SUPERSEDES: LinkType.TEMPORAL,
     Relation.CAUSED_BY: LinkType.CAUSAL,
     Relation.EVIDENCED_BY: LinkType.CAUSAL,
+    Relation.CONSOLIDATED_INTO: LinkType.SEMANTIC,
+    Relation.CONFLICTS_WITH: LinkType.SEMANTIC,
 }
 
 

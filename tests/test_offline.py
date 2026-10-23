@@ -60,6 +60,7 @@ def test_library_modules_import_without_cloud_connections():
         "adk_memory_tools",
         "adk_guardrails",
         "retain",
+        "reflect",
         "shared.chunking",
     ]:
         importlib.import_module(module)

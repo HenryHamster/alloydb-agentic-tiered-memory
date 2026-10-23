@@ -9,6 +9,8 @@ database user described in the setup guide.
 3. Run `003_auto_embeddings.sql` by itself, outside a transaction shared with
    any other statement. `ai.initialize_embeddings` manages its own transaction.
 4. Run `004_retain_schema.sql` for the Retain tables. It is additive and needs `pg_trgm`.
+5. Run `005_reflect_schema.sql` for Reflect: tier/access columns on `memory_facts`,
+   `memory_conflict_reviews` and `macro_memories`. It is additive.
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine
