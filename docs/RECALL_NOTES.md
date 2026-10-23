@@ -8,18 +8,7 @@ marked `TODO(recall)`, in the same style as Retain's.
 
 ## Pipeline
 
-```
-Recaller.recall(scope, query)                 trusted Scope(user, project, session)
-   1 analyze_query    time phrase -> window (explicit, then rules, then LLM); <= 4 sub-queries
-   2 embed            Retain's embedder; a failure skips the vector channel (never a zero vector)
-   3 search           vector, keyword, query-entity, temporal channels in one store call
-   4 graph_expand     one hop over memory_links and shared entities from the fused top 10
-   5 fuse_rrf         reciprocal rank fusion; drop memories from exclude_episode_ids
-   6 rerank           cross-encode the fused top 150 against every sub-query, keep 30
-   7 apply_boosts     recency / window fit / evidence, capped at +/-0.25 of relevance
-   8 filter_and_abstain  relevance floor (reranked only), superseded memories
-   9 pack             best-first into max_tokens as "[id] (type | date | speaker | claim) text"
-```
+The stage overview lives in the `recall/recall.py` module docstring.
 
 Callers: `turn_context.build_turn_context` (every turn, `depth=low`, with the sliding window's
 round IDs excluded) and the agent tool `search_memory` (`depth=mid`, 4,096 tokens).
@@ -28,7 +17,7 @@ round IDs excluded) and the agent tool `search_memory` (`depth=mid`, 4,096 token
 
 | File | Contents | Status |
 | --- | --- | --- |
-| `recall/recall.py` | `Recaller` (the stage overview above), `build_recaller` (production wiring) | Complete |
+| `recall/recall.py` | `Recaller` (stage overview in the module docstring), `build_recaller` (production wiring) | Complete |
 | `recall/config.py` | `RecallDepth`, `MemoryType`, `RecallConfig` (every tuning constant) | Complete |
 | `recall/models.py` | `TimeWindow`, `Memory` (one view over facts, observations, episodes), results, trace | Complete |
 | `recall/query.py` | `parse_time_phrase`, `parse_time_range`, `analyze_query` | Complete |

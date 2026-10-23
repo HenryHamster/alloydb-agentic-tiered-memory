@@ -80,6 +80,7 @@ class Recaller:
         exclude_episode_ids are rounds the caller already shows verbatim (the Valkey sliding
         window); memories drawn from them are dropped before reranking.
         """
+        # Normalise inputs and fix the reference time; depth sets the candidate pool size.
         depth = RecallDepth.parse(depth)
         types = parse_types(types)
         if max_tokens <= 0:
@@ -89,9 +90,11 @@ class Recaller:
         pool = config.pool_by_depth[depth]
         tracer = Tracer()
 
+        # Blank query: nothing to search for, so return an empty (abstained) result.
         if not query.strip():
             return RecallResult.empty(QueryPlan([query], temporal_window), max_tokens, [])
 
+        # Resolve "last week"-style phrases to a date window and split compound questions.
         with tracer.stage("analyze_query") as stage:
             plan = analyze_query(
                 query, as_of, temporal_window, decompose, self.generate, config.max_sub_queries
@@ -99,6 +102,7 @@ class Recaller:
             stage.count = len(plan.sub_queries)
             stage.detail = {"window_source": plan.window_source, "llm_used": plan.llm_used}
 
+        # Embed each sub-query for the vector channel.
         with tracer.stage("embed") as stage:
             try:
                 embeddings = self.embedder(plan.sub_queries)
@@ -109,6 +113,7 @@ class Recaller:
                 embeddings = None
                 stage.detail = {"error": str(e)}
 
+        # One store call returns a ranked list per channel (vector, keyword, entity, temporal).
         with tracer.stage("search") as stage:
             lists = self.store.search(
                 scope,
@@ -123,6 +128,7 @@ class Recaller:
             stage.count = sum(len(results) for results in lists.values())
             stage.detail = {"lists": {name: len(results) for name, results in lists.items()}}
 
+        # Pull in linked memories one hop from the current top hits, as an extra ranked list.
         with tracer.stage("graph_expand") as stage:
             seeds = [s.memory.id for s in fuse_rrf(lists, config.rrf_k)[: config.graph_seeds]]
             if seeds:
@@ -134,6 +140,8 @@ class Recaller:
                 stage.count = len(neighbors)
             stage.detail = {"seeds": len(seeds)}
 
+        # Merge all channel lists into one ranking, drop rounds already in the sliding window,
+        # and cap at the depth's pool size.
         with tracer.stage("fuse_rrf") as stage:
             fused = fuse_rrf(lists, config.rrf_k)
             if exclude_episode_ids:
@@ -144,6 +152,7 @@ class Recaller:
             fused = fused[:pool]
             stage.count = len(fused)
 
+        # Re-score the fused head with the cross-encoder; `reranked` is False without one.
         with tracer.stage("rerank") as stage:
             ranked, reranked = rerank(
                 plan.sub_queries, fused, self.reranker, config.rerank_pool, config.rerank_top
@@ -151,21 +160,25 @@ class Recaller:
             stage.count = len(ranked)
             stage.detail = {"reranked": reranked}
 
+        # Nudge scores for recency, fit to the date window and supporting evidence.
         with tracer.stage("apply_boosts") as stage:
             boosted = apply_boosts(ranked, as_of, plan.window, config)
             stage.count = len(boosted)
 
+        # Drop low-relevance and superseded memories; an empty result means abstain.
         with tracer.stage("filter_and_abstain") as stage:
             floor = config.score_floor if reranked else 0.0
             kept, dropped = filter_and_abstain(boosted, as_of, include_invalid, floor)
             stage.count = len(kept)
             stage.detail = {"score_floor": floor, **dropped}
 
+        # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
             items, context, used, truncated = pack(kept, as_of, max_tokens, self.count_tokens)
             stage.count = len(items)
             stage.detail = {"tokens_used": used, "truncated": truncated}
 
+        # Return the packed context plus the per-stage trace for debugging.
         return RecallResult(
             items=items,
             context=context,
