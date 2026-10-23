@@ -7,18 +7,19 @@ than MIN_RECALL_TOKENS, and skips memories drawn from rounds still in the window
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Optional
 
-from recall import RecallResult, TokenCounter, estimate_tokens, recall
-from recall_tools import RecallDeps
+from recall import Recaller, RecallResult
+from recall.config import RecallDepth
+from retain.models import Scope
 from valkey_buffer import SessionBuffer, SessionWindow
 
 logger = logging.getLogger(__name__)
 
 TURN_MAX_TOKENS = 4096
 MIN_RECALL_TOKENS = 512
-TURN_DEPTH = "low"
+TURN_DEPTH = RecallDepth.LOW
 
 
 @dataclass
@@ -52,18 +53,17 @@ class TurnContext:
 
 def build_turn_context(
     buffer: SessionBuffer,
-    deps: RecallDeps,
-    user_id: str,
-    project_id: Optional[str],
-    session_id: str,
+    recaller: Recaller,
+    scope: Scope,
     query: str,
     prev_session_id: Optional[str] = None,
     query_time: Optional[datetime] = None,
     max_tokens: int = TURN_MAX_TOKENS,
-    count_tokens: TokenCounter = estimate_tokens,
 ) -> TurnContext:
     """Reads the session window, then recalls long-term memory into the remaining budget."""
-    window = buffer.read(session_id)
+    if not scope.session_id:
+        raise ValueError("build_turn_context needs a session_id in scope")
+    window = buffer.read(scope.session_id)
     summary = window.summary
     if not summary and prev_session_id:
         # A fresh session starts from the previous session's summary.
@@ -71,23 +71,17 @@ def build_turn_context(
         if previous:
             summary = f"[From prior session {prev_session_id}]:\n{previous}"
 
+    count_tokens = recaller.count_tokens
     window_tokens = sum(count_tokens(text) for text in (summary, window.history()) if text)
     recall_budget = max(MIN_RECALL_TOKENS, max_tokens - window_tokens)
 
     try:
-        result: Optional[RecallResult] = recall(
-            user_id,
-            project_id,
-            session_id,
+        result: Optional[RecallResult] = recaller.recall(
+            scope,
             query,
-            query_time=query_time or datetime.now(timezone.utc),
+            query_time=query_time,
             max_tokens=recall_budget,
             depth=TURN_DEPTH,
-            store=deps.store,
-            embedder=deps.embedder,
-            reranker=deps.reranker,
-            generate=deps.generate,
-            count_tokens=count_tokens,
             exclude_episode_ids=window.round_ids,
         )
     except Exception:

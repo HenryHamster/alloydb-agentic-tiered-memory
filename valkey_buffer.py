@@ -10,7 +10,6 @@ If Valkey is unreachable, turns go to an in-process fallback with the same behav
 
 import json
 import logging
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import redis
 
-from recall import Generate, TokenCounter, estimate_tokens, make_genai_generate
+from shared.llm import GeminiGenerator, Generate, generate_with_retry
+from shared.tokens import TokenCounter, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -164,18 +164,6 @@ Old turns about to be trimmed:
 Updated Rolling Summary:"""
 
 
-def _generate_with_retry(generate: Generate, prompt: str, attempts: int = 4) -> str:
-    for attempt in range(attempts):
-        try:
-            return generate(prompt)
-        except Exception as e:
-            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < attempts - 1:
-                time.sleep(3 * (2**attempt))
-            else:
-                raise
-    raise AssertionError("unreachable")
-
-
 class SessionBuffer:
     """Valkey sliding window with summarize-before-trim. Sizes are in rounds (user + assistant)."""
 
@@ -201,8 +189,8 @@ class SessionBuffer:
     ) -> str:
         """Stores one round, compacts if the window is over the trigger, and returns its round_id.
 
-        PLACEHOLDER(RETAIN): Retain should store this round_id as the episode ID
-        (source_episode_id) so Recall can skip memories from rounds still in the window.
+        Pass the round_id to Retain as the episode_id (AsyncMemoryWorker.enqueue_extraction) so
+        Recall can skip memories drawn from rounds still in the window.
         """
         turns_key, _ = _keys(session_id)
         round_id = uuid.uuid4().hex
@@ -258,7 +246,7 @@ class SessionBuffer:
         prompt = _summary_prompt(lists.get(summary_key), pruned_text)
         VALKEY_COMPACTION_TOKENS += self.count_tokens(prompt)
 
-        summary = _generate_with_retry(self.generate, prompt).strip()
+        summary = generate_with_retry(self.generate, prompt).strip()
         lists.set(summary_key, summary)
         lists.drop_head(turns_key, len(pruned))
         logger.info("Updated rolling summary and trimmed the buffer for session %s", session_id)
@@ -277,7 +265,7 @@ def append_session_turn_with_rolling_summary(
     window_size: int = WINDOW_SIZE,
 ) -> str:
     """Appends a turn and summarizes old turns before trimming them. Returns the round_id."""
-    generate = make_genai_generate(llm_client, SUMMARY_MODEL)
+    generate = GeminiGenerator(llm_client, model=SUMMARY_MODEL)
     buffer = SessionBuffer(valkey_client, generate, trigger_limit, window_size)
     return buffer.append(session_id, user_msg, ai_msg)
 

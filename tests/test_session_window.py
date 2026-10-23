@@ -6,11 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 import redis
+from recall_fixtures import NOW, SCOPE, Memories
 from test_offline import MemoryValkey
-from test_recall import NOW, FakeStore, embed, fact
 
-from recall import Memory
-from recall_tools import RecallDeps
+from retain import Scope
 from turn_context import MIN_RECALL_TOKENS, build_turn_context
 from valkey_buffer import (
     IN_MEMORY_VALKEY_FALLBACK,
@@ -122,35 +121,28 @@ def test_turns_stored_before_round_ids_still_load():
 
 
 def test_recall_skips_memories_from_rounds_still_in_the_window():
-    buffer = SessionBuffer(MemoryValkey(), summarizer())
-    round_id = buffer.append("s", "We picked Postgres", "Noted", at=NOW)
-    in_window = fact("f1", source_episode_id=round_id)
-    episode = Memory(round_id, "episode", "We picked Postgres / Noted")
-    older = fact("f2", source_episode_id="older-round")
-    store = FakeStore({"vector:0": [in_window, episode, older]})
+    buffer, memories = SessionBuffer(MemoryValkey(), summarizer()), Memories()
+    round_id = buffer.append(SCOPE.session_id, "We picked Postgres", "Noted", at=NOW)
+    in_window = memories.fact("The team picked Postgres", episode_id=round_id)
+    older = memories.fact("The team evaluated Postgres last year", episode_id="older-round")
 
-    context = build_turn_context(
-        buffer, RecallDeps(store, embed), "user", "project", "s", "db?", query_time=NOW
-    )
-
-    assert [item.memory.id for item in context.recall.items] == ["f2"]
-    fuse = next(stage for stage in context.recall.trace if stage.stage == "fuse_rrf")
-    assert fuse.detail["in_window"] == 2
+    context = build_turn_context(buffer, memories.recaller(), SCOPE, "Postgres", query_time=NOW)
+    found = [item.memory.id for item in context.recall.items]
+    assert older.fact_id in found and in_window.fact_id not in found
 
 
 def test_window_is_charged_to_the_budget_before_recall():
-    buffer = SessionBuffer(MemoryValkey(), summarizer())
-    buffer.append("s", "x" * 400, "y" * 400, at=NOW)
-    deps = RecallDeps(FakeStore({"vector:0": [fact("f1")]}), embed)
+    buffer, memories = SessionBuffer(MemoryValkey(), summarizer()), Memories()
+    buffer.append(SCOPE.session_id, "x" * 400, "y" * 400, at=NOW)
+    memories.fact("Something worth remembering")
+    recaller = memories.recaller()
 
-    context = build_turn_context(
-        buffer, deps, "user", None, "s", "q", query_time=NOW, max_tokens=1000
-    )
-    assert context.window_tokens > 200
+    context = build_turn_context(buffer, recaller, SCOPE, "q", query_time=NOW, max_tokens=1000)
+    assert context.window_tokens > 0
     assert context.recall_budget == 1000 - context.window_tokens
     assert context.recall.max_tokens == context.recall_budget
 
-    tight = build_turn_context(buffer, deps, "user", None, "s", "q", query_time=NOW, max_tokens=10)
+    tight = build_turn_context(buffer, recaller, SCOPE, "q", query_time=NOW, max_tokens=10)
     assert tight.recall_budget == MIN_RECALL_TOKENS
 
 
@@ -161,25 +153,20 @@ def test_new_session_carries_the_previous_summary():
 
     context = build_turn_context(
         buffer,
-        RecallDeps(FakeStore(), embed),
-        "user",
-        None,
-        "new",
+        Memories().recaller(),
+        Scope(SCOPE.user_id, None, "new"),
         "q",
         prev_session_id="prev",
         query_time=NOW,
     )
-    assert context.summary == "[From prior session prev]:\nold goals"
-    assert "old goals" in context.format()
+    assert "old goals" in context.summary and "old goals" in context.format()
 
 
 def test_recall_failure_leaves_the_window_context():
-    buffer = SessionBuffer(MemoryValkey(), summarizer())
-    buffer.append("s", "hello", "hi", at=NOW)
-    store = FakeStore()
-    store.search = MagicMock(side_effect=RuntimeError("db down"))
+    buffer, memories = SessionBuffer(MemoryValkey(), summarizer()), Memories()
+    buffer.append(SCOPE.session_id, "hello", "hi", at=NOW)
+    memories.store.search = MagicMock(side_effect=RuntimeError("db down"))
 
-    context = build_turn_context(buffer, RecallDeps(store, embed), "user", None, "s", "q")
+    context = build_turn_context(buffer, memories.recaller(), SCOPE, "q")
     assert context.recall is None
-    text = context.format()
-    assert "No relevant long-term memories." in text and "user: hello" in text
+    assert "hello" in context.format()

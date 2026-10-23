@@ -59,9 +59,9 @@ def test_library_modules_import_without_cloud_connections():
         "adk_memory_provider",
         "adk_memory_tools",
         "adk_guardrails",
-        "recall",
-        "recall_tools",
         "turn_context",
+        "recall",
+        "recall.alloydb_store",
         "retain",
         "shared.chunking",
     ]:

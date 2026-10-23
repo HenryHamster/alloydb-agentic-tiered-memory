@@ -49,9 +49,9 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `turn_context.py` | Per-turn context: the sliding window plus Recall under one token budget |
 | `async_worker.py` | Background fact extraction and upserts |
 | `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
-| `shared/chunking.py` | Lossless length-bounded text chunking |
+| `shared/` | Chunking, Gemini text generation, token estimates, vector math |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
-| `recall.py`, `recall_tools.py` | Recall read path and its agent tools; open dependencies in [docs/RECALL_NOTES.md](docs/RECALL_NOTES.md) |
+| `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |

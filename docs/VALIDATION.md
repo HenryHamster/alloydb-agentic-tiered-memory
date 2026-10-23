@@ -11,6 +11,9 @@ Ruff checks imports, undefined names, and consistent formatting.
 `tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
 with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
 atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
+`tests/test_recall.py` and `tests/test_session_window.py` check Recall over Retain's in-memory
+tables: scope isolation, supersession, time windows, entity and graph reach, abstention, token
+budgets, the agent tools, and the sliding window feeding Recall. Its AlloyDB store is a stub.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.
