@@ -33,6 +33,7 @@ py-modules = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # bench/ is a repo-local harness, not an installed package
 addopts = "-q"
 
 [tool.ruff]

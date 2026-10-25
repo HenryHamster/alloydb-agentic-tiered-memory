@@ -52,6 +52,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `shared/` | Chunking, Gemini text generation, token estimates, vector math |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
+| `bench/` | LongMemEval harness for Recall; see [benchmarks](docs/BENCHMARKS.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |

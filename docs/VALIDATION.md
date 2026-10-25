@@ -13,7 +13,10 @@ with fake stages, idempotent replay, duplicates and supersession, classifier tar
 atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
 `tests/test_recall.py` and `tests/test_session_window.py` check Recall over Retain's in-memory
 tables: scope isolation, supersession, time windows, entity and graph reach, abstention, token
-budgets, the agent tools, and the sliding window feeding Recall. Its AlloyDB store is a stub.
+budgets, the agent tools, and the sliding window feeding Recall. `tests/test_recall_alloydb.py`
+checks the AlloyDB store against a scripted connection (bound parameters, row decoding,
+reconnects); it does not run SQL. `tests/test_bench.py` runs the LongMemEval harness on a tiny
+dataset in LongMemEval's format.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.

@@ -3,8 +3,10 @@
 Recall is the read path. It finds stored memories that the caller may read, ranks them, and
 returns them dated, typed and fitted to a token budget. It reads Retain's tables
 (`sql/004_retain_schema.sql`) and reuses Retain's records, scope and read rule. The pipeline,
-ranking and an in-memory store are complete and tested offline. The AlloyDB store is a stub
-marked `TODO(recall)`, in the same style as Retain's.
+ranking, in-memory store and AlloyDB store are implemented. The AlloyDB store is checked
+offline (every statement variant parses as PostgreSQL, every parameter is bound, rows decode)
+but has not yet run against a live instance. `bench/` runs LongMemEval against Recall
+([benchmarks](BENCHMARKS.md)).
 
 ## Pipeline
 
@@ -24,8 +26,9 @@ round IDs excluded) and the agent tool `search_memory` (`depth=mid`, 4,096 token
 | `recall/ranking.py` | `fuse_rrf`, `rerank`, `apply_boosts`, `filter_and_abstain` | Complete |
 | `recall/packing.py` | `format_line`, `pack` | Complete |
 | `recall/store.py` | `RecallStore` protocol, `InMemoryRecallStore` over `InMemoryRetainStore` | Complete |
-| `recall/alloydb_store.py` | `AlloyDBRecallStore`, validity and episode SQL | Stub with SQL plan per method |
-| `recall/reranker.py` | `AlloyDBReranker` (`ai.rank()`) | Written, not run on a live instance |
+| `recall/alloydb_store.py` | `AlloyDBRecallStore`: one-statement multi-channel search, graph expansion, episodes, supporting facts | Implemented; not run on a live instance |
+| `recall/reranker.py` | `AlloyDBReranker` (`ai.rank()`), one reused connection | Written, not run on a live instance |
+| `bench/` | LongMemEval harness, benchmark embedders, QA judge, AlloyDB benchmark writer | Runs offline; Vertex and AlloyDB paths not run here |
 | `recall/tools.py` | `search_memory`, `get_episode`, `get_supporting`; ADK `FunctionTool`s | Complete |
 | `turn_context.py` | Sliding window plus Recall under one turn budget | Complete |
 | `shared/llm.py`, `shared/tokens.py` | Gemini text generation with 429 retry, token estimate | Complete |
@@ -60,7 +63,19 @@ round IDs excluded) and the agent tool `search_memory` (`depth=mid`, 4,096 token
 - **Graph expansion** follows `memory_links` in both directions by weight, then facts sharing an
   entity with a seed.
 - **Query entities** are matched by name or alias appearing in the query (`find_entities`-style
-  lookup), not by running Retain's `EntityResolver`, which would create entities on read.
+  lookup), not by running Retain's `EntityResolver`, which would create entities on read. In
+  AlloyDB the query's word n-grams (1-4 words, no stopword at either end) are compared with
+  `canonical_name`, `name` and `aliases`, plus `pg_trgm` similarity >= 0.6 on canonical names
+  for n-grams of 4+ characters (`min_entity_similarity`).
+- **Keyword search ORs the query's lexemes** (`plainto_tsquery` with `&` turned into `|`), ranked
+  by `ts_rank`. `websearch_to_tsquery` ANDs every word, so whole questions rarely matched.
+- **One search statement.** Each channel is a CTE that ranks facts, observations and episodes
+  together by one key (vector distance, `ts_rank`, or primary date), so a channel is one list
+  across types as in `InMemoryRecallStore`. Rows come back once each as JSON payloads.
+- **Filtered HNSW.** The store sets `hnsw.iterative_scan = relaxed_order` (pgvector >= 0.8) on
+  connect, so the per-user filter does not empty the vector channel; without it, a warning is
+  logged. Rank order is recomputed from the distance, so relaxed order does not leak through.
+- **Supporting facts** are returned even when superseded, matching `InMemoryRecallStore`.
 
 ## Open questions
 
@@ -79,10 +94,13 @@ For Reflect (`origin/reflect`, not merged here):
 
 ## Next
 
-1. Implement `AlloyDBRecallStore` from its SQL plans and run it against a live instance.
+1. Run `AlloyDBRecallStore` against a live instance (`python -m bench.longmemeval ...
+   --backend alloydb`) and check the plans use the HNSW, GIN and scope indexes (`EXPLAIN`).
 2. Verify `ai.rank()` (argument names, model ID, 1-based `index`; needs the Discovery Engine API).
-3. Calibrate `score_floor` on real `ai.rank()` scores; tune `recency_half_life_days`.
+3. Calibrate `score_floor` on real `ai.rank()` scores; tune `recency_half_life_days`. LongMemEval
+   runs with `--reranker alloydb` give the labelled sample.
 4. `GeminiEmbedder` is still Retain's stub, so production query embedding raises and Recall
-   falls back to keyword, entity and temporal search until it is filled.
+   falls back to keyword, entity and temporal search until it is filled. The benchmark uses
+   its own `bench.embedders.VertexEmbedder` (same model and dimensions) meanwhile.
 5. Replace `retrieve_hybrid_entities` in `adk_memory_provider.py` and `agent_orchestrator.py`
    with `build_turn_context(...)` and register `make_recall_tools(...)` on the agent.
