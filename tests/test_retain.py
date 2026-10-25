@@ -247,6 +247,13 @@ def test_replayed_episode_is_skipped_without_calling_the_model():
     assert again.skipped and extractor.calls == 1
 
 
+def test_reusing_episode_id_with_changed_source_is_rejected():
+    pipeline = retainer(ScriptedExtractor())
+    pipeline.retain_turn(SCOPE, "I use Python.", "Noted.", timestamp=T0, episode_id="source-1")
+    with pytest.raises(ValueError, match="Conflicting replay"):
+        pipeline.retain_turn(SCOPE, "I use Go.", "Noted.", timestamp=T0, episode_id="source-1")
+
+
 def test_duplicate_reinforces_and_supersede_closes_validity():
     store = InMemoryRetainStore()
     old = stored_fact("User prefers PostgreSQL.")
@@ -362,9 +369,12 @@ def test_worker_runs_retain_with_trusted_scope_and_message_time():
     assert kwargs["timestamp"].tzinfo is not None
 
 
-def test_production_wiring_builds_and_unfinished_stages_fail_loudly():
-    production = build_retainer(MagicMock(), MagicMock())
-    with pytest.raises(NotImplementedError):
-        production.extractor.extract([])
-    with pytest.raises(NotImplementedError):
-        production.store.write(WriteBatch(()))
+def test_production_wiring_uses_extraction_embedding_and_alloydb_store():
+    client = MagicMock()
+    client.models.embed_content.return_value.embeddings = [MagicMock(values=[0.25] * 768)]
+    production = build_retainer(MagicMock(), client)
+    assert production.extractor.extract([]) == []
+    assert len(production.embedder(["fact"])[0]) == 768
+    from retain.alloydb_store import AlloyDBRetainStore
+
+    assert isinstance(production.store, AlloyDBRetainStore)

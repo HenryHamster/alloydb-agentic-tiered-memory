@@ -99,6 +99,9 @@ class Retainer:
         episode_id = episode_id or _episode_id(scope, messages)
         documents = self._documents(scope, messages, episode_id, now)
         document_ids = [document.document_id for document in documents]
+        validate_documents = getattr(self.store, "validate_documents", None)
+        if validate_documents is not None:
+            validate_documents(documents)
         if self.store.retained_document_ids(document_ids) == set(document_ids):
             return RetainResult(episode_id, None)
 
@@ -266,7 +269,7 @@ def _apply_decisions(facts, decisions):
 
 
 def build_retainer(conn_factory, genai_client, *, config: RetainConfig = RetainConfig()):
-    """Production wiring: AlloyDB store with Gemini stages. Stages are skeletons for now."""
+    """Production wiring for AlloyDB storage and Gemini stages."""
     from retain.alloydb_store import AlloyDBRetainStore
     from retain.embeddings import GeminiEmbedder
     from retain.entities import FuzzyEntityResolver

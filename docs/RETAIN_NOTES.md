@@ -1,9 +1,9 @@
 # Retain: design and status
 
 Retain is the write path. For every conversation round it stores the original messages,
-extracts short dated facts, resolves entities and links facts to each other, so Recall and
-Reflect can search and reason over them. This change is a **skeleton**: the contracts, schema
-and pipeline wiring are complete and tested offline; model and database stages are stubs
+extracts facts, resolves entities and links facts to each other, so Recall and Reflect can
+search and reason over them. The Gemini extraction, embedding, and AlloyDB storage stages are
+implemented; entity resolution, linking, update classification, and observation building remain
 marked `TODO(retain)`.
 
 ## Pipeline
@@ -13,7 +13,7 @@ AsyncMemoryWorker (retainer=...)          one queued turn, trusted Scope(user, p
 └─ Retainer.retain_turn
    1 documents        store both messages; episode = one round; skip if already retained
    2 chunk_documents  700-char lossless spans (shared/chunking.py)
-   3 FactExtractor    8-15 word facts + evidence quote, who/what/when/where/why, entities,
+   3 FactExtractor    concise facts + evidence quote, who/what/when/where/why, entities,
                       relations, causal refs, proposed visibility
    4 EntityResolver   mentions -> canonical per-user entities (exact, alias, fuzzy)
    5 Embedder         768-dim text-embedding-005 vectors
@@ -33,15 +33,15 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
 | `retain/models.py` | Enums, records, `is_visible`, `resolve_visibility`, `stable_id` | Complete |
 | `retain/pipeline.py` | `Retainer`, decision handling, `build_retainer` (production wiring) | Complete |
 | `retain/store.py` | `RetainStore` protocol, `InMemoryRetainStore` reference | Complete |
-| `retain/extraction.py` | `chunk_documents`; `GeminiFactExtractor` | Extractor stub |
+| `retain/extraction.py` | `chunk_documents`; `GeminiFactExtractor` | Implemented |
 | `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Resolver stub |
-| `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Stub |
+| `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Implemented |
 | `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Stubs except causal |
 | `retain/observations.py` | `GeminiObservationBuilder` | Stub |
-| `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Stub with SQL plan per method |
+| `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Implemented |
 | `async_worker.py` | `retainer=` replaces the `agent_entities` upsert; passes `project_id` and message time | Complete |
 
-Each stub's docstring is its specification. Fill one without touching the others.
+Remaining stubs are specified by their docstrings.
 
 ## Decisions
 
@@ -85,8 +85,8 @@ Each stub's docstring is its specification. Fill one without touching the others
 
 ## Next
 
-Implement the stubs in this order: `AlloyDBRetainStore`, `GeminiEmbedder`, `GeminiFactExtractor`,
-`FuzzyEntityResolver`, `StoreLinker`, `GeminiSupersedeClassifier`, `GeminiObservationBuilder`.
+Implement the remaining stages in this order: `FuzzyEntityResolver`, `StoreLinker`,
+`GeminiSupersedeClassifier`, `GeminiObservationBuilder`.
 Then pass `build_retainer(get_db_connection, client)` to `AsyncMemoryWorker` in the demos.
 `hybrid_retriever.py` still reads `agent_entities`, so the codelab demos keep the legacy writer
 until Recall's store reads the Retain tables.

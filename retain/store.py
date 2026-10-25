@@ -93,6 +93,22 @@ class InMemoryRetainStore:
         with self._lock:
             return self.retained & set(document_ids)
 
+    def validate_documents(self, documents):
+        with self._lock:
+            for document in documents:
+                existing = self.documents.get(document.document_id)
+                if existing and (
+                    existing.episode_id != document.episode_id
+                    or existing.position != document.position
+                    or existing.scope != document.scope
+                    or existing.speaker != document.speaker
+                    or existing.text != document.text
+                    or existing.occurred_at != document.occurred_at
+                ):
+                    raise ValueError(
+                        f"Conflicting replay for source document {document.document_id}"
+                    )
+
     def find_entities(self, user_id, canonical_names):
         with self._lock:
             return [e for e in self.entities.values() if e.user_id == user_id]
