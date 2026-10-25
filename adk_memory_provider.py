@@ -97,7 +97,7 @@ Memory persistence is managed automatically by the platform behind the scenes. D
         prev_session_id: Optional[str] = None,
     ) -> None:
         """Updates Valkey sliding window and triggers background AlloyDB extraction."""
-        append_session_turn_with_rolling_summary(
+        round_id = append_session_turn_with_rolling_summary(
             valkey_client=self.valkey_client,
             llm_client=self.genai_client,
             session_id=session_id,
@@ -113,4 +113,5 @@ Memory persistence is managed automatically by the platform behind the scenes. D
             ai_msg=ai_msg,
             prev_session_id=prev_session_id,
             project_id=project_id,
+            episode_id=round_id,
         )
