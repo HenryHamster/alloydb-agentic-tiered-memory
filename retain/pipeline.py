@@ -193,8 +193,17 @@ class Retainer:
             new = by_id[decision.fact_id]
             for target_id in decision.target_ids:
                 old = stored.get(target_id)
-                if old is None or not old.is_current or not old.visible_to(new.scope):
+                if (
+                    old is None
+                    or not old.is_current
+                    or not old.visible_to(new.scope)
+                    or old.speaker != new.speaker
+                ):
                     raise ValueError(f"Invalid {decision.action} target {target_id}")
+                if is_broader(new.visibility, old.visibility):
+                    raise ValueError(
+                        f"{new.visibility} fact cannot use narrower {old.visibility} target"
+                    )
                 if decision.action == UpdateAction.SUPERSEDE and is_broader(
                     old.visibility, new.visibility
                 ):

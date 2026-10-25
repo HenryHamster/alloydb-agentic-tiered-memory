@@ -2,9 +2,9 @@
 
 Retain is the write path. For every conversation round it stores the original messages,
 extracts facts, resolves entities and links facts to each other, so Recall and Reflect can
-search and reason over them. The Gemini extraction, embedding, and AlloyDB storage stages are
-implemented; entity resolution, linking, update classification, and observation building remain
-marked `TODO(retain)`.
+search and reason over them. Gemini extraction, embedding, AlloyDB storage, entity resolution,
+linking, and update classification are implemented; observation building remains marked
+`TODO(retain)`.
 
 ## Pipeline
 
@@ -34,9 +34,9 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
 | `retain/pipeline.py` | `Retainer`, decision handling, `build_retainer` (production wiring) | Complete |
 | `retain/store.py` | `RetainStore` protocol, `InMemoryRetainStore` reference | Complete |
 | `retain/extraction.py` | `chunk_documents`; `GeminiFactExtractor` | Implemented |
-| `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Resolver stub |
+| `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Implemented |
 | `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Implemented |
-| `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Stubs except causal |
+| `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Implemented |
 | `retain/observations.py` | `GeminiObservationBuilder` | Stub |
 | `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Implemented |
 | `async_worker.py` | `retainer=` replaces the `agent_entities` upsert; passes `project_id` and message time | Complete |
@@ -85,8 +85,7 @@ Remaining stubs are specified by their docstrings.
 
 ## Next
 
-Implement the remaining stages in this order: `FuzzyEntityResolver`, `StoreLinker`,
-`GeminiSupersedeClassifier`, `GeminiObservationBuilder`.
+Implement the remaining stage: `GeminiObservationBuilder`.
 Then pass `build_retainer(get_db_connection, client)` to `AsyncMemoryWorker` in the demos.
 `hybrid_retriever.py` still reads `agent_entities`, so the codelab demos keep the legacy writer
 until Recall's store reads the Retain tables.

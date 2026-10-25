@@ -330,6 +330,31 @@ def test_classifier_targets_are_checked_before_writing(action, target, error):
     assert store.facts == {fact.fact_id: fact for fact in targets.values()}
 
 
+def test_global_duplicate_cannot_target_a_narrower_project_fact():
+    project_fact = stored_fact(
+        "Project rule uses Go.",
+        visibility=Visibility.PROJECT,
+        category=Category.PREFERENCE,
+    )
+    store = InMemoryRetainStore()
+    store.write(WriteBatch((), facts=(project_fact,)))
+    classifier = ScriptedClassifier(
+        lambda new: UpdateDecision(new.fact_id, UpdateAction.DUPLICATE, (project_fact.fact_id,))
+    )
+    extractor = ScriptedExtractor(
+        dict(
+            text="User prefers Go globally.",
+            evidence="Go",
+            category=Category.PREFERENCE,
+            visibility=Visibility.GLOBAL,
+        )
+    )
+
+    with pytest.raises(ValueError, match="global fact cannot use narrower project target"):
+        retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Go", "Ok.")
+    assert not store.documents
+
+
 def test_store_rejects_bad_batches_atomically():
     store = InMemoryRetainStore()
     fact = stored_fact("User prefers vim.")
