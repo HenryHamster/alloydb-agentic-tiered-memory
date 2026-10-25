@@ -3,6 +3,8 @@ import logging
 import queue
 import threading
 import time
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import wait as wait_futures
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -36,6 +38,10 @@ class AsyncMemoryWorker:
         self.retainer = retainer
         self.work_queue = queue.Queue()
         self.total_extraction_tokens = 0
+        self._lock = threading.Lock()
+        self._pending: set[Future] = set()
+        self._failures = []
+        self._closed = False
         self.worker_thread = threading.Thread(target=self._run_worker, daemon=True)
         self.worker_thread.start()
 
@@ -47,26 +53,88 @@ class AsyncMemoryWorker:
         ai_msg: str,
         prev_session_id: Optional[str] = None,
         project_id: Optional[str] = None,
-    ):
+    ) -> Future:
         sent_at = datetime.now(timezone.utc)  # message time, not processing time
+        future = Future()
+        future._completion_callback_done = threading.Event()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Memory worker is closed")
+            self._pending.add(future)
+            future.add_done_callback(self._completed)
         self.work_queue.put(
-            (user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at)
+            (user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at, future)
         )
+        return future
+
+    def wait(self, timeout: float | None = None) -> None:
+        """Wait for queued jobs and re-raise background failures."""
+        with self._lock:
+            pending = tuple(self._pending)
+        if pending:
+            deadline = None if timeout is None else time.monotonic() + timeout
+            _, unfinished = wait_futures(pending, timeout=timeout)
+            if unfinished:
+                raise TimeoutError("Memory worker jobs did not finish before timeout")
+            for future in pending:
+                remaining = None if deadline is None else max(0, deadline - time.monotonic())
+                if not future._completion_callback_done.wait(remaining):
+                    raise TimeoutError("Memory worker completion was not reported before timeout")
+        with self._lock:
+            if self._failures:
+                raise self._failures.pop(0)
+
+    def close(self, timeout: float | None = None) -> None:
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self.work_queue.put(None)
+        self.worker_thread.join(timeout)
+        if self.worker_thread.is_alive():
+            raise TimeoutError("Memory worker did not stop before timeout")
+        try:
+            self.wait(timeout=0)
+        finally:
+            store = getattr(self.retainer, "store", None)
+            close_store = getattr(store, "close", None)
+            if close_store is not None:
+                close_store()
+
+    def _completed(self, future: Future) -> None:
+        try:
+            error = future.exception()
+        except CancelledError as cancelled:
+            error = cancelled
+        with self._lock:
+            self._pending.discard(future)
+            if error is not None:
+                self._failures.append(error)
+        future._completion_callback_done.set()
 
     def _run_worker(self):
         while True:
             item = self.work_queue.get()
             if item is None:
+                self.work_queue.task_done()
                 break
-            user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at = item
+            user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at, future = (
+                item
+            )
+            if not future.set_running_or_notify_cancel():
+                self.work_queue.task_done()
+                continue
             try:
                 if self.retainer is not None:
                     scope = Scope(user_id=user_id, project_id=project_id, session_id=session_id)
-                    self.retainer.retain_turn(scope, user_msg, ai_msg, timestamp=sent_at)
+                    result = self.retainer.retain_turn(scope, user_msg, ai_msg, timestamp=sent_at)
                 else:
-                    self._extract_and_upsert(user_id, session_id, user_msg, ai_msg, prev_session_id)
-            except Exception as e:
-                logger.error("Background extraction failed: %s", e)
+                    result = self._extract_and_upsert(
+                        user_id, session_id, user_msg, ai_msg, prev_session_id
+                    )
+                future.set_result(result)
+            except Exception as error:
+                logger.exception("Background retention failed")
+                future.set_exception(error)
             finally:
                 self.work_queue.task_done()
 

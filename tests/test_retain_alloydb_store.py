@@ -12,6 +12,7 @@ from retain.models import (
     FactType,
     MemoryFact,
     MemoryLink,
+    Observation,
     Relation,
     Scope,
     Speaker,
@@ -476,3 +477,171 @@ def test_read_methods_map_rows_and_apply_visibility_filters():
     assert len(scoped_queries) == 3
     assert all("f.user_id = %(user_id)s" in sql for sql in scoped_queries)
     assert all("f.visibility = 'global'" in sql for sql in scoped_queries)
+
+
+def test_observation_reads_map_scoped_facts_and_existing_observations():
+    entity_id = stable_id("observation-entity")
+    fact = make_fact(entity_ids=(entity_id,))
+    observation = Observation(
+        observation_id=stable_id("observation"),
+        scope=SCOPE,
+        visibility=Visibility.PROJECT,
+        text="User uses Python for project work.",
+        fact_ids=(fact.fact_id,),
+        valid_from=AT,
+        entity_id=entity_id,
+        embedding=(0.5,) * 768,
+    )
+    observation_row = {
+        "observation_id": observation.observation_id,
+        "user_id": SCOPE.user_id,
+        "project_id": SCOPE.project_id,
+        "session_id": SCOPE.session_id,
+        "visibility": "project",
+        "entity_id": entity_id,
+        "text": observation.text,
+        "fact_ids": [fact.fact_id],
+        "valid_from": AT,
+        "valid_to": None,
+        "embedding": "[" + ",".join(map(str, observation.embedding)) + "]",
+    }
+
+    def respond(sql, _params):
+        if "FROM memory_facts f JOIN memory_entities me" in sql:
+            return (None, [database_row(fact)], 1)
+        if "FROM observations o" in sql:
+            return (None, [observation_row], 1)
+        return (None, [], 0)
+
+    store, conn = store_for(respond)
+    assert store.facts_for_observations(SCOPE) == [fact]
+    assert store.observations_for(SCOPE) == [observation]
+    queries = [sql for sql, _ in conn.calls]
+    assert "f.user_id = %(user_id)s" in queries[0]
+    assert "f.visibility = 'global'" in queries[0]
+    assert "o.user_id = %(user_id)s" in queries[1]
+    assert "o.visibility = 'project' AND o.project_id = %(project_id)s" in queries[1]
+
+
+def test_observation_version_close_and_insert_roll_back_as_one_transaction():
+    old = Observation(
+        observation_id=stable_id("observation-version-old"),
+        scope=SCOPE,
+        visibility=Visibility.PROJECT,
+        text="The project uses the original settings.",
+        fact_ids=(),
+        valid_from=AT,
+        embedding=(0.1,) * 768,
+    )
+    closed = Observation(
+        observation_id=old.observation_id,
+        scope=old.scope,
+        visibility=old.visibility,
+        text=old.text,
+        fact_ids=old.fact_ids,
+        valid_from=old.valid_from,
+        valid_to=AT + timedelta(days=1),
+        embedding=old.embedding,
+    )
+    new = Observation(
+        observation_id=stable_id("observation-version-new"),
+        scope=SCOPE,
+        visibility=Visibility.PROJECT,
+        text="The project uses revised settings.",
+        fact_ids=(),
+        valid_from=AT + timedelta(days=1),
+        embedding=(0.2,) * 768,
+    )
+    row = {
+        "observation_id": old.observation_id,
+        "user_id": SCOPE.user_id,
+        "project_id": SCOPE.project_id,
+        "session_id": SCOPE.session_id,
+        "visibility": old.visibility.value,
+        "entity_id": None,
+        "text": old.text,
+        "fact_ids": [],
+        "valid_from": old.valid_from,
+        "valid_to": None,
+        "embedding": "[" + ",".join(map(str, old.embedding)) + "]",
+    }
+
+    def respond(sql, _params):
+        if "WHERE observation_id = %s::uuid FOR UPDATE" in sql:
+            return (row, [], 1)
+        if "AND valid_to IS NULL FOR UPDATE" in sql:
+            return (None, [], 0)
+        if sql.startswith("UPDATE observations SET valid_to"):
+            return (None, [], 1)
+        if sql.startswith("INSERT INTO observations"):
+            raise RuntimeError("simulated new-version insert failure")
+        return (None, [], 1)
+
+    store, connection = store_for(respond)
+    with pytest.raises(RuntimeError, match="new-version insert failure"):
+        store.write_observations((new, closed))
+
+    statements = [sql for sql, _ in connection.calls]
+    assert any(sql.startswith("UPDATE observations SET valid_to") for sql in statements)
+    assert any(sql.startswith("INSERT INTO observations") for sql in statements)
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_stale_observation_refresh_cannot_create_a_second_current_version():
+    old = Observation(
+        observation_id=stable_id("observation-stale-old"),
+        scope=SCOPE,
+        visibility=Visibility.PROJECT,
+        text="Original project settings.",
+        fact_ids=(),
+        valid_from=AT,
+        valid_to=AT + timedelta(days=1),
+        embedding=(0.1,) * 768,
+    )
+    stale_close = Observation(
+        observation_id=old.observation_id,
+        scope=old.scope,
+        visibility=old.visibility,
+        text=old.text,
+        fact_ids=old.fact_ids,
+        valid_from=old.valid_from,
+        valid_to=AT + timedelta(days=2),
+        embedding=old.embedding,
+    )
+    winner_id = stable_id("observation-stale-winner")
+
+    def respond(sql, _params):
+        if "WHERE observation_id = %s::uuid FOR UPDATE" in sql:
+            row = {
+                "observation_id": old.observation_id,
+                "user_id": SCOPE.user_id,
+                "project_id": SCOPE.project_id,
+                "session_id": SCOPE.session_id,
+                "visibility": old.visibility.value,
+                "entity_id": None,
+                "text": old.text,
+                "fact_ids": [],
+                "valid_from": old.valid_from,
+                "valid_to": old.valid_to,
+                "embedding": "[" + ",".join(map(str, old.embedding)) + "]",
+            }
+            return (row, [], 1)
+        if "AND valid_to IS NULL FOR UPDATE" in sql:
+            return (None, [{"observation_id": winner_id}], 1)
+        return (None, [], 1)
+
+    store, connection = store_for(respond)
+    stale_new = Observation(
+        observation_id=stable_id("observation-stale-loser"),
+        scope=SCOPE,
+        visibility=Visibility.PROJECT,
+        text="Stale project settings.",
+        fact_ids=(),
+        valid_from=AT + timedelta(days=2),
+        embedding=(0.2,) * 768,
+    )
+    with pytest.raises(ValueError, match="another current version"):
+        store.write_observations((stale_new, stale_close))
+    assert connection.commits == 0
+    assert connection.rollbacks == 1

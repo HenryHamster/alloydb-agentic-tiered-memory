@@ -139,6 +139,29 @@ class InMemoryRetainStore:
         hits = [fact for fact in self._readable(reader) if wanted & set(fact.entity_ids)]
         return sorted(hits, key=lambda fact: fact.recorded_at, reverse=True)[:limit]
 
+    def facts_for_observations(self, reader):
+        return self._readable(reader)
+
+    def observations_for(self, reader):
+        with self._lock:
+            observations = list(self.observations.values())
+        return [
+            observation
+            for observation in observations
+            if observation.scope.user_id == reader.user_id
+            and (
+                observation.visibility.value == "global"
+                or (
+                    observation.visibility.value == "project"
+                    and observation.scope.project_id == reader.project_id
+                )
+                or (
+                    observation.visibility.value == "session"
+                    and observation.scope.session_id == reader.session_id
+                )
+            )
+        ]
+
     def write(self, batch):
         with self._lock:
             facts = dict(self.facts)
@@ -182,7 +205,22 @@ class InMemoryRetainStore:
 
     def write_observations(self, observations):
         with self._lock:
-            self.observations |= {o.observation_id: o for o in observations}
+            updated = dict(self.observations)
+            ordered = sorted(observations, key=lambda observation: observation.valid_to is None)
+            for observation in ordered:
+                previous = updated.get(observation.observation_id)
+                if observation.valid_to is not None:
+                    if previous is None or not _same_observation(previous, observation):
+                        raise ValueError("Cannot close a missing or changed observation version")
+                    if previous.valid_to is None:
+                        updated[observation.observation_id] = replace(
+                            previous, valid_to=observation.valid_to
+                        )
+                elif previous is None:
+                    updated[observation.observation_id] = observation
+                elif not _same_observation(previous, observation):
+                    raise ValueError(f"Conflicting observation ID {observation.observation_id}")
+            self.observations = updated
 
     def purge_expired_documents(self, now):
         with self._lock:
@@ -204,3 +242,16 @@ class InMemoryRetainStore:
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     norm = math.sqrt(sum(x * x for x in left) * sum(y * y for y in right))
     return sum(x * y for x, y in zip(left, right, strict=True)) / norm if norm else 0.0
+
+
+def _same_observation(left, right):
+    return (
+        left.observation_id == right.observation_id
+        and left.scope == right.scope
+        and left.visibility == right.visibility
+        and left.text == right.text
+        and left.fact_ids == right.fact_ids
+        and left.valid_from == right.valid_from
+        and left.entity_id == right.entity_id
+        and left.embedding == right.embedding
+    )

@@ -384,14 +384,26 @@ def test_store_reads_respect_user_and_visibility():
 def test_worker_runs_retain_with_trusted_scope_and_message_time():
     pipeline = MagicMock()
     worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=pipeline)
-    worker.enqueue_extraction(
+    job = worker.enqueue_extraction(
         "user_dev_42", "sess_2026_01", "hi", "hello", project_id="CloudRetail"
     )
-    worker.work_queue.put(None)
-    worker.worker_thread.join(timeout=5)
+    job.result(timeout=5)
+    worker.close(timeout=5)
     (scope, user_msg, ai_msg), kwargs = pipeline.retain_turn.call_args
     assert scope == SCOPE and (user_msg, ai_msg) == ("hi", "hello")
     assert kwargs["timestamp"].tzinfo is not None
+
+
+def test_worker_wait_surfaces_background_retain_failure():
+    pipeline = MagicMock()
+    pipeline.retain_turn.side_effect = RuntimeError("database commit failed")
+    worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=pipeline)
+    job = worker.enqueue_extraction("user_dev_42", "session", "hi", "hello")
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        job.result(timeout=5)
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        worker.close(timeout=5)
+    assert not worker.worker_thread.is_alive()
 
 
 def test_production_wiring_uses_extraction_embedding_and_alloydb_store():
@@ -403,3 +415,15 @@ def test_production_wiring_uses_extraction_embedding_and_alloydb_store():
     from retain.alloydb_store import AlloyDBRetainStore
 
     assert isinstance(production.store, AlloyDBRetainStore)
+
+
+def test_production_wiring_can_use_regional_embedding_client():
+    generation = MagicMock()
+    embedding = MagicMock()
+    embedding.models.embed_content.return_value.embeddings = [MagicMock(values=[0.25] * 768)]
+
+    production = build_retainer(MagicMock(), generation, embedding_client=embedding)
+
+    assert len(production.embedder(["fact"])[0]) == 768
+    embedding.models.embed_content.assert_called_once()
+    generation.models.embed_content.assert_not_called()

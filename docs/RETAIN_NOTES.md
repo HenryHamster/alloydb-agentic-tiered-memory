@@ -3,8 +3,7 @@
 Retain is the write path. For every conversation round it stores the original messages,
 extracts facts, resolves entities and links facts to each other, so Recall and Reflect can
 search and reason over them. Gemini extraction, embedding, AlloyDB storage, entity resolution,
-linking, and update classification are implemented; observation building remains marked
-`TODO(retain)`.
+linking, update classification, and observation building are implemented.
 
 ## Pipeline
 
@@ -37,11 +36,9 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
 | `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Implemented |
 | `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Implemented |
 | `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Implemented |
-| `retain/observations.py` | `GeminiObservationBuilder` | Stub |
+| `retain/observations.py` | `GeminiObservationBuilder` | Implemented; explicit consolidation pass |
 | `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Implemented |
 | `async_worker.py` | `retainer=` replaces the `agent_entities` upsert; passes `project_id` and message time | Complete |
-
-Remaining stubs are specified by their docstrings.
 
 ## Decisions
 
@@ -83,9 +80,10 @@ Remaining stubs are specified by their docstrings.
 5. Values: `claim_type` asserted/proposed/hypothetical/rejected; `fact_type` world/experience.
 6. Weight: semantic = cosine, temporal = time proximity (1 for supersedes), causal = 1.
 
-## Next
+## Validation and integration
 
-Implement the remaining stage: `GeminiObservationBuilder`.
-Then pass `build_retainer(get_db_connection, client)` to `AsyncMemoryWorker` in the demos.
-`hybrid_retriever.py` still reads `agent_entities`, so the codelab demos keep the legacy writer
-until Recall's store reads the Retain tables.
+See [Retain cloud test handoff](RETAIN_HANDOFF.md) for configuration, schema setup, the live
+smoke command, and read-only inspection queries. The codelab continues to use its legacy
+`agent_entities` writer and reader unless a `build_retainer(...)` instance is explicitly injected
+into the worker. The legacy reader cannot retrieve `memory_facts` or `observations`; Recall still
+needs its AlloyDB adapter for the Retain schema before Retain → Recall → Reflect can be verified.

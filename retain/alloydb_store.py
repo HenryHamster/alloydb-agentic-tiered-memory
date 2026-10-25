@@ -13,6 +13,7 @@ from retain.models import (
     EntityType,
     FactType,
     MemoryFact,
+    Observation,
     Scope,
     Speaker,
     Visibility,
@@ -168,6 +169,34 @@ class AlloyDBRetainStore:
             cur.execute(query, params)
             return [_fact(row) for row in cur.fetchall()]
 
+    def facts_for_observations(self, reader):
+        query = f"""
+            SELECT {_FACT_COLUMNS}
+            FROM memory_facts f JOIN memory_entities me USING (fact_id)
+            WHERE {VISIBLE_SQL}
+            GROUP BY f.fact_id
+            ORDER BY f.recorded_at, f.fact_id
+        """
+        with self._transaction() as cur:
+            cur.execute(query, _reader_params(reader))
+            return [_fact(row) for row in cur.fetchall()]
+
+    def observations_for(self, reader):
+        params = _reader_params(reader)
+        query = """
+            SELECT observation_id::text, user_id, project_id, session_id, visibility,
+                   entity_id::text, text, fact_ids, valid_from, valid_to, embedding::text
+            FROM observations o
+            WHERE o.user_id = %(user_id)s
+              AND (o.visibility = 'global'
+                   OR (o.visibility = 'project' AND o.project_id = %(project_id)s)
+                   OR (o.visibility = 'session' AND o.session_id = %(session_id)s))
+            ORDER BY o.observation_id
+        """
+        with self._transaction() as cur:
+            cur.execute(query, params)
+            return [_observation(row) for row in cur.fetchall()]
+
     def write(self, batch):
         if not batch.documents and not any(
             (
@@ -248,9 +277,16 @@ class AlloyDBRetainStore:
         if not observations:
             return
         with self._transaction() as cur:
-            for observation in observations:
+            ordered = sorted(observations, key=lambda observation: observation.valid_to is None)
+            lock_keys = sorted({_observation_group_lock_key(item) for item in ordered})
+            for lock_key in lock_keys:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
+            for observation in ordered:
                 _validate_observation(observation)
-                _upsert_observation(cur, observation)
+                if observation.valid_to is None:
+                    _insert_observation_version(cur, observation)
+                else:
+                    _close_observation_version(cur, observation)
 
     def purge_expired_documents(self, now):
         with self._transaction() as cur:
@@ -336,6 +372,23 @@ def _entity(row):
         canonical_name=row["canonical_name"],
         entity_type=EntityType(row["entity_type"]),
         aliases=tuple(row["aliases"] or ()),
+    )
+
+
+def _observation(row):
+    embedding = row["embedding"]
+    if embedding is not None:
+        embedding = tuple(float(value) for value in embedding.strip("[]").split(","))
+    return Observation(
+        observation_id=row["observation_id"],
+        scope=Scope(row["user_id"], row["project_id"], row["session_id"]),
+        visibility=Visibility(row["visibility"]),
+        text=row["text"],
+        fact_ids=tuple(str(fact_id) for fact_id in row["fact_ids"]),
+        valid_from=row["valid_from"],
+        entity_id=row["entity_id"],
+        valid_to=row["valid_to"],
+        embedding=embedding,
     )
 
 
@@ -674,7 +727,7 @@ def _validate_observation(observation):
     _vector(observation.embedding) if observation.embedding is not None else None
 
 
-def _upsert_observation(cur, observation):
+def _validate_observation_references(cur, observation):
     cur.execute(
         "SELECT user_id FROM entities WHERE entity_id = %s::uuid",
         (observation.entity_id,),
@@ -698,20 +751,75 @@ def _upsert_observation(cur, observation):
                 observation.visibility, observation.scope, Visibility(row["visibility"]), origin
             ):
                 raise ValueError("Observation references a fact outside its visibility domain")
+
+
+_OBSERVATION_COLUMNS = (
+    "observation_id::text, user_id, project_id, session_id, visibility, entity_id::text, "
+    "text, fact_ids, valid_from, valid_to, embedding::text"
+)
+
+
+def _observation_version(cur, observation_id):
+    cur.execute(
+        f"SELECT {_OBSERVATION_COLUMNS} FROM observations "
+        "WHERE observation_id = %s::uuid FOR UPDATE",
+        (observation_id,),
+    )
+    row = cur.fetchone()
+    return _observation(row) if row is not None else None
+
+
+def _same_observation_version(left, right):
+    return (
+        left.observation_id == right.observation_id
+        and left.scope == right.scope
+        and left.visibility == right.visibility
+        and left.entity_id == right.entity_id
+        and left.text == right.text
+        and left.fact_ids == right.fact_ids
+        and left.valid_from == right.valid_from
+        and left.embedding == right.embedding
+    )
+
+
+def _observation_group_lock_key(observation):
+    return json.dumps(
+        [
+            observation.scope.user_id,
+            observation.scope.project_id,
+            observation.scope.session_id,
+            observation.visibility.value,
+            observation.entity_id,
+        ],
+        separators=(",", ":"),
+    )
+
+
+def _insert_observation_version(cur, observation):
+    _validate_observation_references(cur, observation)
+    cur.execute(
+        "SELECT observation_id::text FROM observations "
+        "WHERE user_id = %s AND project_id IS NOT DISTINCT FROM %s "
+        "AND session_id IS NOT DISTINCT FROM %s AND visibility = %s "
+        "AND entity_id IS NOT DISTINCT FROM %s::uuid AND valid_to IS NULL FOR UPDATE",
+        (
+            observation.scope.user_id,
+            observation.scope.project_id,
+            observation.scope.session_id,
+            observation.visibility.value,
+            observation.entity_id,
+        ),
+    )
+    current_ids = {row["observation_id"] for row in cur.fetchall()}
+    if current_ids - {observation.observation_id}:
+        raise ValueError("Observation group already has another current version")
     embedding = _vector(observation.embedding) if observation.embedding is not None else None
     cur.execute(
         "INSERT INTO observations "
         "(observation_id, user_id, project_id, session_id, visibility, entity_id, text, embedding, "
         "fact_ids, valid_from, valid_to) "
         "VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s::uuid[], %s, %s) "
-        "ON CONFLICT (observation_id) DO UPDATE SET text = EXCLUDED.text, "
-        "embedding = EXCLUDED.embedding, fact_ids = EXCLUDED.fact_ids, "
-        "valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to, updated_at = NOW() "
-        "WHERE observations.user_id = EXCLUDED.user_id "
-        "AND observations.project_id IS NOT DISTINCT FROM EXCLUDED.project_id "
-        "AND observations.session_id IS NOT DISTINCT FROM EXCLUDED.session_id "
-        "AND observations.entity_id IS NOT DISTINCT FROM EXCLUDED.entity_id "
-        "AND observations.visibility = EXCLUDED.visibility",
+        "ON CONFLICT (observation_id) DO NOTHING",
         (
             observation.observation_id,
             observation.scope.user_id,
@@ -727,4 +835,27 @@ def _upsert_observation(cur, observation):
         ),
     )
     if cur.rowcount == 0:
-        raise ValueError(f"Conflicting observation ID {observation.observation_id}")
+        existing = _observation_version(cur, observation.observation_id)
+        if (
+            existing is None
+            or existing.valid_to is not None
+            or not _same_observation_version(existing, observation)
+        ):
+            raise ValueError(f"Conflicting observation ID {observation.observation_id}")
+
+
+def _close_observation_version(cur, observation):
+    existing = _observation_version(cur, observation.observation_id)
+    if existing is None or not _same_observation_version(existing, observation):
+        raise ValueError(
+            f"Cannot close missing or changed observation {observation.observation_id}"
+        )
+    if existing.valid_to is not None:
+        return
+    cur.execute(
+        "UPDATE observations SET valid_to = %s, updated_at = NOW() "
+        "WHERE observation_id = %s::uuid AND valid_to IS NULL",
+        (observation.valid_to, observation.observation_id),
+    )
+    if cur.rowcount != 1:
+        raise ValueError(f"Observation version changed concurrently: {observation.observation_id}")

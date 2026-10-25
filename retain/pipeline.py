@@ -277,7 +277,9 @@ def _apply_decisions(facts, decisions):
     return kept, reinforced, supersessions, redirect
 
 
-def build_retainer(conn_factory, genai_client, *, config: RetainConfig = RetainConfig()):
+def build_retainer(
+    conn_factory, genai_client, *, embedding_client=None, config: RetainConfig = RetainConfig()
+):
     """Production wiring for AlloyDB storage and Gemini stages."""
     from retain.alloydb_store import AlloyDBRetainStore
     from retain.embeddings import GeminiEmbedder
@@ -287,7 +289,7 @@ def build_retainer(conn_factory, genai_client, *, config: RetainConfig = RetainC
     from retain.observations import GeminiObservationBuilder
 
     store = AlloyDBRetainStore(conn_factory)
-    embedder = GeminiEmbedder(genai_client)
+    embedder = GeminiEmbedder(embedding_client or genai_client)
     return Retainer(
         store=store,
         extractor=GeminiFactExtractor(genai_client),
