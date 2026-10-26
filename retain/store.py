@@ -18,6 +18,7 @@ from retain.models import (
     Observation,
     Scope,
     WriteBatch,
+    is_visible,
 )
 
 
@@ -93,6 +94,22 @@ class InMemoryRetainStore:
         with self._lock:
             return self.retained & set(document_ids)
 
+    def validate_documents(self, documents):
+        with self._lock:
+            for document in documents:
+                existing = self.documents.get(document.document_id)
+                if existing and (
+                    existing.episode_id != document.episode_id
+                    or existing.position != document.position
+                    or existing.scope != document.scope
+                    or existing.speaker != document.speaker
+                    or existing.text != document.text
+                    or existing.occurred_at != document.occurred_at
+                ):
+                    raise ValueError(
+                        f"Conflicting replay for source document {document.document_id}"
+                    )
+
     def find_entities(self, user_id, canonical_names):
         with self._lock:
             return [e for e in self.entities.values() if e.user_id == user_id]
@@ -122,6 +139,14 @@ class InMemoryRetainStore:
         wanted = set(entity_ids)
         hits = [fact for fact in self._readable(reader) if wanted & set(fact.entity_ids)]
         return sorted(hits, key=lambda fact: fact.recorded_at, reverse=True)[:limit]
+
+    def facts_for_observations(self, reader):
+        return self._readable(reader)
+
+    def observations_for(self, reader):
+        with self._lock:
+            observations = list(self.observations.values())
+        return [o for o in observations if is_visible(o.visibility, o.scope, reader)]
 
     def write(self, batch):
         with self._lock:
@@ -166,7 +191,22 @@ class InMemoryRetainStore:
 
     def write_observations(self, observations):
         with self._lock:
-            self.observations |= {o.observation_id: o for o in observations}
+            updated = dict(self.observations)
+            ordered = sorted(observations, key=lambda observation: observation.valid_to is None)
+            for observation in ordered:
+                previous = updated.get(observation.observation_id)
+                if observation.valid_to is not None:
+                    if previous is None or not previous.same_version(observation):
+                        raise ValueError("Cannot close a missing or changed observation version")
+                    if previous.valid_to is None:
+                        updated[observation.observation_id] = replace(
+                            previous, valid_to=observation.valid_to
+                        )
+                elif previous is None:
+                    updated[observation.observation_id] = observation
+                elif not previous.same_version(observation):
+                    raise ValueError(f"Conflicting observation ID {observation.observation_id}")
+            self.observations = updated
 
     def purge_expired_documents(self, now):
         with self._lock:

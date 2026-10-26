@@ -17,6 +17,9 @@ budgets, the agent tools, and the sliding window feeding Recall. `tests/test_rec
 checks the AlloyDB store against a scripted connection (bound parameters, row decoding,
 reconnects); it does not run SQL. `tests/test_bench.py` runs the LongMemEval harness on a tiny
 dataset in LongMemEval's format.
+`tests/test_reflect.py` covers the Reflect skeleton: config and record validation, link types
+and provider-neutral production wiring, including the merged store module. Every Reflect
+processing stage is a stub; Recall integration with facts/macros is not implemented.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.

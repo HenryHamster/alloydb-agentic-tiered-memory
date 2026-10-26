@@ -63,7 +63,7 @@ CREATE INDEX IF NOT EXISTS memory_facts_session_idx ON memory_facts (user_id, se
 CREATE INDEX IF NOT EXISTS memory_facts_occurred_idx ON memory_facts (user_id, occurred_at);
 CREATE INDEX IF NOT EXISTS memory_facts_episode_idx ON memory_facts (source_episode_id);
 
--- Canonical entities per user. aliases holds normalized surface forms for matching.
+-- Canonical entities per user. canonical_name is normalized; aliases hold surface forms.
 CREATE TABLE IF NOT EXISTS entities (
     entity_id UUID PRIMARY KEY,
     user_id TEXT NOT NULL,
