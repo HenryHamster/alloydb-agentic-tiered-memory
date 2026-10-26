@@ -63,6 +63,7 @@ def test_library_modules_import_without_cloud_connections():
         "recall",
         "recall.alloydb_store",
         "retain",
+        "reflect",
         "shared.chunking",
     ]:
         importlib.import_module(module)
