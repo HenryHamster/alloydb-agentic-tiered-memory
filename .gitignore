@@ -16,3 +16,8 @@ dist/
 htmlcov/
 credentials*.json
 application_default_credentials.json
+
+# Benchmark data, outputs and embedding cache
+data/
+bench_results/
+.bench_cache/
