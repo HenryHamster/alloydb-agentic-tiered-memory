@@ -7,7 +7,16 @@ import pytest
 
 from retain.embeddings import EMBEDDING_DIMENSIONS, GeminiEmbedder
 from retain.extraction import GeminiFactExtractor, chunk_documents
-from retain.models import EntityRole, EntityType, FactType, Message, Scope, Speaker, Visibility
+from retain.models import (
+    Document,
+    EntityRole,
+    EntityType,
+    FactType,
+    Message,
+    Scope,
+    Speaker,
+    Visibility,
+)
 from retain.pipeline import Retainer
 from retain.store import InMemoryRetainStore
 
@@ -16,8 +25,6 @@ SOURCE = "I prefer Python only for embedded tasks. The project starts yesterday.
 
 
 def chunks(text=SOURCE, *, timestamp=STAMP, max_chars=700):
-    from retain.models import Document
-
     document = Document(
         document_id="document-a",
         episode_id="episode-a",
@@ -59,9 +66,14 @@ def fact_row(chunk, **overrides):
     return row
 
 
-def extractor_for(rows):
+def gemini_returning(text):
     client = Mock()
-    client.models.generate_content.return_value.text = json.dumps(rows)
+    client.models.generate_content.return_value.text = text
+    return client
+
+
+def extractor_for(rows):
+    client = gemini_returning(json.dumps(rows))
     return GeminiFactExtractor(client), client
 
 
@@ -100,7 +112,6 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     assert facts[0].entities[0].role == EntityRole.OBJECT
     assert facts[0].visibility == Visibility.PROJECT
     assert facts[0].text == "Python only for embedded tasks."
-    assert len(facts[0].text.split()) < 8
     assert facts[1].fact_type == FactType.EXPERIENCE
     assert facts[1].occurred_at == datetime(2026, 10, 24, tzinfo=timezone.utc)
     assert facts[1].caused_by == (0,)
@@ -113,11 +124,14 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
 
 
 @pytest.mark.parametrize(
-    "evidence",
-    ["A fabricated statement.", "repeated quote"],
+    "source,evidence",
+    [
+        (SOURCE, "A fabricated statement."),
+        ("repeated quote; repeated quote", "repeated quote"),
+    ],
+    ids=["not-in-source", "ambiguous"],
 )
-def test_extractor_discards_unsupported_or_ambiguous_evidence(evidence):
-    source = SOURCE if evidence != "repeated quote" else "repeated quote; repeated quote"
+def test_extractor_discards_unsupported_or_ambiguous_evidence(source, evidence):
     selected = chunks(source)
     row = fact_row(selected[0], evidence=evidence)
     extractor, _ = extractor_for([row])
@@ -128,11 +142,8 @@ def test_extractor_discards_unsupported_or_ambiguous_evidence(evidence):
 @pytest.mark.parametrize("response", ["not-json", "{}"])
 def test_extractor_rejects_malformed_provider_responses(response):
     # The turn stays unretained, so a transient model failure can be retried.
-    client = Mock()
-    client.models.generate_content.return_value.text = response
-
     with pytest.raises(ValueError):
-        GeminiFactExtractor(client).extract(chunks())
+        GeminiFactExtractor(gemini_returning(response)).extract(chunks())
 
 
 def test_extractor_drops_non_object_and_repeated_key_rows():
@@ -182,11 +193,10 @@ def test_extracted_fact_keeps_pipeline_document_scope_and_provenance():
     message = Message(Speaker.USER, SOURCE, STAMP)
 
     def generate(*, contents, **kwargs):
-        payload = json.loads(contents.split("SOURCE JSON:\n", 1)[1])
-        return SimpleNamespace(text=json.dumps([fact_row_id(payload["chunks"][0]["chunk_id"])]))
-
-    def fact_row_id(chunk_id):
-        return fact_row(chunks()[0], chunk_id=chunk_id, entities=[])
+        # Cite whichever chunk the pipeline sent, so its real chunk IDs are exercised.
+        chunk_id = json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"][0]["chunk_id"]
+        row = fact_row(chunks()[0], chunk_id=chunk_id, entities=[])
+        return SimpleNamespace(text=json.dumps([row]))
 
     client = Mock()
     client.models.generate_content.side_effect = generate

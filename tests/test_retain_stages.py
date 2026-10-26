@@ -171,6 +171,14 @@ def test_entity_lookup_sends_raw_normalized_and_suffix_free_names():
     assert names == ("Google  LLC", "google llc", "google")
 
 
+def test_organization_legal_forms_from_any_country_match_the_same_entity():
+    known = entity("Siemens", canonical="siemens")
+    resolver = FuzzyEntityResolver(EntityStore([known]))
+    mentions = [EntityMention(name, EntityType.ORGANIZATION) for name in ("Siemens AG", "SIEMENS")]
+    resolution = resolver.resolve(SCOPE.user_id, mentions)
+    assert {resolution.entity_ids[mention_key(m)] for m in mentions} == {known.entity_id}
+
+
 def test_entity_resolution_collapses_exact_same_batch_mentions():
     mention_a = EntityMention("Data Platform", EntityType.CONCEPT)
     mention_b = EntityMention(" data   platform ", EntityType.CONCEPT)

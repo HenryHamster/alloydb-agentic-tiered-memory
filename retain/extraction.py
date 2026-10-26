@@ -363,7 +363,7 @@ def _resolve_relative_dates(row, chunk):
     resolved = (timestamp + timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
     field = (
         "occurred_at"
-        if row["category"] == Category.EVENT.value or row["fact_type"] == FactType.EXPERIENCE.value
+        if row["category"] == Category.EVENT or row["fact_type"] == FactType.EXPERIENCE
         else "valid_from"
     )
     supplied = _parse_timestamp(row[field])
@@ -424,8 +424,8 @@ def _parse_row(row, chunks_by_id):
     claim_type = ClaimType(row["claim_type"])
     visibility = Visibility(row["visibility"])
     parsed = dict(row)
-    parsed["category"] = str(category)
-    parsed["fact_type"] = str(fact_type)
+    parsed["category"] = category
+    parsed["fact_type"] = fact_type
     parsed["occurred_at"] = _parse_timestamp(row["occurred_at"])
     parsed["valid_from"] = _parse_timestamp(row["valid_from"])
     parsed = _resolve_relative_dates(parsed, chunk)

@@ -2,6 +2,7 @@
 
 import hashlib
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -9,6 +10,7 @@ import pytest
 
 from async_worker import AsyncMemoryWorker
 from retain import InMemoryRetainStore, RetainConfig, Retainer, Scope, build_retainer
+from retain.alloydb_store import AlloyDBRetainStore
 from retain.entities import mention_key, normalize_name
 from retain.models import (
     Category,
@@ -23,6 +25,7 @@ from retain.models import (
     LinkType,
     MemoryFact,
     MemoryLink,
+    Observation,
     Relation,
     RelationMention,
     Speaker,
@@ -411,8 +414,6 @@ def test_production_wiring_uses_extraction_embedding_and_alloydb_store():
     production = build_retainer(MagicMock(), client)
     assert production.extractor.extract([]) == []
     assert len(production.embedder(["fact"])[0]) == 768
-    from retain.alloydb_store import AlloyDBRetainStore
-
     assert isinstance(production.store, AlloyDBRetainStore)
 
 
@@ -499,3 +500,11 @@ def test_two_facts_superseding_one_stored_fact_keep_the_round():
     pipeline.retain_turn(SCOPE, "MySQL or SQLite now.", "Ok.")
     assert store.facts[old.fact_id].valid_to is not None
     assert len([fact for fact in store.facts.values() if fact.is_current]) == 2
+
+
+def test_observation_versions_compare_by_content_not_closure_or_embedding():
+    version = Observation(
+        stable_id("obs"), SCOPE, Visibility.PROJECT, "Uses Go.", ("f1",), T0, embedding=(1.0,)
+    )
+    assert version.same_version(replace(version, valid_to=T0, embedding=(0.5,)))
+    assert not version.same_version(replace(version, text="Uses Rust."))

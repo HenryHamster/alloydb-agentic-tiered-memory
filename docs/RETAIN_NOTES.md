@@ -89,7 +89,7 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
 ## Validation and integration
 
 See [Retain cloud test handoff](RETAIN_HANDOFF.md) for configuration, schema setup, the live
-smoke command, and read-only inspection queries. The codelab continues to use its legacy
+test (`tests/test_retain_live.py`), and read-only inspection queries. The codelab continues to use its legacy
 `agent_entities` writer and reader unless a `build_retainer(...)` instance is explicitly injected
 into the worker. The legacy reader cannot retrieve `memory_facts` or `observations`; Recall still
 needs its AlloyDB adapter for the Retain schema before Retain → Recall → Reflect can be verified.

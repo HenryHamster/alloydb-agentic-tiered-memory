@@ -770,19 +770,6 @@ def _observation_version(cur, observation_id):
     return _observation(row) if row is not None else None
 
 
-def _same_observation_version(left, right):
-    return (
-        left.observation_id == right.observation_id
-        and left.scope == right.scope
-        and left.visibility == right.visibility
-        and left.entity_id == right.entity_id
-        and left.text == right.text
-        and left.fact_ids == right.fact_ids
-        and left.valid_from == right.valid_from
-        and left.embedding == right.embedding
-    )
-
-
 def _observation_group_lock_key(observation):
     return json.dumps(
         [
@@ -840,14 +827,14 @@ def _insert_observation_version(cur, observation):
         if (
             existing is None
             or existing.valid_to is not None
-            or not _same_observation_version(existing, observation)
+            or not existing.same_version(observation)
         ):
             raise ValueError(f"Conflicting observation ID {observation.observation_id}")
 
 
 def _close_observation_version(cur, observation):
     existing = _observation_version(cur, observation.observation_id)
-    if existing is None or not _same_observation_version(existing, observation):
+    if existing is None or not existing.same_version(observation):
         raise ValueError(
             f"Cannot close missing or changed observation {observation.observation_id}"
         )

@@ -1,19 +1,20 @@
 # Retain cloud test handoff
 
-## What the smoke test exercises
+## What the live test exercises
 
 `retain.build_retainer` wires Gemini extraction, regional Gemini embeddings, entity resolution,
 supersession classification, semantic and temporal linking, observations, and AlloyDB storage.
-The runnable check is `python -m retain.smoke`. It retains one isolated test exchange, verifies
-committed source documents and facts, checks fact scope, evidence, and 768-dimensional embeddings,
-then replays the same episode and verifies it is skipped. `--consolidate` also runs observation
-generation and reads back every changed version, checking its scope, validity fields, and
-supporting fact IDs. When contents change, Retain closes the previous version and inserts a row with
-a distinct ID; unchanged versions are reused.
+The live check is `tests/test_retain_live.py`, skipped unless `RETAIN_LIVE=1`. It retains one
+isolated test exchange, verifies committed source documents and facts, checks fact scope,
+evidence, and 768-dimensional embeddings, then replays the same episode and verifies it is
+skipped. With `RETAIN_LIVE_CONSOLIDATE=1` it also runs observation generation and reads back every
+changed version, checking its scope, validity fields, and supporting fact IDs. When contents
+change, Retain closes the previous version and inserts a row with a distinct ID; unchanged
+versions are reused.
 
-The smoke test does not delete data. Each run creates a unique episode and session by default.
-Use a dedicated test user and project. A run can add documents, facts, entities, links, history,
-and optional observations for that user.
+The live test does not delete data. Each run creates a unique episode and session. Use a
+dedicated test user and project. A run can add documents, facts, entities, links, history, and
+optional observations for that user.
 
 ## Configuration
 
@@ -22,7 +23,7 @@ The project reads exported variables; it does not load `.env` automatically. Sta
 
 | Variable | Required | Use |
 | --- | --- | --- |
-| `PROJECT_ID` | yes | Vertex AI project; `GOOGLE_CLOUD_PROJECT` is accepted as fallback by the smoke script |
+| `PROJECT_ID` | yes | Vertex AI project; `GOOGLE_CLOUD_PROJECT` is accepted as fallback by the live test |
 | `DB_HOST` | yes | Reachable AlloyDB instance endpoint |
 | `DB_USER` | yes | IAM database user |
 | `DB_PORT` | no | Defaults to `5432` |
@@ -32,7 +33,7 @@ The project reads exported variables; it does not load `.env` automatically. Sta
 
 The host needs the Google Cloud CLI, Application Default Credentials, Vertex AI access for
 Gemini and `text-embedding-005`, and private network access to AlloyDB. The IAM database user
-must be authorized for the target database. Valkey is not used by this smoke command.
+must be authorized for the target database. Valkey is not used by this live test.
 
 From the repository root, install dependencies and export configuration:
 
@@ -59,27 +60,25 @@ the project's approved SQL runner:
 2. `sql/004_retain_schema.sql` for Retain tables, `vector`, and `pg_trgm` support.
 
 The Retain migration is additive and repeatable. `sql/002_register_model.sql` and
-`sql/003_auto_embeddings.sql` are for the legacy in-database AI retrieval path; the Retain smoke
+`sql/003_auto_embeddings.sql` are for the legacy in-database AI retrieval path; the Retain live
 test uses Gemini and embeddings through the Python client and does not require those steps.
 Do not run `cleanup_memory_system.py` as part of Retain validation.
 
 ## Run
 
-Use an isolated test identity and project ID:
+Use an isolated test identity (defaults shown):
 
 ```bash
-python -m retain.smoke \
-  --user-id retain-pm-test \
-  --project-id retain-smoke-project
+RETAIN_LIVE=1 RETAIN_TEST_USER_ID=retain-pm-test RETAIN_TEST_PROJECT_ID=retain-smoke-project \
+  uv run pytest tests/test_retain_live.py -s
 ```
 
-The command prints JSON with `status: ok`, source documents and scoped facts verified, entity and
-link counts, optional observation count, endpoint locations, and `replay_skipped: true`. Entity,
-link, supersession, and observation counts can be zero for an individual extraction; the smoke
+A pass prints a JSON summary with the episode ID, scope, fact count and entity-row count. Entity,
+link, supersession, and observation counts can be zero for an individual extraction; the test
 fails if committed source evidence or any expected observation version cannot be verified. Add
-`--consolidate` to invoke the real observation generator. The output includes current observation
-IDs and the count of persisted versions verified. That flag may update observation history for the
-test user, so keep the test identity dedicated.
+`RETAIN_LIVE_CONSOLIDATE=1` to run the real observation generator; it prints the observations
+written and the current observation IDs. That may update observation history for the test user,
+so keep the test identity dedicated.
 
 For asynchronous application wiring, pass the Retain builder into the existing worker:
 
@@ -108,7 +107,7 @@ for queued jobs and surfaces background failures.
 ## Inspect persisted records
 
 Run these read-only queries in AlloyDB Studio, replacing the test identifiers with the values
-used by the smoke output:
+printed by the live test:
 
 ```sql
 SELECT document_id, episode_id, position, user_id, project_id, session_id,

@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Protocol
 
+from cleanco import basename
+
 from retain.models import Entity, EntityMention, EntityResolution, EntityType, stable_id
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,8 @@ class EntityResolver(Protocol):
 class FuzzyEntityResolver:
     """Exact name/alias match first, then fuzzy alias match within the same entity type.
 
-    Rules: types must agree (OTHER may match an exact name of any type); strip legal suffixes
-    (Inc, LLC, Ltd) before comparing; accept ratio >= `threshold`; a fuzzy hit adds the surface
+    Rules: types must agree (OTHER may match an exact name of any type); strip organization legal
+    forms (cleanco) before comparing; accept ratio >= `threshold`; a fuzzy hit adds the surface
     form to the entity's aliases; unmatched mentions become new entities with
     entity_id = stable_id(user_id, entity_type, canonical_name). Mentions in one batch that
     resolve to the same entity share it.
@@ -147,19 +149,11 @@ def _entity_names(entity, mention_type):
 
 
 def _comparison_name(name, entity_type):
+    """Normalized name; organizations also drop legal forms (LLC, GmbH, S.A., ...) via cleanco."""
     value = normalize_name(name)
     if entity_type == EntityType.ORGANIZATION:
-        for suffix in (
-            " incorporated",
-            " corporation",
-            " limited",
-            " inc",
-            " llc",
-            " ltd",
-            " corp",
-        ):
-            if value.endswith(suffix):
-                return value[: -len(suffix)].strip()
+        # A name that is only a legal form ("Inc") keeps its normalized text.
+        return normalize_name(basename(value)) or value
     return value
 
 
