@@ -8,9 +8,10 @@ end or a schedule) and does three things per user in one transaction:
 2. **Synthesize** macro memories from clusters of linked facts.
 3. **Re-rank and re-tier** every fact and macro (hot, warm, archived, purged).
 
-This change is a **skeleton**: schema, records, configs, store contract and production wiring.
-Every function is a signature whose docstring is its specification, with a `TODO(reflect)`
-body that raises `NotImplementedError`. Fill one without touching the others.
+Every stage is implemented and covered offline by `tests/test_reflect.py` (in-memory store plus a
+recording fake connection for the AlloyDB store). The AlloyDB store has also been run end to end
+against PostgreSQL 16 with the 004 + 005 schema (pgvector stubbed); it has not yet run on AlloyDB
+itself. Recall does not call it yet (see "Recall integration boundary").
 
 ## Pipeline
 
@@ -20,10 +21,11 @@ Reflector.reflect(user_id, trigger)            trigger: new_facts | session_end 
   1 find_candidates   similar links >= 0.85, same subject entity + category, same domain
     judge(...)        injected callable labels each group: distinct / redundant / state_change / conflict
     resolve           code applies the verdict (the model never picks the winner)
-  2 build_clusters    temporal + causal + strong semantic links, shared subject/object entities
+  2 rank_score / next_tier / apply_hot_cap     facts; purged facts leave the view
+  3 build_clusters    temporal + causal + strong semantic links, shared subject/object entities
     MacroWriter       LLM title + summary, only when the cluster's evidence changed
     Embedder          embed(title + summary) for every regenerated macro
-  3 rank_score / next_tier / apply_hot_cap     facts and macros, same lifecycle
+    rank_score / next_tier / apply_hot_cap     macros, same lifecycle
   write     ReflectStore.write_reflect(ReflectBatch)   one transaction
 Reflector.forget(scope, fact_ids)              explicit delete: purge now, drop dependent macros
 ReflectStore.record_access(...)                called by Recall; archived hit -> promoted back
@@ -36,12 +38,13 @@ Recall retrieval                              existing hybrid search owns search
 | --- | --- | --- |
 | `sql/005_reflect_schema.sql` | lifecycle columns on `memory_facts`, link relations, `memory_conflict_reviews`, `macro_memories` | Complete |
 | `reflect/models.py` | `Tier`, `Verdict`, `FactState`, `MacroMemory`, `Cluster`, `ReflectBatch` | Complete |
-| `reflect/tiers.py` | `TierConfig`; `rank_score`, `next_tier`, `apply_hot_cap`, `promote_on_hit` | Stubs |
-| `reflect/consolidation.py` | `find_candidates`, `resolve`, `consolidate`, `LLMConflictJudge` | Stubs |
-| `reflect/macros.py` | `build_clusters`, `causal_chains`, `temporal_span`, `match_existing`, `LLMMacroWriter` | Stubs |
-| `reflect/generation.py` | `StructuredGenerator`: injected prompt/schema -> parsed JSON callable | Contract complete |
-| `reflect/pipeline.py` | `Reflector.reflect` / `forget`; `build_reflector` (production wiring) | Wiring complete, stages stubbed |
-| `reflect/store.py` | `ReflectStore` protocol and `AlloyDBReflectStore` implementation | Protocol complete; AlloyDB methods stubbed with SQL plans |
+| `reflect/tiers.py` | `TierConfig`; `rank_score`, `next_tier`, `apply_hot_cap`, `promote_on_hit` | Complete |
+| `reflect/consolidation.py` | `find_candidates`, `resolve`, `consolidate`, `LLMConflictJudge` | Complete |
+| `reflect/macros.py` | `build_clusters`, `causal_chains`, `temporal_span`, `match_existing`, `LLMMacroWriter` | Complete |
+| `reflect/graph.py` | union-find `components` shared by candidates and clusters | Complete |
+| `reflect/generation.py` | `StructuredGenerator`: injected prompt/schema -> parsed JSON callable | Complete |
+| `reflect/pipeline.py` | `Reflector.reflect` / `forget`; `build_reflector` (production wiring) | Complete |
+| `reflect/store.py` | `ReflectStore` protocol, `InMemoryReflectStore`, `AlloyDBReflectStore` | Complete |
 | `retain/models.py` | `Relation.CONSOLIDATED_INTO`, `Relation.CONFLICTS_WITH` | Added |
 
 ## Model adapters
@@ -60,8 +63,9 @@ reflector = build_reflector(
 )
 ```
 
-These adapters can wrap any compatible model or offline fake. The stage bodies still raise
-`NotImplementedError`; this cleanup does not implement synthesis or database persistence.
+These adapters can wrap any compatible model or offline fake. Both LLM stages validate the
+returned JSON before using it: a malformed answer, an unknown verdict or a fact outside its group
+raises, and the pass writes nothing.
 
 ## Recall integration boundary
 
@@ -184,7 +188,7 @@ arguments, not measured results.
      conversation's critical path.
 2. **Smaller active working set.**
    - **This design:** Hot has a proposed cap. Recall can use tier metadata once its
-     integration is implemented; no search-cost bound is established by this skeleton.
+     integration is implemented; no search-cost bound has been measured yet.
    - **Hindsight:** has no access-driven lifecycle. Every retained fact stays equally
      searchable forever.
 3. **Usage feedback.** `access_count` and `last_accessed_at` feed `rank_score`, so what the
@@ -214,6 +218,32 @@ arguments, not measured results.
 - The thresholds (0.85 similarity, 1.0 / 0.6 hysteresis, 30 / 365 days) need tuning on real
   traffic.
 
+## Implementation notes
+
+Decisions made while filling the stubs, beyond what the specs above say:
+
+- **`ReflectBatch.user_id`.** The batch names the user the pass ran for. The AlloyDB store takes
+  its advisory lock on it and rejects any fact, macro or review of another user.
+- **Recall's counters win.** `write_reflect` never overwrites `access_count` or
+  `last_accessed_at` of existing facts or macros, so hits recorded during a pass are kept.
+  (A tier promoted by such a hit can still be overwritten by the pass; the next hit fixes it.)
+- **Merged facts stand in for their originals in clusters.** Links and entity rows on a
+  consolidated original are redirected to its merged fact, so a merge does not break a story:
+  in the DuckDB example the causal chain becomes (merged, S4).
+- **Facts are tiered before macros are built,** so no macro is built on a fact purged in the
+  same pass.
+- **A macro's `updated_at` changes only when it is regenerated.** It is the macro's freshness
+  clock, so an unchanged macro keeps cooling. A rewrite without an embedding keeps the stored
+  one, so `user_macros` does not read vectors.
+- **`user_facts` skips embeddings.** Reflect finds candidates through links, so it never needs
+  the 768-float column for a whole user.
+- **A judgment that reuses a fact is skipped** (the first wins) instead of failing the pass.
+  A fact with several subject entities joins only one candidate group.
+- **`forget()` also purges merged facts built from a forgotten fact,** since they carry its
+  text.
+- **A closed macro whose exact evidence set comes back is reopened** under the same `macro_id`
+  without a model call.
+
 ## Open questions
 
 - Should Retain's `VISIBLE_SQL` hide `consolidated_into` rows, so that the supersede
@@ -225,10 +255,12 @@ arguments, not measured results.
 
 ## Next
 
-Implement in this order: `tiers.py`, `consolidation.py` (pure functions, then
-`LLMConflictJudge`), `macros.py` (then `LLMMacroWriter`), `Reflector`, an
-`InMemoryReflectStore` for offline tests, then `AlloyDBReflectStore`. Then call
-`build_reflector(get_db_connection, embedder=embed_texts, generate=generate_json)` from the
-application composition layer, then call `.reflect(user_id, trigger)` from `AsyncMemoryWorker`
-at session end. Add a scheduled job for the daily pass. Extend the existing Recall retrieval
-path to search facts/macros and call `record_access`; do not add a separate search loop.
+1. Run `AlloyDBReflectStore` against a live AlloyDB instance (it has run on PostgreSQL 16).
+2. Write a `generate(prompt, response_schema)` adapter (for example Gemini structured output)
+   and call `build_reflector(get_db_connection, embedder=..., generate=...)` from the
+   application composition layer.
+3. Call `.reflect(user_id, trigger)` from `AsyncMemoryWorker` at session end, and add a
+   scheduled job for the daily pass.
+4. Extend the existing Recall retrieval path to search facts/macros by tier and call
+   `record_access`; do not add a separate search loop.
+5. Tune the thresholds on real traffic.

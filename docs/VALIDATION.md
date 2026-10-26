@@ -11,9 +11,12 @@ Ruff checks imports, undefined names, and consistent formatting.
 `tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
 with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
 atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
-`tests/test_reflect.py` covers the Reflect skeleton: config and record validation, link types
-and provider-neutral production wiring, including the merged store module. Every Reflect
-processing stage is a stub; Recall integration with facts/macros is not implemented.
+`tests/test_reflect.py` covers Reflect: rank score and tier transitions, candidate grouping and
+every verdict (including untrusted judge output), clustering and macro versioning, full
+`Reflector` passes on the in-memory store (idempotent rerun, access promotion, dormancy purge,
+`forget`), and the AlloyDB store's SQL against a recording fake connection. The AlloyDB store
+was also run end to end on PostgreSQL 16 with pgvector stubbed. Recall integration with
+facts/macros is not implemented.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.
