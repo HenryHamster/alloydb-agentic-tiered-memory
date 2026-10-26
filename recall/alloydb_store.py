@@ -26,7 +26,7 @@ from retain.models import (
 logger = logging.getLogger(__name__)
 
 # Retain's VISIBLE_SQL (retain/alloydb_store.py) with its validity check swapped: Recall reads
-# as of a point in time and may ask for superseded rows, where Retain filters on NOW().
+# as of a point in time and may ask for superseded rows, where Retain reads current rows only.
 CANDIDATE_SQL = """
     f.user_id = %(user_id)s
     AND (%(include_invalid)s OR f.valid_to IS NULL OR f.valid_to > %(as_of)s)

@@ -4,11 +4,12 @@
     python -m bench.longmemeval data/longmemeval_s_cleaned.json --embedder vertex --qa
 
 Every question has its own haystack, ingested under its own Scope (user_id "lme:<question_id>")
-through Retain's Retainer. Retain's Gemini stages are stubs, so ingestion uses benchmark stages:
+through Retain's Retainer. By default (--retain verbatim) ingestion uses benchmark stages:
 VerbatimExtractor stores each 700-char chunk of each message as one fact (dated at its
 session), with no entities or links. That measures Recall's search, fusion, reranking and
-packing on raw conversation; the entity and graph channels stay empty until Retain's extractor,
-resolver and linker are filled and passed in instead.
+packing on raw conversation. --retain gemini runs Retain's production stages instead (Gemini
+extraction, entity resolution, linking, supersession and observations), so the entity, graph
+and observation channels are filled and the whole system is measured.
 
 Retrieval is scored on Recall's packed items (what the agent would see): an item counts for the
 session and round its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k at
@@ -111,7 +112,14 @@ class Instance:
         sessions = zip(
             record["haystack_session_ids"], record["haystack_dates"], record["haystack_sessions"]
         )
+        seen = set()
         for session_id, date, turns in sessions:
+            # A few _s haystacks repeat a session verbatim under a later date. Its episode ids
+            # would repeat with a different occurred_at, which Retain rejects as a conflicting
+            # replay; keep the first copy.
+            if session_id in seen:
+                continue
+            seen.add(session_id)
             at = parse_date(date)
             grouped: list[list[dict]] = []
             for turn in turns:
@@ -193,6 +201,30 @@ class NoEntities:
 class NoLinks:
     def link(self, facts):
         return []
+
+
+def verbatim_stages(store) -> dict:
+    """Retainer stages for the verbatim baseline; `store` is unused."""
+    return {"extractor": VerbatimExtractor(), "entity_resolver": NoEntities(), "linker": NoLinks()}
+
+
+def gemini_stages(client, embedder, *, model: str) -> Callable[[Any], dict]:
+    """Retainer stages as retain.build_retainer wires them, over the run's own store/embedder."""
+    from retain.entities import FuzzyEntityResolver
+    from retain.extraction import GeminiFactExtractor
+    from retain.linking import GeminiSupersedeClassifier, StoreLinker
+    from retain.observations import GeminiObservationBuilder
+
+    def stages(store) -> dict:
+        return {
+            "extractor": GeminiFactExtractor(client, model=model),
+            "entity_resolver": FuzzyEntityResolver(store),
+            "linker": StoreLinker(store),
+            "classifier": GeminiSupersedeClassifier(client, store, model=model),
+            "observation_builder": GeminiObservationBuilder(client, store, embedder, model=model),
+        }
+
+    return stages
 
 
 class _Clock:
@@ -281,6 +313,7 @@ class Harness:
     doc_embedder: Callable
     query_embedder: Callable
     make_stores: Callable[[], tuple[Any, Any]]
+    retain_stages: Callable[[Any], dict] = verbatim_stages  # retain store -> Retainer stages
     reranker: Callable | None = None
     generate: Callable[[str], str] | None = None  # query decomposition
     qa_generate: Callable[[str], str] | None = None  # answering and judging
@@ -295,25 +328,42 @@ class Harness:
 
     def run(self, instance: Instance) -> dict:
         retain_store, recall_store = self.make_stores()
+        try:
+            return self._run(instance, retain_store, recall_store)
+        finally:
+            if retain_store is not None and hasattr(retain_store, "close"):
+                retain_store.close()
+
+    def _run(self, instance: Instance, retain_store, recall_store) -> dict:
         started = time.perf_counter()
-        texts = chunk_texts(instance, self.chunk_chars)
-        if texts:
-            self.doc_embedder(texts)  # one batched pass; Retainer then hits the cache
+        stages = self.retain_stages(retain_store)
+        if isinstance(stages["extractor"], VerbatimExtractor):
+            texts = chunk_texts(instance, self.chunk_chars)
+            if texts:
+                self.doc_embedder(texts)  # one batched pass; Retainer then hits the cache
         clock = _Clock()
         retainer = Retainer(
             store=retain_store,
-            extractor=VerbatimExtractor(),
-            entity_resolver=NoEntities(),
             embedder=self.doc_embedder,
-            linker=NoLinks(),
-            config=RetainConfig(max_chunk_chars=self.chunk_chars, document_ttl=None),
+            # No periodic maintenance: the observation builder closes versions at wall-clock
+            # time, which replayed haystacks would see as still open at the question date.
+            config=RetainConfig(
+                max_chunk_chars=self.chunk_chars, document_ttl=None, maintenance_every=0
+            ),
             clock=clock,
+            **stages,
         )
-        facts = 0
+        counts = dict.fromkeys(("facts", "entities", "links", "observations"), 0)
         for round_ in instance.rounds:
             clock.now = round_.messages[0].timestamp
             result = retainer.retain(instance.scope, round_.messages, episode_id=round_.episode_id)
-            facts += len(result.batch.facts) if result.batch else 0
+            if result.batch:
+                counts["facts"] += len(result.batch.facts)
+                counts["entities"] += len(result.batch.entities)
+                counts["links"] += len(result.batch.links)
+        if "observation_builder" in stages:
+            # One pass over the whole haystack, so each observation has a single version.
+            counts["observations"] = len(retainer.consolidate(instance.scope))
         ingest_ms = (time.perf_counter() - started) * 1000
 
         recaller = Recaller(
@@ -340,7 +390,7 @@ class Harness:
             "question_type": instance.question_type,
             "abstention": instance.abstention,
             "rounds": len(instance.rounds),
-            "facts": facts,
+            **counts,
             "retrieval": self._retrieval(instance, result),
             "recall": self._recall_summary(result),
             "timing": {"ingest_ms": round(ingest_ms, 1), "recall_ms": round(recall_ms, 1)},
@@ -482,9 +532,26 @@ def _genai_client(location_env: str, default_location: str):
     return genai.Client(vertexai=True, project=project, location=location)
 
 
+def _check_env(args) -> None:
+    """Fails before any question runs, instead of once per question inside the workers."""
+    missing = []
+    if args.embedder == "vertex" or args.decompose or args.qa or args.retain == "gemini":
+        if not (os.getenv("PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")):
+            missing.append("PROJECT_ID")
+    if args.backend == "alloydb" or args.reranker == "alloydb":
+        missing += [name for name in ("DB_HOST", "DB_USER") if not os.getenv(name)]
+    if missing:
+        raise SystemExit(
+            f"Missing environment: {', '.join(missing)}. Export .env first: "
+            "set -a; source .env; set +a"
+        )
+
+
 def build_harness(args) -> Harness:
     from bench.embedders import CachedEmbedder, HashingEmbedder, VertexEmbedder
     from shared.llm import GeminiGenerator, generate_with_retry
+
+    _check_env(args)
 
     if args.embedder == "vertex":
         client = _genai_client("REGION", "us-east1")  # text-embedding-005 is regional
@@ -503,7 +570,8 @@ def build_harness(args) -> Harness:
         doc_embedder = query_embedder = HashingEmbedder()
 
     generate = qa_generate = None
-    if args.decompose or args.qa:
+    retain_stages = verbatim_stages
+    if args.decompose or args.qa or args.retain == "gemini":
         client = _genai_client("GENAI_LOCATION", "us")
         model = GeminiGenerator(client, model=args.gemini_model)
 
@@ -511,6 +579,8 @@ def build_harness(args) -> Harness:
             return generate_with_retry(model, prompt)
 
         qa_generate = generate if args.qa else None
+        if args.retain == "gemini":
+            retain_stages = gemini_stages(client, doc_embedder, model=args.gemini_model)
 
     conn_factory = None
     if args.backend == "alloydb" or args.reranker == "alloydb":
@@ -520,18 +590,21 @@ def build_harness(args) -> Harness:
 
     cleanup = None
     if args.backend == "alloydb":
-        from bench.alloydb import BenchAlloyDBWriter
+        from bench.alloydb import delete_users
         from recall.alloydb_store import AlloyDBRecallStore
+        from retain.alloydb_store import AlloyDBRetainStore
 
-        writer, reader = BenchAlloyDBWriter(conn_factory), AlloyDBRecallStore(conn_factory)
+        reader = AlloyDBRecallStore(conn_factory)
 
         def make_stores():
-            return writer, reader
+            # AlloyDBRetainStore holds one unlocked connection: one per question (and worker),
+            # closed when the question finishes.
+            return AlloyDBRetainStore(conn_factory), reader
 
         if args.cleanup:
 
             def cleanup(instance):
-                writer.delete_users(instance.scope.user_id)
+                delete_users(conn_factory, instance.scope.user_id)
     else:
 
         def make_stores():
@@ -548,6 +621,7 @@ def build_harness(args) -> Harness:
         doc_embedder=doc_embedder,
         query_embedder=query_embedder,
         make_stores=make_stores,
+        retain_stages=retain_stages,
         reranker=reranker,
         generate=generate if args.decompose else None,
         qa_generate=qa_generate,
@@ -570,6 +644,12 @@ def parse_args(argv=None):
     parser.add_argument("--backend", choices=["memory", "alloydb"], default="memory")
     parser.add_argument("--embedder", choices=["hash", "vertex"], default="hash")
     parser.add_argument("--embed-cache", default=".bench_cache/embeddings.sqlite")
+    parser.add_argument(
+        "--retain",
+        choices=["verbatim", "gemini"],
+        default="verbatim",
+        help="ingestion stages: verbatim chunks (baseline) or Retain's Gemini pipeline",
+    )
     parser.add_argument("--reranker", choices=["none", "alloydb"], default="none")
     parser.add_argument("--decompose", action="store_true", help="LLM query analysis (Gemini)")
     parser.add_argument("--qa", action="store_true", help="answer and judge with Gemini")

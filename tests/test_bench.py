@@ -1,7 +1,9 @@
 """Offline checks of the LongMemEval harness on a tiny dataset in LongMemEval's format."""
 
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +11,7 @@ from bench.embedders import CachedEmbedder, HashingEmbedder
 from bench.longmemeval import (
     Harness,
     Instance,
+    gemini_stages,
     parse_date,
     retrieval_metrics,
     run_all,
@@ -80,6 +83,16 @@ def test_sessions_split_into_rounds_at_each_user_turn():
     assert instance.scope.user_id == "lme:q1"
 
 
+def test_a_repeated_haystack_session_is_ingested_once():
+    data = record()
+    data["haystack_session_ids"].append("s1")
+    data["haystack_dates"].append("2023/05/25 (Thu) 08:00")
+    data["haystack_sessions"].append(data["haystack_sessions"][0])
+    instance = Instance.from_json(data)
+    assert [r.session_id for r in instance.rounds] == ["s1", "s2", "s2", "s3"]
+    assert harness().run(instance)["facts"] > 0
+
+
 def test_retrieval_metrics():
     metrics = retrieval_metrics(["a", "b", "c"], {"b", "z"}, (1, 3))
     assert metrics["recall_any@1"] == 0.0 and metrics["recall_any@3"] == 1.0
@@ -94,6 +107,65 @@ def test_a_question_finds_its_answer_session():
     assert result["recall"]["episodes"][0] == "q1:s2:0"
     assert result["retrieval"]["session"]["recall_any@1"] == 1.0
     assert result["retrieval"]["round"]["recall_all@1"] == 1.0
+
+
+class ScriptedGemini:
+    """genai client stand-in answering each Retain stage by its response schema: one fact per
+    chunk (mentioning Max when the chunk is about the dog), no supersessions, and a summary."""
+
+    def __init__(self):
+        self.models = self
+        self.calls = defaultdict(int)
+
+    def generate_content(self, *, model, contents, config):
+        schema = config["response_json_schema"]
+        if schema["type"] == "object":
+            self.calls["observation"] += 1
+            facts = json.loads(contents[contents.index("\n[") + 1 :])
+            text = "Max is the user's golden retriever, who loves the park."
+            return SimpleNamespace(
+                text=json.dumps({"summary": text, "fact_ids": [f["fact_id"] for f in facts]})
+            )
+        if "chunk_id" not in schema["items"]["properties"]:
+            self.calls["classifier"] += 1
+            return SimpleNamespace(text="[]")
+        self.calls["extraction"] += 1
+        chunks = json.loads(contents[contents.rindex('{"chunks"') :])["chunks"]
+        return SimpleNamespace(text=json.dumps([self._fact(i, c) for i, c in enumerate(chunks)]))
+
+    @staticmethod
+    def _fact(key, chunk):
+        about_max = any(word in chunk["text"] for word in ("Max", "dog", "He "))
+        return {
+            "key": key,
+            "chunk_id": chunk["chunk_id"],
+            "text": chunk["text"],
+            "evidence": chunk["text"],
+            "fact_type": "world" if chunk["speaker"] == "user" else "experience",
+            "category": "other",
+            "claim_type": "asserted",
+            "visibility": "global",
+            "occurred_at": None,
+            "valid_from": None,
+            "details": {"who": None, "what": None, "when": None, "where": None, "why": None},
+            "entities": (
+                [{"name": "Max", "entity_type": "other", "role": "subject"}] if about_max else []
+            ),
+            "relations": [],
+            "caused_by": [],
+            "evidenced_by": [],
+        }
+
+
+def test_gemini_retain_stages_fill_entities_and_observations():
+    gemini = ScriptedGemini()
+    embedder = HashingEmbedder()
+    result = harness(retain_stages=gemini_stages(gemini, embedder, model="scripted")).run(
+        Instance.from_json(record())
+    )
+    assert gemini.calls["extraction"] > 0
+    assert result["facts"] > 0 and result["entities"] == 1 and result["observations"] == 1
+    assert result["retrieval"]["session"]["recall_any@1"] == 1.0
 
 
 def test_abstention_questions_are_not_scored_for_retrieval():
@@ -129,6 +201,21 @@ def test_judge_prompts_follow_the_question_type():
     assert "off-by-one" in judge_prompt("temporal-reasoning", *args, abstention=False)
     assert "updated answer" in judge_prompt("knowledge-update", *args, abstention=False)
     assert "Rubric" in judge_prompt("single-session-preference", *args, abstention=False)
+
+
+def test_alloydb_cleanup_deletes_a_users_rows_in_one_transaction():
+    from unittest.mock import MagicMock
+
+    from bench.alloydb import delete_users
+
+    conn = MagicMock()
+    delete_users(lambda: conn, "lme:q1")
+    cur = conn.cursor.return_value.__enter__.return_value
+    tables = [call.args[0].split()[2] for call in cur.execute.call_args_list]
+    assert tables == ["observations", "memory_facts", "entities", "documents"]
+    assert all(call.args[1] == ("lme:q1",) for call in cur.execute.call_args_list)
+    conn.commit.assert_called_once()
+    conn.close.assert_called_once()
 
 
 def test_cached_embedder_only_embeds_new_texts(tmp_path):

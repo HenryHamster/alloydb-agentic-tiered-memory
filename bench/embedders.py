@@ -1,7 +1,8 @@
 """Embedders for benchmark runs, plus an on-disk cache so reruns do not re-embed.
 
-retain.embeddings.GeminiEmbedder is still Retain's stub. VertexEmbedder is a benchmark-local
-stand-in with the same model and dimensions; switch to Retain's once it is filled.
+VertexEmbedder calls the same model and dimensions as retain.embeddings.GeminiEmbedder, but also
+sets the RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY task type, so benchmark vectors are asymmetric where
+production's are not.
 """
 
 import hashlib

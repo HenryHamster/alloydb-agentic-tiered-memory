@@ -86,7 +86,7 @@ For Retain:
    episode? Today only the first round is its `source_episode_id`, so a window showing the
    later round does not exclude it.
 
-For Reflect (`origin/reflect`, not merged here):
+For Reflect (skeleton merged; stages on `origin/reflect`):
 1. `types=["mental_model"]` is accepted but returns nothing until a table exists.
 2. Recall should call `ReflectStore.record_access` for returned rows and search through
    `tiered_search` (hot → warm → archived); both are stubs on that branch.
@@ -96,11 +96,12 @@ For Reflect (`origin/reflect`, not merged here):
 
 1. Run `AlloyDBRecallStore` against a live instance (`python -m bench.longmemeval ...
    --backend alloydb`) and check the plans use the HNSW, GIN and scope indexes (`EXPLAIN`).
-2. Verify `ai.rank()` (argument names, model ID, 1-based `index`; needs the Discovery Engine API).
+2. Run `ai.rank()` live (needs the Discovery Engine API). The argument names, model ID, 1-based
+   `index` and unique-documents rule follow the AlloyDB docs; the reranker dedupes texts.
 3. Calibrate `score_floor` on real `ai.rank()` scores; tune `recency_half_life_days`. LongMemEval
    runs with `--reranker alloydb` give the labelled sample.
-4. `GeminiEmbedder` is still Retain's stub, so production query embedding raises and Recall
-   falls back to keyword, entity and temporal search until it is filled. The benchmark uses
-   its own `bench.embedders.VertexEmbedder` (same model and dimensions) meanwhile.
+4. Measure the full system with `--retain gemini` (Retain's extraction, entities, links,
+   supersession and observations) against the `--retain verbatim` baseline, starting on
+   `longmemeval_oracle.json` or a `--limit` subset: it makes several Gemini calls per round.
 5. Replace `retrieve_hybrid_entities` in `adk_memory_provider.py` and `agent_orchestrator.py`
    with `build_turn_context(...)` and register `make_recall_tools(...)` on the agent.

@@ -230,3 +230,14 @@ def test_query_grams_cover_multi_word_entity_names():
     grams = _query_grams("What did Bank of America say about Project Falcon?")
     assert {"bank of america", "project falcon", "falcon"} <= set(grams)
     assert "of" not in grams and "of america" not in grams
+
+
+def test_reranker_sends_unique_documents_and_maps_scores_back():
+    from recall.reranker import AlloyDBReranker
+
+    conn = FakeConnection(rows=[(2, 0.9), (1, 0.4)])  # ai.rank() index is 1-based
+    reranker = AlloyDBReranker(lambda: conn)
+    scores = reranker("q", ["Thanks!", "Backups run nightly", "Thanks!", "", "  "])
+    sent = conn.statements[-1][1][2]
+    assert sent == ["Thanks!", "Backups run nightly", " "]
+    assert scores == [0.4, 0.9, 0.4, 0.0, 0.0]

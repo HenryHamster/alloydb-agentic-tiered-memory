@@ -10,9 +10,9 @@ class AlloyDBReranker:
     Reuses one connection (get_db_connection shells out to gcloud for a token, too slow per
     call) and reconnects once if it drops. Rows ai.rank() does not return score 0.
 
-    TODO(recall): verify the ai.rank() signature, the model ID, and that `index` is 1-based on
-    the live instance. It needs the Discovery Engine API and is a preview function. The ranking
-    API takes at most 200 records per call, which RecallConfig.rerank_pool stays under.
+    Signature, model ID and the 1-based `index` follow the AlloyDB docs; not yet run live. It
+    needs the Discovery Engine API and is a preview function. The ranking API takes at most 200
+    unique records per call, which RecallConfig.rerank_pool stays under.
     """
 
     def __init__(self, conn_factory, *, model_id: str = "semantic-ranker-default-003"):
@@ -30,13 +30,13 @@ class AlloyDBReranker:
     def __call__(self, query: str, texts: Sequence[str]) -> list[float]:
         if not texts:
             return []
-        documents = [text if text.strip() else " " for text in texts]
+        # ai.rank() takes unique strings; repeated texts (common in chat) share one score.
+        keys = [text if text.strip() else " " for text in texts]
+        documents = list(dict.fromkeys(keys))
         with self._lock:
             rows = self._rank(query, documents)
-        scores = [0.0] * len(texts)
-        for index, score in rows:
-            scores[int(index) - 1] = float(score)  # positions into the documents array
-        return scores
+        by_text = {documents[int(index) - 1]: float(score) for index, score in rows}  # 1-based
+        return [by_text.get(key, 0.0) for key in keys]
 
     def _connection(self):
         if self._conn is None or self._conn.closed:

@@ -10,13 +10,15 @@ Google ADK agent with the callback and function tool, and checks prompt assembly
 Ruff checks imports, undefined names, and consistent formatting.
 `tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
 with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
-atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
+atomic store writes and worker wiring. `tests/test_retain_*.py` cover its Gemini stages and
+AlloyDB store against fakes; `tests/test_retain_live.py` runs only with `RETAIN_LIVE=1`.
 `tests/test_recall.py` and `tests/test_session_window.py` check Recall over Retain's in-memory
 tables: scope isolation, supersession, time windows, entity and graph reach, abstention, token
 budgets, the agent tools, and the sliding window feeding Recall. `tests/test_recall_alloydb.py`
 checks the AlloyDB store against a scripted connection (bound parameters, row decoding,
 reconnects); it does not run SQL. `tests/test_bench.py` runs the LongMemEval harness on a tiny
-dataset in LongMemEval's format.
+dataset in LongMemEval's format, with both the verbatim and the Retain Gemini stages
+(scripted model).
 `tests/test_reflect.py` covers the Reflect skeleton: config and record validation, link types
 and provider-neutral production wiring, including the merged store module. Every Reflect
 processing stage is a stub; Recall integration with facts/macros is not implemented.
