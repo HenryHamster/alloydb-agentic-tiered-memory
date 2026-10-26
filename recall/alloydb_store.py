@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -55,6 +56,9 @@ FACT_JSON = """jsonb_build_object(
     'occurred_at', f.occurred_at, 'recorded_at', f.recorded_at, 'valid_from', f.valid_from,
     'valid_to', f.valid_to, 'superseded_by', f.superseded_by::text,
     'evidence_count', f.evidence_count,
+    'tier', to_jsonb(f)->'tier', 'confidence', to_jsonb(f)->'confidence',
+    'consolidated_into', to_jsonb(f)->'consolidated_into',
+    'conflicts_with', to_jsonb(f)->'conflicts_with',
     'entity_ids', ARRAY(SELECT DISTINCT me.entity_id::text FROM memory_entities me
                         WHERE me.fact_id = f.fact_id ORDER BY 1)
 )"""
@@ -113,6 +117,36 @@ _TABLES = {
 _MAX_GRAM_WORDS = 4
 _MIN_FUZZY_CHARS = 4
 
+MACRO_VIEW = """recall_macros AS NOT MATERIALIZED (
+    SELECT m.*, m.macro_title || E'\\n' || m.macro_summary AS text,
+           m.macro_embedding AS embedding, m.summary_tsv AS text_tsv,
+           m.updated_at AS valid_from
+    FROM macro_memories m
+)"""
+
+MACRO_JSON = """jsonb_build_object(
+    'macro_id', f.macro_id::text, 'text', f.text, 'created_at', f.created_at,
+    'valid_from', f.valid_from, 'valid_to', f.valid_to, 'tier', f.tier,
+    'supporting_fact_ids', f.supporting_fact_ids::text[],
+    'primary_entity_ids', f.primary_entity_ids::text[]
+)"""
+
+
+def _predicate(kind, reflect_enabled):
+    if not reflect_enabled:
+        return CANDIDATE_SQL
+    if kind == "fact":
+        return (
+            CANDIDATE_SQL
+            + " AND f.consolidated_into IS NULL"
+            + (" AND (%(tiers)s::text[] IS NULL OR f.tier = ANY(%(tiers)s::text[]))")
+        )
+    if kind == "mental_model":
+        return CANDIDATE_SQL + (
+            " AND (%(tiers)s::text[] IS NULL OR f.tier = ANY(%(tiers)s::text[]))"
+        )
+    return CANDIDATE_SQL + (" AND (%(tiers)s::text[] IS NULL OR 'hot' = ANY(%(tiers)s::text[]))")
+
 
 class AlloyDBRecallStore:
     """One reused connection from `conn_factory` (db_clients.get_db_connection).
@@ -122,9 +156,12 @@ class AlloyDBRecallStore:
     Rows map to recall.models.Memory through Memory.from_fact / from_observation / from_episode.
     """
 
-    def __init__(self, conn_factory, *, min_entity_similarity: float = 0.6):
+    def __init__(
+        self, conn_factory, *, min_entity_similarity: float = 0.6, reflect_enabled: bool = False
+    ):
         self.conn_factory = conn_factory
         self.min_entity_similarity = min_entity_similarity
+        self.reflect_enabled = reflect_enabled
         self._conn = None
         self._lock = threading.Lock()
 
@@ -134,9 +171,22 @@ class AlloyDBRecallStore:
                 self._conn.close()
                 self._conn = None
 
-    def search(self, scope, queries, embeddings, window, types, as_of, include_invalid, limit):
+    def search(
+        self,
+        scope,
+        queries,
+        embeddings,
+        window,
+        types,
+        as_of,
+        include_invalid,
+        limit,
+        *,
+        tiers=None,
+    ):
         params = self._params(scope, as_of, include_invalid)
         params["limit"] = limit
+        params["tiers"] = list(tiers) if tiers is not None else None
         params["min_entity_similarity"] = self.min_entity_similarity
         for i, query in enumerate(queries):
             grams = _query_grams(query)
@@ -148,7 +198,9 @@ class AlloyDBRecallStore:
         if window is not None:
             params["win_start"], params["win_end"] = window.start, window.end
 
-        sql = _search_sql(len(queries), embeddings is not None, window is not None, types)
+        sql = _search_sql(
+            len(queries), embeddings is not None, window is not None, types, self.reflect_enabled
+        )
         if sql is None:
             return {}
         lists: dict[str, list[Memory]] = {}
@@ -160,13 +212,17 @@ class AlloyDBRecallStore:
             lists.setdefault(channel, []).append(memories[key])
         return lists
 
-    def expand_neighbors(self, scope, seed_ids, types, as_of, include_invalid, limit):
+    def expand_neighbors(
+        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None
+    ):
         seeds = [i for i in dict.fromkeys(seed_ids) if _is_uuid(i)]  # episode ids are not facts
         if MemoryType.FACT not in types or not seeds:
             return []
         params = self._params(scope, as_of, include_invalid)
         params.update(seeds=seeds, limit=limit)
-        return [_fact(row) for (row,) in self._fetch(_NEIGHBORS_SQL, params)]
+        params["tiers"] = list(tiers) if tiers is not None else None
+        sql = _NEIGHBORS_SQL.replace(CANDIDATE_SQL, _predicate("fact", self.reflect_enabled))
+        return [_fact(row) for (row,) in self._fetch(sql, params)]
 
     def get_episode(self, scope, episode_id):
         params = self._params(scope, datetime.now(timezone.utc), False)
@@ -189,7 +245,10 @@ class AlloyDBRecallStore:
         # the caller can see how the observation's evidence changed.
         params = self._params(scope, datetime.now(timezone.utc), True)
         params["id"] = observation_id
-        return [_fact(row) for (row,) in self._fetch(_SUPPORTING_SQL, params)]
+        rows = self._fetch(_SUPPORTING_SQL, params)
+        if not rows and self.reflect_enabled:
+            rows = self._fetch(_MACRO_SUPPORTING_SQL, params)
+        return [_fact(row) for (row,) in rows]
 
     # Connection handling.
 
@@ -249,11 +308,24 @@ class AlloyDBRecallStore:
 # SQL builders. Only fixed fragments and internal names are formatted into SQL text.
 
 
-def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | None:
+def _search_sql(
+    n_queries: int, vectors: bool, window: bool, types, reflect_enabled: bool = False
+) -> str | None:
     """One statement: a CTE per channel ranking (kind, id) across memory types, then one join
     back to each table for the rows that made any channel."""
     ctes, hits = [], []
     tables = [_TABLES[t] for t in (MemoryType.FACT, MemoryType.OBSERVATION) if t in types]
+    macros = reflect_enabled and MemoryType.MENTAL_MODEL in types
+    if macros:
+        tables.append(
+            (
+                "mental_model",
+                "recall_macros",
+                "macro_id",
+                "f.valid_from",
+                "GREATEST(f.valid_from, COALESCE(f.valid_to, %(as_of)s))",
+            )
+        )
     episodes = MemoryType.EPISODE in types
 
     def channel(name: str, parts: list[str]) -> None:
@@ -269,7 +341,7 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
             f"SELECT '{name}'::text AS channel, kind, id, rank FROM {cte} WHERE rank <= %(limit)s"
         )
 
-    prelude = []
+    prelude = [MACRO_VIEW] if macros else []
     for i in range(n_queries):
         prelude.append(f"kq{i} AS (SELECT {OR_TSQUERY.format(i=i)} AS query)")
         if tables:
@@ -282,7 +354,7 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
                 [
                     f"(SELECT '{kind}'::text AS kind, f.{pk}::text AS id,"
                     f" -(f.embedding <=> %(qvec_{i})s::vector) AS key"
-                    f" FROM {table} f WHERE {CANDIDATE_SQL} AND f.embedding IS NOT NULL"
+                    f" FROM {table} f WHERE {_predicate(kind, reflect_enabled)} AND f.embedding IS NOT NULL"
                     f" ORDER BY f.embedding <=> %(qvec_{i})s::vector LIMIT %(limit)s)"
                     for kind, table, pk, _, _ in tables
                 ],
@@ -290,7 +362,7 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
         keyword = [
             f"(SELECT '{kind}'::text AS kind, f.{pk}::text AS id,"
             f" ts_rank(f.text_tsv, q.query) AS key"
-            f" FROM {table} f, kq{i} q WHERE {CANDIDATE_SQL} AND f.text_tsv @@ q.query"
+            f" FROM {table} f, kq{i} q WHERE {_predicate(kind, reflect_enabled)} AND f.text_tsv @@ q.query"
             f" ORDER BY key DESC LIMIT %(limit)s)"
             for kind, table, pk, _, _ in tables
         ]
@@ -311,11 +383,13 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
                     "EXISTS (SELECT 1 FROM memory_entities me"
                     f" WHERE me.fact_id = f.fact_id AND me.entity_id IN (SELECT entity_id FROM ent{i}))"
                 )
-            else:
+            elif kind == "observation":
                 match = f"f.entity_id IN (SELECT entity_id FROM ent{i})"
+            else:
+                match = f"f.primary_entity_ids && ARRAY(SELECT entity_id FROM ent{i})"
             entity.append(
                 f"(SELECT '{kind}'::text AS kind, f.{pk}::text AS id, {date} AS key"
-                f" FROM {table} f WHERE {CANDIDATE_SQL} AND {match}"
+                f" FROM {table} f WHERE {_predicate(kind, reflect_enabled)} AND {match}"
                 f" ORDER BY key DESC LIMIT %(limit)s)"
             )
         channel(f"entity:{i}", entity)
@@ -323,7 +397,7 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
     if window:
         temporal = [
             f"(SELECT '{kind}'::text AS kind, f.{pk}::text AS id, {date} AS key"
-            f" FROM {table} f WHERE {CANDIDATE_SQL}"
+            f" FROM {table} f WHERE {_predicate(kind, reflect_enabled)}"
             f" AND {date} < %(win_end)s AND {end} >= %(win_start)s"
             f" ORDER BY key DESC LIMIT %(limit)s)"
             for kind, table, pk, date, end in tables
@@ -343,7 +417,9 @@ def _search_sql(n_queries: int, vectors: bool, window: bool, types) -> str | Non
         return None
     payload = []
     for kind, table, pk, _, _ in tables:
-        row_json = FACT_JSON if kind == "fact" else OBSERVATION_JSON
+        row_json = {"fact": FACT_JSON, "observation": OBSERVATION_JSON, "mental_model": MACRO_JSON}[
+            kind
+        ]
         payload.append(
             f"SELECT '{kind}'::text AS kind, f.{pk}::text AS id, {row_json} AS data FROM {table} f"
             f" WHERE f.{pk} = ANY(ARRAY(SELECT h.id::uuid FROM hits h WHERE h.kind = '{kind}'))"
@@ -374,10 +450,10 @@ WITH seed AS (
 ),
 edge AS (
     SELECT l.to_fact_id AS fact_id, l.weight FROM memory_links l
-    WHERE l.from_fact_id = ANY(%(seeds)s::uuid[])
+    WHERE l.from_fact_id IN (SELECT fact_id FROM seed)
     UNION ALL
     SELECT l.from_fact_id, l.weight FROM memory_links l
-    WHERE l.to_fact_id = ANY(%(seeds)s::uuid[])
+    WHERE l.to_fact_id IN (SELECT fact_id FROM seed)
 ),
 linked AS (
     SELECT f.fact_id, max(e.weight) AS weight
@@ -416,6 +492,14 @@ SELECT {FACT_JSON}
 FROM observations o JOIN memory_facts f ON f.fact_id = ANY(o.fact_ids)
 WHERE o.observation_id = %(id)s::uuid AND {CANDIDATE_SQL.replace("f.", "o.")} AND {CANDIDATE_SQL}
 ORDER BY array_position(o.fact_ids, f.fact_id)
+"""
+
+_MACRO_SUPPORTING_SQL = f"""
+WITH {MACRO_VIEW}
+SELECT {FACT_JSON}
+FROM recall_macros o JOIN memory_facts f ON f.fact_id = ANY(o.supporting_fact_ids)
+WHERE o.macro_id = %(id)s::uuid AND {CANDIDATE_SQL.replace("f.", "o.")} AND {CANDIDATE_SQL}
+ORDER BY array_position(o.supporting_fact_ids, f.fact_id)
 """
 
 
@@ -465,7 +549,7 @@ def _category(value: str) -> Category:
 
 
 def _fact(row: dict) -> Memory:
-    return Memory.from_fact(
+    memory = Memory.from_fact(
         MemoryFact(
             fact_id=row["fact_id"],
             scope=_scope(row),
@@ -486,6 +570,13 @@ def _fact(row: dict) -> Memory:
             evidence_count=row["evidence_count"],
             entity_ids=tuple(row["entity_ids"] or ()),
         )
+    )
+    return replace(
+        memory,
+        tier=row.get("tier"),
+        confidence=float(row["confidence"] if row.get("confidence") is not None else 1.0),
+        consolidated_into=row.get("consolidated_into"),
+        conflicts_with=tuple(row.get("conflicts_with") or ()),
     )
 
 
@@ -523,4 +614,24 @@ def _episode(rows: list[dict]) -> Memory:
     )
 
 
-_DECODERS = {"fact": _fact, "observation": _observation, "episode": _episode}
+def _macro(row: dict) -> Memory:
+    return Memory(
+        id=row["macro_id"],
+        type=MemoryType.MENTAL_MODEL,
+        text=row["text"],
+        recorded_at=_ts(row["created_at"]),
+        valid_from=_ts(row["valid_from"]),
+        valid_to=_ts(row["valid_to"]),
+        tier=row["tier"],
+        supporting_ids=tuple(row["supporting_fact_ids"] or ()),
+        entity_ids=tuple(row["primary_entity_ids"] or ()),
+        evidence_count=len(row["supporting_fact_ids"] or ()),
+    )
+
+
+_DECODERS = {
+    "fact": _fact,
+    "observation": _observation,
+    "episode": _episode,
+    "mental_model": _macro,
+}

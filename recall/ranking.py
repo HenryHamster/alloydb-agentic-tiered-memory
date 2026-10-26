@@ -34,6 +34,8 @@ def rerank(
     reranker: Reranker | None,
     pool: int,
     top: int,
+    *,
+    strict: bool = False,
 ) -> tuple[list[Scored], bool]:
     """Cross-encodes the fused head and keeps the top results.
 
@@ -56,6 +58,8 @@ def rerank(
             reranked.sort(key=lambda scored: scored.relevance, reverse=True)
             return reranked[:top], True
         except Exception as e:
+            if strict:
+                raise
             logger.warning("Reranker failed; keeping fused order: %s", e)
     leader = head[0].relevance or 1.0
     return [Scored(scored.memory, scored.relevance / leader) for scored in head[:top]], False
@@ -86,7 +90,9 @@ def apply_boosts(
         evidence = max(memory.evidence_count, len(memory.supporting_ids), 1)
         boost += config.evidence_boost * min(evidence - 1, 4) / 4
         boost = max(-config.max_boost, min(config.max_boost, boost))
-        boosted.append(Scored(memory, item.relevance, boost, item.relevance * (1 + boost)))
+        boosted.append(
+            Scored(memory, item.relevance, boost, item.relevance * (1 + boost) * memory.confidence)
+        )
     boosted.sort(key=lambda item: item.score, reverse=True)
     return boosted
 
@@ -102,7 +108,7 @@ def filter_and_abstain(
     for item in scored:
         if item.relevance < score_floor:
             below_floor += 1
-        elif not include_invalid and item.memory.is_stale(as_of):
+        elif item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
             stale += 1
         else:
             kept.append(item)

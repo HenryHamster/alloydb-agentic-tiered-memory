@@ -50,8 +50,17 @@ def run_agent_turn(
     project_id: Optional[str] = None,
     trigger_limit: int = 10,
     window_size: int = 4,
+    *,
+    memory_system=None,
 ) -> Tuple[str, str, float]:
     """Executes a complete 2-tier agent memory turn loop, returning (response_text, system_prompt, latency_seconds)."""
+    if memory_system is not None:
+        from retain.models import Scope
+
+        result = memory_system.answer(
+            Scope(user_id, project_id, session_id), user_query, prev_session_id=prev_session_id
+        )
+        return result.text, result.prompt, result.total_seconds
     start_time = time.time()
 
     # 1. Fetch short-term rolling summary + recent turns from Valkey

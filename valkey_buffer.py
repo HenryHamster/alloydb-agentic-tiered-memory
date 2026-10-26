@@ -174,10 +174,13 @@ class SessionBuffer:
         trigger_limit: int = TRIGGER_LIMIT,
         window_size: int = WINDOW_SIZE,
         count_tokens: TokenCounter = estimate_tokens,
+        *,
+        strict: bool = False,
     ):
         if window_size < 0 or trigger_limit < window_size:
             raise ValueError("Need 0 <= window_size <= trigger_limit")
         self.generate = generate
+        self.strict = strict
         self.trigger_limit = trigger_limit
         self.window_size = window_size
         self.count_tokens = count_tokens
@@ -185,7 +188,13 @@ class SessionBuffer:
         self._fallback = _FallbackLists()
 
     def append(
-        self, session_id: str, user_msg: str, ai_msg: str, at: Optional[datetime] = None
+        self,
+        session_id: str,
+        user_msg: str,
+        ai_msg: str,
+        at: Optional[datetime] = None,
+        *,
+        round_id: str | None = None,
     ) -> str:
         """Stores one round, compacts if the window is over the trigger, and returns its round_id.
 
@@ -193,7 +202,7 @@ class SessionBuffer:
         Recall can skip memories drawn from rounds still in the window.
         """
         turns_key, _ = _keys(session_id)
-        round_id = uuid.uuid4().hex
+        round_id = round_id or uuid.uuid4().hex
         at = at or datetime.now(timezone.utc)
         values = [
             Turn("user", user_msg, round_id, at).to_json(),
@@ -203,6 +212,8 @@ class SessionBuffer:
             self._valkey.push(turns_key, values)
             lists: Any = self._valkey
         except STORAGE_ERRORS as e:
+            if self.strict:
+                raise
             logger.warning("Valkey write failed (%s); using the in-process fallback buffer.", e)
             self._fallback.push(turns_key, values)
             lists = self._fallback
@@ -210,6 +221,8 @@ class SessionBuffer:
         try:
             self._compact(lists, session_id)
         except Exception as e:
+            if self.strict:
+                raise
             # The turn is stored; the window stays untrimmed and compaction retries next turn.
             logger.warning("Rolling summary failed for session %s; not trimming: %s", session_id, e)
         return round_id
@@ -218,6 +231,8 @@ class SessionBuffer:
         try:
             return self._read(self._valkey, session_id, degraded=False)
         except STORAGE_ERRORS as e:
+            if self.strict:
+                raise
             logger.warning("Valkey read failed (%s); using the in-process fallback buffer.", e)
             return self._read(self._fallback, session_id, degraded=True)
 

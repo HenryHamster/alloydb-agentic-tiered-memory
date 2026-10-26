@@ -18,7 +18,7 @@ import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
-from recall.config import RecallConfig, RecallDepth, parse_types
+from recall.config import DEFAULT_TYPES, MemoryType, RecallConfig, RecallDepth, parse_types
 from recall.models import QueryPlan, RecallResult, TimeWindow, Tracer, as_aware
 from recall.packing import pack
 from recall.query import analyze_query
@@ -49,6 +49,8 @@ class Recaller:
         count_tokens: TokenCounter = estimate_tokens,
         config: RecallConfig = RecallConfig(),
         clock: Callable[[], datetime] = _utcnow,
+        reflect_store=None,
+        strict: bool = False,
     ):
         self.store = store
         self.embedder = embedder
@@ -57,6 +59,8 @@ class Recaller:
         self.count_tokens = count_tokens
         self.config = config
         self.clock = clock
+        self.reflect_store = reflect_store
+        self.strict = strict
 
     def recall(
         self,
@@ -82,6 +86,8 @@ class Recaller:
         """
         # Normalise inputs and fix the reference time; depth sets the candidate pool size.
         depth = RecallDepth.parse(depth)
+        if types is None and self.reflect_store is not None:
+            types = (*DEFAULT_TYPES, MemoryType.MENTAL_MODEL)
         types = parse_types(types)
         if max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
@@ -97,7 +103,13 @@ class Recaller:
         # Resolve "last week"-style phrases to a date window and split compound questions.
         with tracer.stage("analyze_query") as stage:
             plan = analyze_query(
-                query, as_of, temporal_window, decompose, self.generate, config.max_sub_queries
+                query,
+                as_of,
+                temporal_window,
+                decompose,
+                self.generate,
+                config.max_sub_queries,
+                strict=self.strict,
             )
             stage.count = len(plan.sub_queries)
             stage.detail = {"window_source": plan.window_source, "llm_used": plan.llm_used}
@@ -108,75 +120,99 @@ class Recaller:
                 embeddings = self.embedder(plan.sub_queries)
                 stage.count = len(embeddings)
             except Exception as e:
+                if self.strict:
+                    raise
                 # A zero vector would return arbitrary neighbours; skip the channel instead.
                 logger.warning("Query embedding failed; skipping vector search: %s", e)
                 embeddings = None
                 stage.detail = {"error": str(e)}
 
-        # One store call returns a ranked list per channel (vector, keyword, entity, temporal).
-        with tracer.stage("search") as stage:
-            lists = self.store.search(
-                scope,
-                plan.sub_queries,
-                embeddings,
-                plan.window,
-                types,
-                as_of,
-                include_invalid,
-                pool,
-            )
-            stage.count = sum(len(results) for results in lists.values())
-            stage.detail = {"lists": {name: len(results) for name, results in lists.items()}}
-
-        # Pull in linked memories one hop from the current top hits, as an extra ranked list.
-        with tracer.stage("graph_expand") as stage:
-            seeds = [s.memory.id for s in fuse_rrf(lists, config.rrf_k)[: config.graph_seeds]]
-            if seeds:
-                neighbors = self.store.expand_neighbors(
-                    scope, seeds, types, as_of, include_invalid, pool
+        # Reuse the same channels/ranking when expanding the working set. A reranked
+        # hot set may finish early; uncalibrated fusion always searches every tier.
+        lists = {}
+        visited = []
+        passes = ("hot", "warm", "archived") if self.reflect_store is not None else (None,)
+        for tier in passes:
+            if tier is not None:
+                visited.append(tier)
+            search_kwargs = {"tiers": [tier]} if tier is not None else {}
+            with tracer.stage("search") as stage:
+                found = self.store.search(
+                    scope,
+                    plan.sub_queries,
+                    embeddings,
+                    plan.window,
+                    types,
+                    as_of,
+                    include_invalid,
+                    pool,
+                    **search_kwargs,
                 )
-                if neighbors:
-                    lists = {**lists, "graph": neighbors}
-                stage.count = len(neighbors)
-            stage.detail = {"seeds": len(seeds)}
+                for name, hits in found.items():
+                    lists.setdefault(name, []).extend(hits)
+                stage.count = sum(len(hits) for hits in found.values())
+                stage.detail = {"tier": tier, "lists": {k: len(v) for k, v in found.items()}}
 
-        # Merge all channel lists into one ranking, drop rounds already in the sliding window,
-        # and cap at the depth's pool size.
-        with tracer.stage("fuse_rrf") as stage:
-            fused = fuse_rrf(lists, config.rrf_k)
-            if exclude_episode_ids:
-                excluded = set(exclude_episode_ids)
-                before = len(fused)
-                fused = [s for s in fused if s.memory.source_episode_id not in excluded]
-                stage.detail = {"in_window": before - len(fused)}
-            fused = fused[:pool]
-            stage.count = len(fused)
+            with tracer.stage("graph_expand") as stage:
+                seeds = [s.memory.id for s in fuse_rrf(lists, config.rrf_k)[: config.graph_seeds]]
+                if seeds:
+                    kwargs = {"tiers": visited} if tier is not None else {}
+                    neighbors = self.store.expand_neighbors(
+                        scope, seeds, types, as_of, include_invalid, pool, **kwargs
+                    )
+                    if neighbors:
+                        lists["graph"] = neighbors
+                    stage.count = len(neighbors)
+                stage.detail = {"seeds": len(seeds)}
 
-        # Re-score the fused head with the cross-encoder; `reranked` is False without one.
-        with tracer.stage("rerank") as stage:
-            ranked, reranked = rerank(
-                plan.sub_queries, fused, self.reranker, config.rerank_pool, config.rerank_top
-            )
-            stage.count = len(ranked)
-            stage.detail = {"reranked": reranked}
+            with tracer.stage("fuse_rrf") as stage:
+                fused = fuse_rrf(lists, config.rrf_k)
+                if exclude_episode_ids:
+                    excluded = set(exclude_episode_ids)
+                    before = len(fused)
+                    fused = [s for s in fused if s.memory.source_episode_id not in excluded]
+                    stage.detail = {"in_window": before - len(fused)}
+                fused = fused[:pool]
+                stage.count = len(fused)
 
-        # Nudge scores for recency, fit to the date window and supporting evidence.
-        with tracer.stage("apply_boosts") as stage:
-            boosted = apply_boosts(ranked, as_of, plan.window, config)
-            stage.count = len(boosted)
+            with tracer.stage("rerank") as stage:
+                ranked, reranked = rerank(
+                    plan.sub_queries,
+                    fused,
+                    self.reranker,
+                    config.rerank_pool,
+                    config.rerank_top,
+                    strict=self.strict,
+                )
+                stage.count = len(ranked)
+                stage.detail = {"reranked": reranked}
 
-        # Drop low-relevance and superseded memories; an empty result means abstain.
-        with tracer.stage("filter_and_abstain") as stage:
-            floor = config.score_floor if reranked else 0.0
-            kept, dropped = filter_and_abstain(boosted, as_of, include_invalid, floor)
-            stage.count = len(kept)
-            stage.detail = {"score_floor": floor, **dropped}
+            with tracer.stage("apply_boosts") as stage:
+                boosted = apply_boosts(ranked, as_of, plan.window, config)
+                stage.count = len(boosted)
+
+            with tracer.stage("filter_and_abstain") as stage:
+                floor = config.score_floor if reranked else 0.0
+                kept, dropped = filter_and_abstain(boosted, as_of, include_invalid, floor)
+                stage.count = len(kept)
+                stage.detail = {"score_floor": floor, **dropped}
+            if reranked and len(kept) >= config.tier_min_hits:
+                break
 
         # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
             items, context, used, truncated = pack(kept, as_of, max_tokens, self.count_tokens)
             stage.count = len(items)
             stage.detail = {"tokens_used": used, "truncated": truncated}
+
+        if self.reflect_store is not None:
+            with tracer.stage("record_access") as stage:
+                facts = [item.memory.id for item in items if item.memory.type == MemoryType.FACT]
+                macros = [
+                    item.memory.id for item in items if item.memory.type == MemoryType.MENTAL_MODEL
+                ]
+                self.reflect_store.record_access(facts, macros, as_of)
+                stage.count = len(facts) + len(macros)
 
         # Return the packed context plus the per-stage trace for debugging.
         return RecallResult(
@@ -192,7 +228,15 @@ class Recaller:
         )
 
 
-def build_recaller(conn_factory, genai_client, *, config: RecallConfig = RecallConfig()):
+def build_recaller(
+    conn_factory,
+    genai_client,
+    *,
+    embedding_client=None,
+    reflect_store=None,
+    strict: bool = False,
+    config: RecallConfig = RecallConfig(),
+):
     """Production wiring: AlloyDB store, Retain's embedder, ai.rank() and Gemini."""
     from recall.alloydb_store import AlloyDBRecallStore
     from recall.reranker import AlloyDBReranker
@@ -200,10 +244,12 @@ def build_recaller(conn_factory, genai_client, *, config: RecallConfig = RecallC
     from shared.llm import GeminiGenerator
 
     return Recaller(
-        store=AlloyDBRecallStore(conn_factory),
+        store=AlloyDBRecallStore(conn_factory, reflect_enabled=reflect_store is not None),
         # Same model as the write path, so query and fact vectors are comparable.
-        embedder=GeminiEmbedder(genai_client),
+        embedder=GeminiEmbedder(embedding_client or genai_client),
         reranker=AlloyDBReranker(conn_factory),
         generate=GeminiGenerator(genai_client),
         config=config,
+        reflect_store=reflect_store,
+        strict=strict,
     )

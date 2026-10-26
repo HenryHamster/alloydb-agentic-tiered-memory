@@ -27,6 +27,8 @@ class RecallStore(Protocol):
         as_of: datetime,
         include_invalid: bool,
         limit: int,
+        *,
+        tiers: Sequence[str] | None = None,
     ) -> dict[str, list[Memory]]:
         """Runs vector, keyword, query-entity and temporal searches in one round trip.
 
@@ -45,6 +47,8 @@ class RecallStore(Protocol):
         as_of: datetime,
         include_invalid: bool,
         limit: int,
+        *,
+        tiers: Sequence[str] | None = None,
     ) -> list[Memory]:
         """One hop from the seeds over memory_links (by weight) and shared entities."""
         ...
@@ -85,11 +89,25 @@ class InMemoryRecallStore:
     in the query; AlloyDBRecallStore uses tsvector ranking and pg_trgm instead.
     """
 
-    def __init__(self, retain_store: InMemoryRetainStore):
+    def __init__(self, retain_store: InMemoryRetainStore, reflect_store=None):
         self.retain_store = retain_store
+        self.reflect_store = reflect_store
+        self.reflect_enabled = reflect_store is not None
 
-    def search(self, scope, queries, embeddings, window, types, as_of, include_invalid, limit):
-        candidates = self._candidates(scope, types, as_of, include_invalid)
+    def search(
+        self,
+        scope,
+        queries,
+        embeddings,
+        window,
+        types,
+        as_of,
+        include_invalid,
+        limit,
+        *,
+        tiers=None,
+    ):
+        candidates = self._candidates(scope, types, as_of, include_invalid, tiers)
         lists: dict[str, list[Memory]] = {}
         for index, query in enumerate(queries):
             if embeddings is not None:
@@ -101,13 +119,17 @@ class InMemoryRecallStore:
             lists["temporal"] = sorted(hits, key=_newest_first)[:limit]
         return {name: results for name, results in lists.items() if results}
 
-    def expand_neighbors(self, scope, seed_ids, types, as_of, include_invalid, limit):
+    def expand_neighbors(
+        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None
+    ):
         if MemoryType.FACT not in types:
             return []
         seeds = set(seed_ids)
         readable = {
             memory.id: memory
-            for memory, _ in self._candidates(scope, [MemoryType.FACT], as_of, include_invalid)
+            for memory, _ in self._candidates(
+                scope, [MemoryType.FACT], as_of, include_invalid, tiers
+            )
         }
         by_link: dict[str, float] = {}
         for link in list(self.retain_store.links.values()):
@@ -145,6 +167,14 @@ class InMemoryRecallStore:
 
     def get_supporting(self, scope, observation_id):
         observation = self.retain_store.observations.get(observation_id)
+        if observation is None and self.reflect_store is not None:
+            macro = self.reflect_store.macros.get(observation_id)
+            if macro and is_visible(macro.visibility, macro.scope, scope):
+                return [
+                    Memory.from_fact(fact)
+                    for fact in self.retain_store.get_facts(macro.supporting_fact_ids)
+                    if fact.visible_to(scope)
+                ]
         if observation is None or not is_visible(observation.visibility, observation.scope, scope):
             return []
         facts = self.retain_store.get_facts(observation.fact_ids)
@@ -152,11 +182,19 @@ class InMemoryRecallStore:
 
     # Candidate rows: (memory, embedding) readable by `scope`, filtered by type and validity.
 
-    def _candidates(self, scope, types, as_of, include_invalid):
+    def _candidates(self, scope, types, as_of, include_invalid, tiers=None):
         rows: list[tuple[Memory, Sequence[float] | None]] = []
         if MemoryType.FACT in types:
             rows += [
-                (Memory.from_fact(fact), fact.embedding)
+                (
+                    Memory.from_fact(
+                        fact,
+                        state=self.reflect_store.states.get(fact.fact_id)
+                        if self.reflect_store
+                        else None,
+                    ),
+                    fact.embedding,
+                )
                 for fact in list(self.retain_store.facts.values())
                 if fact.visible_to(scope)
             ]
@@ -169,11 +207,18 @@ class InMemoryRecallStore:
         if MemoryType.EPISODE in types:
             # Episodes have no embedding; they are found by keyword and time only.
             rows += [(Memory.from_episode(docs), None) for docs in self._episodes(scope).values()]
-        # MemoryType.MENTAL_MODEL: Reflect has no table yet, so there is nothing to return.
+        if MemoryType.MENTAL_MODEL in types and self.reflect_store is not None:
+            rows += [
+                (Memory.from_macro(macro), macro.macro_embedding)
+                for macro in self.reflect_store.user_macros(scope.user_id)
+                if is_visible(macro.visibility, macro.scope, scope)
+            ]
         return [
             (memory, embedding)
             for memory, embedding in rows
-            if include_invalid or not memory.is_stale(as_of)
+            if (include_invalid or not memory.is_stale(as_of))
+            and not memory.consolidated_into
+            and (tiers is None or (memory.tier or "hot") in tiers)
         ]
 
     def _episodes(self, scope) -> dict[str, list[Document]]:
