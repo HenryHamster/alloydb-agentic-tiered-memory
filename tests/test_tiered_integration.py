@@ -23,6 +23,7 @@ from test_reflect import (
 )
 from test_retain_extraction import chunks, fact_row, gemini_returning
 
+from bench.mem2act import verify_retained_history
 from bench.metering import BudgetStop, Ledger, Models
 from recall import InMemoryRecallStore, Recaller
 from recall.alloydb_store import AlloyDBRecallStore
@@ -170,3 +171,33 @@ def test_budget_settles_thinking_and_persists_provider_receipt(tmp_path):
     Models(client, client, ledger).generate_content(model="gemini-3.5-flash", contents="hello")
     assert ledger.state["accounted_usd"] == pytest.approx(0.0024)
     assert (tmp_path / "calls/00001.json").exists()
+
+
+def test_recovery_rejects_changed_or_uncommitted_source(tmp_path):
+    case = {
+        "haystack_sessions": [
+            [{"role": "user", "content": "Keep 17"}, {"role": "assistant", "content": "Saved"}]
+        ]
+    }
+    events = json.dumps([case["haystack_sessions"][0][1]], ensure_ascii=False)
+    docs = [
+        {"document_id": "a", "position": 0, "text": "Keep 17"},
+        {"document_id": "b", "position": 1, "text": events},
+    ]
+    (tmp_path / "retention").mkdir()
+    (tmp_path / "retention/0-0.json").write_text(
+        json.dumps({"episode_id": "n:history:0:0", "batch": {"documents": docs}})
+    )
+    mapping = [{"session": 0, "round": 0, "messages": [0, 1]}]
+    (tmp_path / "message_mapping.json").write_text(json.dumps(mapping))
+    system = Mock()
+    system.recaller.store.get_episode.return_value = {"messages": docs}
+    system.retainer.store.retained_document_ids.return_value = {"a", "b"}
+    assert verify_retained_history(case, system, tmp_path, "n") == mapping
+    system.retainer.store.retained_document_ids.return_value = {"a"}
+    with pytest.raises(ValueError, match="not fully committed"):
+        verify_retained_history(case, system, tmp_path, "n")
+    system.retainer.store.retained_document_ids.return_value = {"a", "b"}
+    case["haystack_sessions"][0][0]["content"] = "Keep 18"
+    with pytest.raises(ValueError, match="differs from source"):
+        verify_retained_history(case, system, tmp_path, "n")

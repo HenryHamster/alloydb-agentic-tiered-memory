@@ -31,6 +31,17 @@ Ranking reserves USD .001 per 100 documents or fraction. Infrastructure is reser
 separately and requires an external runtime/shutdown bound. The ledger is an
 application spending guard, not a Google Cloud billing cap.
 
+Observation summaries must cover and cite every fact in their input group, or
+return an empty synthesis. Validation failures receive one corrected retry before
+propagating. This matches the existing all-facts provenance contract.
+
+`--resume-history` is an explicit recovery option after maintenance failure. It
+verifies every source message against saved receipts and committed database
+documents before reusing a complete history. It rejects input/namespace changes
+and changes to ingestion code; an observation-builder repair is allowed. Original
+source/status and paid-call receipts are preserved, the ledger is never reset,
+and recovery records distinguish previously retained history from new work.
+
 Sources: [generation pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing),
 [ranking pricing](https://cloud.google.com/generative-ai-app-builder/pricing),
 [AlloyDB prerequisites](https://docs.cloud.google.com/alloydb/docs/ai/rank-rerank-search-results-rag).

@@ -133,6 +133,38 @@ def test_observations_are_grounded_scoped_and_keep_contributing_fact_ids():
     assert all(o.observation_id in store.observations for o in written)
 
 
+def test_subset_citations_retry_once_without_relaxing_provenance():
+    store = InMemoryRetainStore()
+    facts = [memory_fact(i) for i in range(3)]
+    store.write(WriteBatch((), facts=tuple(facts)))
+    client = Mock()
+    client.models.generate_content.side_effect = [
+        SimpleNamespace(
+            text=json.dumps({"summary": "A partial summary.", "fact_ids": [facts[0].fact_id]})
+        ),
+        SimpleNamespace(
+            text=json.dumps(
+                {
+                    "summary": "The service uses all three settings.",
+                    "fact_ids": [f.fact_id for f in facts],
+                }
+            )
+        ),
+    ]
+    stage, _, embedder = builder(store, client)
+    (result,) = stage.consolidate(Scope(USER, PROJECT, SESSION))
+    assert set(result.fact_ids) == {f.fact_id for f in facts}
+    assert client.models.generate_content.call_count == 2
+    assert (
+        "EVERY input fact_id" in client.models.generate_content.call_args_list[0].kwargs["contents"]
+    )
+    assert (
+        "previous response failed validation"
+        in client.models.generate_content.call_args.kwargs["contents"]
+    )
+    embedder.assert_called_once()
+
+
 def test_observation_consolidation_is_idempotent_and_closes_stale_groups():
     store = InMemoryRetainStore()
     facts = [memory_fact(i) for i in range(2)]

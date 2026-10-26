@@ -50,19 +50,90 @@ def serial(value):
     return str(value)
 
 
-def run_case(case, system, ledger, output, run_id):
+def verify_retained_history(case, system, folder, namespace):
+    """Verify every source byte and committed document before explicit maintenance recovery."""
+    mapping = json.loads((folder / "message_mapping.json").read_text())
+    expected = []
+    for s, messages in enumerate(case["haystack_sessions"]):
+        scope = Scope(namespace, namespace, f"{namespace}:history:{s}")
+        for i, (user, events, indices) in enumerate(exchanges(messages)):
+            expected.append({"session": s, "round": i, "messages": indices})
+            receipt = json.loads((folder / "retention" / f"{s}-{i}.json").read_text())
+            episode_id = f"{scope.session_id}:{i}"
+            if receipt["episode_id"] != episode_id or receipt["batch"] is None:
+                raise ValueError("Retained-history receipt identity mismatch")
+            documents = sorted(receipt["batch"]["documents"], key=lambda d: d["position"])
+            ids = [d["document_id"] for d in documents]
+            original = system.recaller.store.get_episode(scope, episode_id)
+            if (
+                [d["text"] for d in documents] != [user, events]
+                or original is None
+                or [d["text"] for d in original["messages"]] != [user, events]
+                or system.retainer.store.retained_document_ids(ids) != set(ids)
+            ):
+                raise ValueError("Retained history differs from source or is not fully committed")
+    if mapping != expected:
+        raise ValueError("Retained history mapping is incomplete or reordered")
+    return mapping
+
+
+def run_case(case, system, ledger, output, run_id, *, resume_history=False, original_started_at=0):
     qid = case["question_id"]
     folder = output / qid
-    if folder.exists():
+    recovering = folder.exists() and resume_history
+    if folder.exists() and not recovering:
         raise ValueError(f"Partial/existing namespace {qid}; do not replay silently")
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=recovering)
     namespace = f"{run_id}:{qid}"
     started = time.perf_counter()
     initial_cost = ledger.state["accounted_usd"]
     mapping = []
+    previous_retention_seconds = 0
+    previous_question_usd = 0
+    if recovering:
+        if (folder / "prediction.json").exists():
+            raise ValueError("History recovery is only for a failure before answering")
+        mapping = verify_retained_history(case, system, folder, namespace)
+        old_events = [
+            json.loads(s) for s in (ledger.folder / "usage.jsonl").read_text().splitlines()
+        ]
+        prior_calls = {
+            e["id"]: e
+            for e in old_events
+            if e.get("phase") == "reserved"
+            and e.get("question_id") == qid
+            and e["time"] >= original_started_at
+        }
+        prior_settled = {e["id"]: e for e in old_events if e.get("phase") == "settled"}
+        previous_question_usd = sum(prior_settled.get(i, e)["usd"] for i, e in prior_calls.items())
+        spans = [
+            e
+            for e in old_events
+            if e.get("question_id") == qid
+            and e.get("stage") == "retain_history"
+            and e.get("event") == "span"
+            and e["time"] >= original_started_at
+        ]
+        if len(spans) != len(mapping):
+            raise ValueError("History recovery needs one original timing span per committed round")
+        previous_retention_seconds = max(e["time"] for e in spans) - min(
+            e["time"] - e["elapsed_seconds"] for e in spans
+        )
+        save(
+            folder / "history_recovery.json",
+            {
+                "verified_rounds": len(mapping),
+                "verified_source_messages": sum(len(e["messages"]) for e in mapping),
+                "original_retention_seconds": previous_retention_seconds,
+                "recovered_at": time.time(),
+                "paid_ingestion_replayed": False,
+            },
+        )
     for session_index, messages in enumerate(case["haystack_sessions"]):
         scope = Scope(namespace, namespace, f"{namespace}:history:{session_index}")
         for index, (user, events, indices) in enumerate(exchanges(messages)):
+            if recovering:
+                continue
             with ledger.scope(
                 question_id=qid, stage="retain_history", session=session_index, round=index
             ):
@@ -82,7 +153,8 @@ def run_case(case, system, ledger, output, run_id):
         "question_id": qid,
         "hypothesis": answer.text,
         "timing": {
-            "ingestion_seconds": ingested - started,
+            "ingestion_seconds": ingested - started + previous_retention_seconds,
+            "recovered_retention_seconds": previous_retention_seconds,
             "answer_ready_seconds": answer.answer_seconds,
             "turn_seconds_including_post_retention": None,
         },
@@ -97,7 +169,10 @@ def run_case(case, system, ledger, output, run_id):
         )
     prediction["post_answer_retained"] = True
     prediction["timing"]["turn_seconds_including_post_retention"] = time.perf_counter() - ingested
-    prediction["question_accounted_usd"] = ledger.state["accounted_usd"] - initial_cost
+    prediction["question_accounted_usd"] = (
+        ledger.state["accounted_usd"] - initial_cost + previous_question_usd
+    )
+    prediction["prior_attempt_question_accounted_usd"] = previous_question_usd
     save(folder / "prediction.json", prediction)
     save(
         folder / "memory_snapshot.json",
@@ -135,6 +210,11 @@ def main():
     p.add_argument("--infrastructure-reserve-usd", type=float, default=2)
     p.add_argument("--limit-questions", type=int, default=10)
     p.add_argument("--resume-completed", action="store_true")
+    p.add_argument(
+        "--resume-history",
+        action="store_true",
+        help="Explicitly verify and reuse fully committed histories after maintenance failure",
+    )
     a = p.parse_args()
     if not 0 < a.limit_usd <= 10 or not 0 <= a.infrastructure_reserve_usd < a.limit_usd:
         p.error("This pilot has a USD 10 aggregate authorization")
@@ -157,8 +237,37 @@ def main():
             "source_manifest_sha256": digest(a.source_manifest),
         }
         identity_path = a.output / "identity.json"
+        original_started_at = 0
         if identity_path.exists():
-            if not a.resume_completed or json.loads(identity_path.read_text()) != identity:
+            previous_identity = json.loads(identity_path.read_text())
+            if a.resume_history:
+                old_source = json.loads((a.output / "source_manifest.json").read_text())
+                new_source = json.loads(a.source_manifest.read_text())
+                changed = {
+                    p
+                    for p in set(old_source["files"]) | set(new_source["files"])
+                    if old_source["files"].get(p) != new_source["files"].get(p)
+                }
+                allowed = {"retain/observations.py", "bench/mem2act.py"}
+                if any(p not in allowed and not p.startswith(("tests/", "docs/")) for p in changed):
+                    raise ValueError("History recovery cannot reuse changed ingestion source")
+                if any(previous_identity[k] != identity[k] for k in ("run_id", "cases_sha256")):
+                    raise ValueError("History recovery requires the same namespace and input")
+                old_status = json.loads((a.output / "status.json").read_text())
+                if old_status["status"] != "failed":
+                    raise ValueError("History recovery requires a recorded failed attempt")
+                original_started_at = old_status["started_at"]
+                save(
+                    a.output / "before_history_recovery.json",
+                    {
+                        "identity": previous_identity,
+                        "source": old_source,
+                        "status": old_status,
+                        "changed_files": sorted(changed),
+                        "new_identity": identity,
+                    },
+                )
+            elif not a.resume_completed or previous_identity != identity:
                 raise ValueError("Resume needs identical source/input identity and explicit flag")
         save(identity_path, identity)
         save(a.output / "source_manifest.json", json.loads(a.source_manifest.read_text()))
@@ -185,7 +294,15 @@ def main():
                     and (a.output / case["question_id"] / "completed.json").exists()
                 ):
                     continue
-                run_case(case, system, ledger, a.output, a.run_id)
+                run_case(
+                    case,
+                    system,
+                    ledger,
+                    a.output,
+                    a.run_id,
+                    resume_history=a.resume_history,
+                    original_started_at=original_started_at,
+                )
                 done += 1
                 if done >= a.limit_questions:
                     break
