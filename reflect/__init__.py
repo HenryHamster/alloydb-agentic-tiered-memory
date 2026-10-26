@@ -2,10 +2,12 @@
 
 from reflect.models import ReflectTrigger, Tier
 from reflect.pipeline import ReflectConfig, Reflector, build_reflector
-from reflect.store import ReflectStore
+from reflect.store import AlloyDBReflectStore, InMemoryReflectStore, ReflectStore
 from reflect.tiers import TierConfig
 
 __all__ = [
+    "AlloyDBReflectStore",
+    "InMemoryReflectStore",
     "ReflectConfig",
     "ReflectStore",
     "ReflectTrigger",

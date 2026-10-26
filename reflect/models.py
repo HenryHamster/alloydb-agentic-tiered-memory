@@ -131,8 +131,13 @@ class MacroMemory:
 
 @dataclass(frozen=True)
 class ReflectBatch:
-    """Everything one reflect pass writes; the store applies it in one transaction."""
+    """Everything one reflect pass writes; the store applies it in one transaction.
 
+    `user_id` is the user the pass ran for: the store locks on it and rejects any row that
+    belongs to someone else.
+    """
+
+    user_id: str | None = None
     consolidations: tuple[Consolidation, ...] = ()
     supersessions: tuple[Supersession, ...] = ()
     reviews: tuple[ConflictReview, ...] = ()
