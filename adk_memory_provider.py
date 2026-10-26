@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 from typing import Any, Dict, Optional
 
 import redis
@@ -95,9 +96,9 @@ Memory persistence is managed automatically by the platform behind the scenes. D
         user_msg: str,
         ai_msg: str,
         prev_session_id: Optional[str] = None,
-    ) -> None:
+    ) -> Future:
         """Updates Valkey sliding window and triggers background AlloyDB extraction."""
-        append_session_turn_with_rolling_summary(
+        round_id = append_session_turn_with_rolling_summary(
             valkey_client=self.valkey_client,
             llm_client=self.genai_client,
             session_id=session_id,
@@ -106,11 +107,18 @@ Memory persistence is managed automatically by the platform behind the scenes. D
             trigger_limit=self.trigger_limit,
             window_size=self.window_size,
         )
-        self.async_worker.enqueue_extraction(
+        return self.async_worker.enqueue_extraction(
             user_id=user_id,
             session_id=session_id,
             user_msg=user_msg,
             ai_msg=ai_msg,
             prev_session_id=prev_session_id,
             project_id=project_id,
+            episode_id=round_id,
         )
+
+    def wait_for_retention(self, timeout: float | None = None) -> None:
+        self.async_worker.wait(timeout=timeout)
+
+    def close(self, timeout: float | None = None) -> None:
+        self.async_worker.close(timeout=timeout)

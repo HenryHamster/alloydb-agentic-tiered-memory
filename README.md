@@ -45,12 +45,14 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | Files | Purpose |
 | --- | --- |
 | `db_clients.py` | IAM-authenticated AlloyDB and Valkey connections |
-| `valkey_buffer.py` | Recent turns and summarize-before-trim |
+| `valkey_buffer.py` | Sliding window of recent turns with summarize-before-trim |
+| `turn_context.py` | Per-turn context: the sliding window plus Recall under one token budget |
 | `async_worker.py` | Background fact extraction and upserts |
 | `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
 | `reflect/` | Reflect skeleton: tiers, redundancy/conflicts, macro memories; see [Reflect notes](docs/REFLECT_NOTES.md) |
 | `shared/chunking.py` | Lossless length-bounded text chunking |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
+| `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |
