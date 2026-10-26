@@ -133,9 +133,9 @@ def test_background_worker_processes_a_turn_and_closes_its_connection():
         ]
     )
     worker = AsyncMemoryWorker(lambda: conn, llm)
-    worker.enqueue_extraction("user", "session", "I prefer Python", "Okay", "prior")
-    worker.work_queue.put(None)
-    worker.worker_thread.join(timeout=5)
+    job = worker.enqueue_extraction("user", "session", "I prefer Python", "Okay", "prior")
+    assert job.result(timeout=5) is None
+    worker.close(timeout=5)
     assert not worker.worker_thread.is_alive(), "Worker failed to finish the queued exchange"
     assert cursor.execute.call_count == 1
     sql, params = cursor.execute.call_args.args

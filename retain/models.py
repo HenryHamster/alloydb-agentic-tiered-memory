@@ -1,6 +1,6 @@
 """Retain records. Field names mirror sql/004_retain_schema.sql."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from uuid import NAMESPACE_URL, uuid5
@@ -359,6 +359,13 @@ class Observation:
     entity_id: str | None = None
     valid_to: datetime | None = None
     embedding: tuple[float, ...] | None = field(default=None, compare=False)
+
+    def same_version(self, other: "Observation") -> bool:
+        """Same version apart from valid_to, the only field closing it may change.
+
+        Dataclass equality already ignores the embedding, which is derived from the text.
+        """
+        return replace(self, valid_to=None) == replace(other, valid_to=None)
 
 
 @dataclass(frozen=True)

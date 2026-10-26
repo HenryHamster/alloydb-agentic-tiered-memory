@@ -2,13 +2,15 @@
 
 import hashlib
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from async_worker import AsyncMemoryWorker
-from retain import InMemoryRetainStore, Retainer, Scope, build_retainer
+from retain import InMemoryRetainStore, RetainConfig, Retainer, Scope, build_retainer
+from retain.alloydb_store import AlloyDBRetainStore
 from retain.entities import mention_key, normalize_name
 from retain.models import (
     Category,
@@ -23,6 +25,7 @@ from retain.models import (
     LinkType,
     MemoryFact,
     MemoryLink,
+    Observation,
     Relation,
     RelationMention,
     Speaker,
@@ -247,6 +250,13 @@ def test_replayed_episode_is_skipped_without_calling_the_model():
     assert again.skipped and extractor.calls == 1
 
 
+def test_reusing_episode_id_with_changed_source_is_rejected():
+    pipeline = retainer(ScriptedExtractor())
+    pipeline.retain_turn(SCOPE, "I use Python.", "Noted.", timestamp=T0, episode_id="source-1")
+    with pytest.raises(ValueError, match="Conflicting replay"):
+        pipeline.retain_turn(SCOPE, "I use Go.", "Noted.", timestamp=T0, episode_id="source-1")
+
+
 def test_duplicate_reinforces_and_supersede_closes_validity():
     store = InMemoryRetainStore()
     old = stored_fact("User prefers PostgreSQL.")
@@ -275,30 +285,28 @@ def test_duplicate_reinforces_and_supersede_closes_validity():
     assert (new_id, old.fact_id, Relation.SUPERSEDES) in store.links
 
 
-def test_failed_stage_writes_nothing_and_leaves_episode_retryable():
+def test_decision_for_an_unknown_fact_is_ignored_and_the_fact_added():
     extractor = ScriptedExtractor(dict(text="User prefers tabs.", evidence="tabs"))
     store = InMemoryRetainStore()
     wrong_id = ScriptedClassifier(lambda fact: UpdateDecision("not-a-new-fact"))
-    with pytest.raises(ValueError, match="one decision per new fact"):
-        retainer(extractor, store, classifier=wrong_id).retain_turn(
-            SCOPE, "I use tabs.", "Ok.", timestamp=T0
-        )
-    assert not store.documents and not store.facts
-    retry = retainer(extractor, store).retain_turn(SCOPE, "I use tabs.", "Ok.", timestamp=T0)
-    assert not retry.skipped and len(store.facts) == 1
+    retainer(extractor, store, classifier=wrong_id).retain_turn(
+        SCOPE, "I use tabs.", "Ok.", timestamp=T0
+    )
+    (fact,) = store.facts.values()
+    assert fact.text == "User prefers tabs." and fact.is_current
 
 
 @pytest.mark.parametrize(
-    "action,target,error",
+    "action,target",
     [
-        (UpdateAction.DUPLICATE, "missing", "Invalid duplicate target"),
-        (UpdateAction.SUPERSEDE, "other_user", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "other_project", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "closed", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "global", "project fact cannot supersede global"),
+        (UpdateAction.DUPLICATE, "missing"),
+        (UpdateAction.SUPERSEDE, "other_user"),
+        (UpdateAction.SUPERSEDE, "other_project"),
+        (UpdateAction.SUPERSEDE, "closed"),
+        (UpdateAction.SUPERSEDE, "global"),
     ],
 )
-def test_classifier_targets_are_checked_before_writing(action, target, error):
+def test_invalid_classifier_targets_leave_stored_facts_untouched(action, target):
     targets = {
         "other_user": stored_fact("Intruder prefers Go.", scope=Scope("intruder", "CloudRetail")),
         "other_project": stored_fact(
@@ -316,11 +324,37 @@ def test_classifier_targets_are_checked_before_writing(action, target, error):
     extractor = ScriptedExtractor(
         dict(text="CloudRetail uses Rust.", evidence="Rust", visibility=Visibility.PROJECT)
     )
-    with pytest.raises(ValueError, match=error):
-        retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Rust here.", "Ok.")
-    assert not store.documents
-    assert not store.documents
-    assert store.facts == {fact.fact_id: fact for fact in targets.values()}
+    retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Rust here.", "Ok.")
+
+    new = [fact for fact in store.facts.values() if fact.text == "CloudRetail uses Rust."]
+    assert len(new) == 1 and new[0].is_current and store.documents
+    assert all(store.facts[fact.fact_id] == fact for fact in targets.values())
+
+
+def test_global_duplicate_cannot_target_a_narrower_project_fact():
+    project_fact = stored_fact(
+        "Project rule uses Go.",
+        visibility=Visibility.PROJECT,
+        category=Category.PREFERENCE,
+    )
+    store = InMemoryRetainStore()
+    store.write(WriteBatch((), facts=(project_fact,)))
+    classifier = ScriptedClassifier(
+        lambda new: UpdateDecision(new.fact_id, UpdateAction.DUPLICATE, (project_fact.fact_id,))
+    )
+    extractor = ScriptedExtractor(
+        dict(
+            text="User prefers Go globally.",
+            evidence="Go",
+            category=Category.PREFERENCE,
+            visibility=Visibility.GLOBAL,
+        )
+    )
+
+    retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Go", "Ok.")
+
+    assert store.facts[project_fact.fact_id].evidence_count == 1
+    assert any(fact.text == "User prefers Go globally." for fact in store.facts.values())
 
 
 def test_store_rejects_bad_batches_atomically():
@@ -352,19 +386,125 @@ def test_store_reads_respect_user_and_visibility():
 def test_worker_runs_retain_with_trusted_scope_and_message_time():
     pipeline = MagicMock()
     worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=pipeline)
-    worker.enqueue_extraction(
+    job = worker.enqueue_extraction(
         "user_dev_42", "sess_2026_01", "hi", "hello", project_id="CloudRetail"
     )
-    worker.work_queue.put(None)
-    worker.worker_thread.join(timeout=5)
+    job.result(timeout=5)
+    worker.close(timeout=5)
     (scope, user_msg, ai_msg), kwargs = pipeline.retain_turn.call_args
     assert scope == SCOPE and (user_msg, ai_msg) == ("hi", "hello")
     assert kwargs["timestamp"].tzinfo is not None
 
 
-def test_production_wiring_builds_and_unfinished_stages_fail_loudly():
-    production = build_retainer(MagicMock(), MagicMock())
-    with pytest.raises(NotImplementedError):
-        production.extractor.extract([])
-    with pytest.raises(NotImplementedError):
-        production.store.write(WriteBatch(()))
+def test_worker_wait_surfaces_background_retain_failure():
+    pipeline = MagicMock()
+    pipeline.retain_turn.side_effect = RuntimeError("database commit failed")
+    worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=pipeline)
+    job = worker.enqueue_extraction("user_dev_42", "session", "hi", "hello")
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        job.result(timeout=5)
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        worker.close(timeout=5)
+    assert not worker.worker_thread.is_alive()
+
+
+def test_production_wiring_uses_extraction_embedding_and_alloydb_store():
+    client = MagicMock()
+    client.models.embed_content.return_value.embeddings = [MagicMock(values=[0.25] * 768)]
+    production = build_retainer(MagicMock(), client)
+    assert production.extractor.extract([]) == []
+    assert len(production.embedder(["fact"])[0]) == 768
+    assert isinstance(production.store, AlloyDBRetainStore)
+
+
+def test_production_wiring_can_use_regional_embedding_client():
+    generation = MagicMock()
+    embedding = MagicMock()
+    embedding.models.embed_content.return_value.embeddings = [MagicMock(values=[0.25] * 768)]
+
+    production = build_retainer(MagicMock(), generation, embedding_client=embedding)
+
+    assert len(production.embedder(["fact"])[0]) == 768
+    embedding.models.embed_content.assert_called_once()
+    generation.models.embed_content.assert_not_called()
+
+
+class CountingBuilder:
+    def __init__(self, fail=False):
+        self.readers, self.fail = [], fail
+
+    def consolidate(self, reader):
+        self.readers.append(reader)
+        if self.fail:
+            raise RuntimeError("model down")
+        return []
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_maintenance_runs_every_n_rounds_per_scope_and_never_fails_a_turn(fail):
+    builder = CountingBuilder(fail)
+    store = InMemoryRetainStore()
+    pipeline = retainer(
+        ScriptedExtractor(),
+        store,
+        observation_builder=builder,
+        config=RetainConfig(maintenance_every=2),
+    )
+    other = Scope("user_dev_42", "Other", "sess_9")
+    for index, scope in enumerate([SCOPE, other, SCOPE, other, SCOPE]):
+        result = pipeline.retain_turn(scope, f"turn {index}", "ok", timestamp=T0)
+        assert not result.skipped  # maintenance errors are logged, the round is kept
+    assert builder.readers == [SCOPE, other]
+    assert len(store.retained) == 10
+
+
+def test_maintenance_can_be_disabled():
+    builder = CountingBuilder()
+    pipeline = retainer(
+        ScriptedExtractor(), observation_builder=builder, config=RetainConfig(maintenance_every=0)
+    )
+    for index in range(3):
+        pipeline.retain_turn(SCOPE, f"turn {index}", "ok", timestamp=T0)
+    assert builder.readers == []
+
+
+def test_worker_keeps_a_bounded_failure_list(monkeypatch):
+    import async_worker
+
+    monkeypatch.setattr(async_worker, "MAX_KEPT_FAILURES", 2)
+    failing = MagicMock()
+    failing.retain_turn.side_effect = RuntimeError("boom")
+    worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=failing)
+    jobs = [worker.enqueue_extraction("u", "s", "a", "b", project_id="p") for _ in range(4)]
+    assert all(isinstance(job.exception(timeout=5), RuntimeError) for job in jobs)
+    with pytest.raises(RuntimeError, match="boom"):
+        worker.wait(timeout=5)
+    assert len(worker._failures) <= 1
+
+
+def test_two_facts_superseding_one_stored_fact_keep_the_round():
+    store = InMemoryRetainStore()
+    old = stored_fact("User prefers PostgreSQL.")
+    store.write(WriteBatch(documents=(), facts=(old,)))
+    classifier = ScriptedClassifier(
+        lambda fact: UpdateDecision(fact.fact_id, UpdateAction.SUPERSEDE, (old.fact_id,))
+    )
+    pipeline = retainer(
+        ScriptedExtractor(
+            dict(text="User now prefers MySQL.", evidence="MySQL"),
+            dict(text="User now prefers SQLite.", evidence="SQLite"),
+        ),
+        store,
+        classifier=classifier,
+    )
+    pipeline.retain_turn(SCOPE, "MySQL or SQLite now.", "Ok.")
+    assert store.facts[old.fact_id].valid_to is not None
+    assert len([fact for fact in store.facts.values() if fact.is_current]) == 2
+
+
+def test_observation_versions_compare_by_content_not_closure_or_embedding():
+    version = Observation(
+        stable_id("obs"), SCOPE, Visibility.PROJECT, "Uses Go.", ("f1",), T0, embedding=(1.0,)
+    )
+    assert version.same_version(replace(version, valid_to=T0, embedding=(0.5,)))
+    assert not version.same_version(replace(version, text="Uses Rust."))

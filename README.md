@@ -48,7 +48,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `valkey_buffer.py` | Sliding window of recent turns with summarize-before-trim |
 | `turn_context.py` | Per-turn context: the sliding window plus Recall under one token budget |
 | `async_worker.py` | Background fact extraction and upserts |
-| `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
+| `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) and [cloud test handoff](docs/RETAIN_HANDOFF.md) |
 | `shared/` | Chunking, Gemini text generation, token estimates, vector math |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
