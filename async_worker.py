@@ -53,7 +53,10 @@ class AsyncMemoryWorker:
         ai_msg: str,
         prev_session_id: Optional[str] = None,
         project_id: Optional[str] = None,
+        episode_id: Optional[str] = None,
     ) -> Future:
+        """Queues one round. Pass the sliding window's round_id as `episode_id` so Recall can
+        skip memories from rounds the window still shows verbatim."""
         sent_at = datetime.now(timezone.utc)  # message time, not processing time
         future = Future()
         future._completion_callback_done = threading.Event()
@@ -63,7 +66,17 @@ class AsyncMemoryWorker:
             self._pending.add(future)
             future.add_done_callback(self._completed)
         self.work_queue.put(
-            (user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at, future)
+            (
+                user_id,
+                session_id,
+                user_msg,
+                ai_msg,
+                prev_session_id,
+                project_id,
+                sent_at,
+                episode_id,
+                future,
+            )
         )
         return future
 
@@ -117,16 +130,26 @@ class AsyncMemoryWorker:
             if item is None:
                 self.work_queue.task_done()
                 break
-            user_id, session_id, user_msg, ai_msg, prev_session_id, project_id, sent_at, future = (
-                item
-            )
+            (
+                user_id,
+                session_id,
+                user_msg,
+                ai_msg,
+                prev_session_id,
+                project_id,
+                sent_at,
+                episode_id,
+                future,
+            ) = item
             if not future.set_running_or_notify_cancel():
                 self.work_queue.task_done()
                 continue
             try:
                 if self.retainer is not None:
                     scope = Scope(user_id=user_id, project_id=project_id, session_id=session_id)
-                    result = self.retainer.retain_turn(scope, user_msg, ai_msg, timestamp=sent_at)
+                    result = self.retainer.retain_turn(
+                        scope, user_msg, ai_msg, timestamp=sent_at, episode_id=episode_id
+                    )
                 else:
                     result = self._extract_and_upsert(
                         user_id, session_id, user_msg, ai_msg, prev_session_id
