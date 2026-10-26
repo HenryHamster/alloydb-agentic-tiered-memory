@@ -1,18 +1,14 @@
 """Rank score and tier lifecycle shared by facts and macro memories.
 
-Hot is capped and searched on every recall; warm only when hot is weak; archived only as a last
-fallback (and promoted back on a hit); purged after long dormancy. Promotion needs a higher score
+Reflect maintains lifecycle scores and tiers; search execution belongs to the existing Recall
+retrieval path. Archived hits are promoted back; long-dormant rows may be purged. Promotion needs a higher score
 than demotion (hysteresis), so rows do not flip between tiers on every pass.
 """
 
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TypeVar
 
 from reflect.models import Tier
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -91,20 +87,3 @@ def promote_on_hit(tier: Tier, config: TierConfig = TierConfig()) -> Tier:
     """Recall hit on an archived row: warm (hot without warm) immediately, no reflect pass."""
     # TODO(reflect): archived -> warm/hot; other tiers unchanged.
     raise NotImplementedError("Promote on hit")
-
-
-def tiered_search(
-    search: Callable[[Tier], Iterable[tuple[T, float]]],
-    *,
-    weak_below: float = 0.5,
-    min_strong: int = 1,
-    config: TierConfig = TierConfig(),
-) -> list[tuple[T, float, Tier]]:
-    """Recall-side search order: hot, then warm, then archived.
-
-    `search(tier)` runs the normal hybrid query restricted to that tier (index on
-    (user_id, tier, rank_score DESC)). Stop once `min_strong` results score >= `weak_below`.
-    Return results from every searched tier, so the caller can record_access on all of them.
-    """
-    # TODO(reflect): loop over tiers (skip warm when disabled), accumulate, stop when strong.
-    raise NotImplementedError("Tiered search")

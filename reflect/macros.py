@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from reflect.generation import StructuredGenerator
 from reflect.models import Cluster, FactState, MacroMemory
 from retain.models import FactEntity, MemoryFact, MemoryLink
 
@@ -91,7 +92,7 @@ class MacroWriter(Protocol):
         ...
 
 
-class GeminiMacroWriter:
+class LLMMacroWriter:
     """LLM synthesis of one cluster, off the request path.
 
     Prompt input: facts oldest first (fact_id, text, evidence, occurred_at, valid_from,
@@ -103,10 +104,9 @@ class GeminiMacroWriter:
     pipeline by switching from Pandas to DuckDB, cutting runtime from 2 hours to 10 minutes."
     """
 
-    def __init__(self, client, *, model: str = "gemini-3.5-flash"):
-        self.client = client
-        self.model = model
+    def __init__(self, generate: StructuredGenerator):
+        self.generate = generate
 
     def write(self, cluster, facts):
-        # TODO(reflect): structured-output call; reject empty title/summary.
-        raise NotImplementedError("Gemini macro synthesis")
+        # TODO(reflect): build prompt/schema, call self.generate; reject empty title/summary.
+        raise NotImplementedError("LLM macro synthesis")

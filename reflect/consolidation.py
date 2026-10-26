@@ -5,11 +5,11 @@ The judge (LLM) only labels groups; which fact is newer, what gets archived and 
 for history is decided by code.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
 
+from reflect.generation import StructuredGenerator
 from reflect.models import Candidate, ConflictReview, Consolidation, FactState, Judgment
 from retain.models import FactEntity, MemoryFact, MemoryLink, Scope, Supersession
 
@@ -50,15 +50,11 @@ def find_candidates(
     raise NotImplementedError("Candidate groups")
 
 
-class ConflictJudge(Protocol):
-    def judge(
-        self, candidates: Sequence[Candidate], facts: Mapping[str, MemoryFact]
-    ) -> list[Judgment]:
-        """Label each candidate group (or a subset of it) distinct/redundant/state/conflict."""
-        ...
+# Any callable that labels candidate groups can be injected, including offline fakes.
+ConflictJudge = Callable[[Sequence[Candidate], Mapping[str, MemoryFact]], list[Judgment]]
 
 
-class GeminiConflictJudge:
+class LLMConflictJudge:
     """One structured-output call per batch of candidates.
 
     Prompt input per fact: fact_id, text, evidence, speaker, claim_type, occurred_at,
@@ -70,14 +66,13 @@ class GeminiConflictJudge:
     The model never picks the winner: resolve() orders by valid_from.
     """
 
-    def __init__(self, client, *, model: str = "gemini-3.5-flash", batch_size: int = 20):
-        self.client = client
-        self.model = model
+    def __init__(self, generate: StructuredGenerator, *, batch_size: int = 20):
+        self.generate = generate
         self.batch_size = batch_size
 
-    def judge(self, candidates, facts):
-        # TODO(reflect): build the prompt, generate_content with a JSON schema, parse Judgments.
-        raise NotImplementedError("Gemini conflict judge")
+    def __call__(self, candidates, facts):
+        # TODO(reflect): build prompt/schema, call self.generate, validate/parse Judgments.
+        raise NotImplementedError("LLM conflict judge")
 
 
 @dataclass(frozen=True)

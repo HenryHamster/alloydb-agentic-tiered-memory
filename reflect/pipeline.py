@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from reflect.consolidation import ConflictJudge, ConsolidationConfig
+from reflect.generation import StructuredGenerator
 from reflect.macros import MacroConfig, MacroWriter
 from reflect.models import FactState, MacroMemory, ReflectBatch, ReflectResult, ReflectTrigger
 from reflect.store import ReflectStore
@@ -54,8 +55,9 @@ class Reflector:
         """One pass:
 
         1. Read user_facts, fact_states, links_among, entity_rows.
-        2. find_candidates -> judge -> resolve; embed merged facts. Apply the resolution to the
-           in-memory view so steps 3-4 see merged facts and closed validity.
+        2. find_candidates -> judge(candidates, facts) -> resolve; embed merged facts.
+           Apply the resolution to the in-memory view so steps 3-4 see merged facts and
+           closed validity.
         3. _macros: clusters, refresh changed ones, close dissolved ones.
         4. _tier_facts and _tier_macros.
         5. store.write_reflect(ReflectBatch(...)) once.
@@ -91,17 +93,26 @@ class Reflector:
         raise NotImplementedError("Macro tiers")
 
 
-def build_reflector(conn_factory, genai_client, *, config: ReflectConfig = ReflectConfig()):
-    """Production wiring: AlloyDB store with Gemini stages. Stages are skeletons for now."""
-    from reflect.alloydb_store import AlloyDBReflectStore
-    from reflect.consolidation import GeminiConflictJudge
-    from reflect.macros import GeminiMacroWriter
-    from retain.embeddings import GeminiEmbedder
+def build_reflector(
+    conn_factory,
+    *,
+    embedder: Embedder,
+    generate: StructuredGenerator,
+    config: ReflectConfig = ReflectConfig(),
+):
+    """Wire AlloyDB to caller-provided embedding and structured-generation adapters.
+
+    Reflect selects no SDK or model. Adapters own provider configuration and retries;
+    the reflection stages remain skeletons.
+    """
+    from reflect.consolidation import LLMConflictJudge
+    from reflect.macros import LLMMacroWriter
+    from reflect.store import AlloyDBReflectStore
 
     return Reflector(
         store=AlloyDBReflectStore(conn_factory),
-        embedder=GeminiEmbedder(genai_client),
-        judge=GeminiConflictJudge(genai_client),
-        macro_writer=GeminiMacroWriter(genai_client),
+        embedder=embedder,
+        judge=LLMConflictJudge(generate),
+        macro_writer=LLMMacroWriter(generate),
         config=config,
     )

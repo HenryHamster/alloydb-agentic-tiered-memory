@@ -3,7 +3,7 @@
 from reflect.models import ReflectTrigger, Tier
 from reflect.pipeline import ReflectConfig, Reflector, build_reflector
 from reflect.store import ReflectStore
-from reflect.tiers import TierConfig, tiered_search
+from reflect.tiers import TierConfig
 
 __all__ = [
     "ReflectConfig",
@@ -13,5 +13,4 @@ __all__ = [
     "Tier",
     "TierConfig",
     "build_reflector",
-    "tiered_search",
 ]

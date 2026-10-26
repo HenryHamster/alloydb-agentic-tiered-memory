@@ -18,7 +18,7 @@ body that raises `NotImplementedError`. Fill one without touching the others.
 Reflector.reflect(user_id, trigger)            trigger: new_facts | session_end | scheduled
   read      user_facts, fact_states, links_among, entity_rows, user_macros
   1 find_candidates   similar links >= 0.85, same subject entity + category, same domain
-    ConflictJudge     LLM labels each group: distinct / redundant / state_change / conflict
+    judge(...)        injected callable labels each group: distinct / redundant / state_change / conflict
     resolve           code applies the verdict (the model never picks the winner)
   2 build_clusters    temporal + causal + strong semantic links, shared subject/object entities
     MacroWriter       LLM title + summary, only when the cluster's evidence changed
@@ -27,7 +27,7 @@ Reflector.reflect(user_id, trigger)            trigger: new_facts | session_end 
   write     ReflectStore.write_reflect(ReflectBatch)   one transaction
 Reflector.forget(scope, fact_ids)              explicit delete: purge now, drop dependent macros
 ReflectStore.record_access(...)                called by Recall; archived hit -> promoted back
-tiered_search(search)                          Recall search order: hot -> warm -> archived
+Recall retrieval                              existing hybrid search owns search policy
 ```
 
 ## Files
@@ -36,13 +36,41 @@ tiered_search(search)                          Recall search order: hot -> warm 
 | --- | --- | --- |
 | `sql/005_reflect_schema.sql` | lifecycle columns on `memory_facts`, link relations, `memory_conflict_reviews`, `macro_memories` | Complete |
 | `reflect/models.py` | `Tier`, `Verdict`, `FactState`, `MacroMemory`, `Cluster`, `ReflectBatch` | Complete |
-| `reflect/tiers.py` | `TierConfig`; `rank_score`, `next_tier`, `apply_hot_cap`, `promote_on_hit`, `tiered_search` | Stubs |
-| `reflect/consolidation.py` | `find_candidates`, `resolve`, `consolidate`, `GeminiConflictJudge` | Stubs |
-| `reflect/macros.py` | `build_clusters`, `causal_chains`, `temporal_span`, `match_existing`, `GeminiMacroWriter` | Stubs |
+| `reflect/tiers.py` | `TierConfig`; `rank_score`, `next_tier`, `apply_hot_cap`, `promote_on_hit` | Stubs |
+| `reflect/consolidation.py` | `find_candidates`, `resolve`, `consolidate`, `LLMConflictJudge` | Stubs |
+| `reflect/macros.py` | `build_clusters`, `causal_chains`, `temporal_span`, `match_existing`, `LLMMacroWriter` | Stubs |
+| `reflect/generation.py` | `StructuredGenerator`: injected prompt/schema -> parsed JSON callable | Contract complete |
 | `reflect/pipeline.py` | `Reflector.reflect` / `forget`; `build_reflector` (production wiring) | Wiring complete, stages stubbed |
-| `reflect/store.py` | `ReflectStore` protocol | Complete |
-| `reflect/alloydb_store.py` | `AlloyDBReflectStore` | Stub with SQL plan per method |
+| `reflect/store.py` | `ReflectStore` protocol and `AlloyDBReflectStore` implementation | Protocol complete; AlloyDB methods stubbed with SQL plans |
 | `retain/models.py` | `Relation.CONSOLIDATED_INTO`, `Relation.CONFLICTS_WITH` | Added |
+
+## Model adapters
+
+Reflect does not select a model or depend on a provider SDK. `Reflector` accepts a conflict
+judge callable, a `MacroWriter`, and an `Embedder`. The AlloyDB factory wraps a caller-provided
+`generate(prompt, response_schema)` function with `LLMConflictJudge` and `LLMMacroWriter`.
+The function returns a parsed JSON object; its adapter owns SDK calls, model selection,
+authentication and retries. Stages still need to validate the output against their schema.
+
+```python
+reflector = build_reflector(
+    get_db_connection,
+    embedder=embed_texts,  # texts -> vectors; must match the schema's 768 dimensions
+    generate=generate_json,  # (prompt, response_schema) -> parsed JSON object
+)
+```
+
+These adapters can wrap any compatible model or offline fake. The stage bodies still raise
+`NotImplementedError`; this cleanup does not implement synthesis or database persistence.
+
+## Recall integration boundary
+
+Reflect owns background scoring, tier transitions and access metadata. Search execution stays
+in the existing Recall path (`hybrid_retriever.py`); there is no separate Reflect search loop.
+The tier search policy below is a proposed Recall integration, not implemented behavior.
+Currently that retriever queries `agent_entities`, not `memory_facts` or `macro_memories`.
+A follow-up must add those tables to the existing retrieval path, enforce their visibility
+rules, and record accesses. Removing the duplicate wrapper does not provide that integration.
 
 ## Per-row fields (`memory_facts`, and the same columns on `macro_memories`)
 
@@ -100,10 +128,10 @@ flagged is not judged again.
 
 ## MacroMemories
 
-The macro layer is the asynchronous synthesis layer. Recall searches `macro_memories` alongside
-facts (HNSW on `macro_embedding`, plus full-text search on title + summary). A question such
-as "what are my project priorities?" is then answered by one indexed lookup, not by an LLM loop
-at query time.
+The macro layer is the proposed asynchronous synthesis layer. Recall should search
+`macro_memories` alongside facts (HNSW on `macro_embedding`, plus full-text search on title +
+summary). That integration remains to be implemented in the existing retrieval path. A matching
+macro can supply precomputed context; generating a tailored answer may still require an LLM.
 
 | Field | Source |
 | --- | --- |
@@ -141,7 +169,7 @@ Retain's `observations` are single-entity summaries. Macros are multi-fact narra
 sessions, built from link paths. Both stay for now; observations can later become macros with
 one entity.
 
-## Why this is better than Hindsight's Reflect
+## Intended benefits and trade-offs
 
 This comparison is with Hindsight's published design (retain / recall / reflect over world,
 experience, opinion and observation memories). Hindsight's reflect is an agentic reasoning
@@ -154,9 +182,9 @@ arguments, not measured results.
    - **Hindsight:** high-level questions cost a multi-step LLM call on every ask.
    - **Effect:** for recurring high-level questions, latency and cost move off the
      conversation's critical path.
-2. **Bounded recall cost as memory grows.**
-   - **This design:** Hot is capped, warm and archived are searched only when needed, and
-     dormant rows are purged. The working set stays the same size as history grows.
+2. **Smaller active working set.**
+   - **This design:** Hot has a proposed cap. Recall can use tier metadata once its
+     integration is implemented; no search-cost bound is established by this skeleton.
    - **Hindsight:** has no access-driven lifecycle. Every retained fact stays equally
      searchable forever.
 3. **Usage feedback.** `access_count` and `last_accessed_at` feed `rank_score`, so what the
@@ -198,8 +226,9 @@ arguments, not measured results.
 ## Next
 
 Implement in this order: `tiers.py`, `consolidation.py` (pure functions, then
-`GeminiConflictJudge`), `macros.py` (then `GeminiMacroWriter`), `Reflector`, an
+`LLMConflictJudge`), `macros.py` (then `LLMMacroWriter`), `Reflector`, an
 `InMemoryReflectStore` for offline tests, then `AlloyDBReflectStore`. Then call
-`build_reflector(get_db_connection, client).reflect(user_id, trigger)` from `AsyncMemoryWorker`
-at session end. Add a scheduled job for the daily pass. Recall then uses `tiered_search`,
-calls `record_access`, and searches `macro_memories` next to facts.
+`build_reflector(get_db_connection, embedder=embed_texts, generate=generate_json)` from the
+application composition layer, then call `.reflect(user_id, trigger)` from `AsyncMemoryWorker`
+at session end. Add a scheduled job for the daily pass. Extend the existing Recall retrieval
+path to search facts/macros and call `record_access`; do not add a separate search loop.

@@ -7,6 +7,7 @@ import pytest
 
 from reflect import Reflector, TierConfig, build_reflector
 from reflect.models import FactState, ReflectBatch, Tier
+from reflect.store import AlloyDBReflectStore
 from reflect.tiers import next_tier
 from retain.models import LinkType, Relation
 
@@ -33,12 +34,20 @@ def test_reflect_relations_have_link_types():
 
 
 def test_production_wiring_builds_and_unfinished_stages_fail_loudly():
-    production = build_reflector(MagicMock(), MagicMock())
+    generate = MagicMock()
+    embedder = MagicMock()
+    production = build_reflector(MagicMock(), embedder=embedder, generate=generate)
     assert isinstance(production, Reflector)
+    assert isinstance(production.store, AlloyDBReflectStore)
+    assert production.embedder is embedder
+    assert production.judge.generate is generate
+    assert production.macro_writer.generate is generate
+    generate.assert_not_called()
+    embedder.assert_not_called()
     with pytest.raises(NotImplementedError):
         production.reflect("user_dev_42")
     with pytest.raises(NotImplementedError):
-        production.judge.judge([], {})
+        production.judge([], {})
     with pytest.raises(NotImplementedError):
         production.macro_writer.write(None, [])
     with pytest.raises(NotImplementedError):
