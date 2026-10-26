@@ -1,5 +1,6 @@
 """Retain pipeline: documents -> chunks -> facts -> entities -> embeddings -> updates -> links."""
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -35,11 +36,15 @@ from retain.models import (
 from retain.observations import ObservationBuilder
 from retain.store import RetainStore
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class RetainConfig:
     max_chunk_chars: int = 700
     document_ttl: timedelta | None = timedelta(days=90)  # None keeps documents forever
+    # Every N retained rounds per scope: consolidate observations, purge expired documents.
+    maintenance_every: int = 20  # 0 disables
 
 
 def _utcnow() -> datetime:
@@ -71,6 +76,7 @@ class Retainer:
         self.observation_builder = observation_builder
         self.config = config
         self.clock = clock
+        self._rounds_since_maintenance: dict[Scope, int] = {}
 
     def retain_turn(
         self,
@@ -152,7 +158,24 @@ class Retainer:
             reinforced_fact_ids=tuple(reinforced),
         )
         self.store.write(batch)
+        self._maybe_maintain(scope, now)
         return RetainResult(episode_id, batch, extracted=len(extracted))
+
+    def _maybe_maintain(self, scope: Scope, now: datetime) -> None:
+        """Proposal step 4 and document retention, run after the round is committed."""
+        every = self.config.maintenance_every
+        if every <= 0:
+            return
+        count = self._rounds_since_maintenance.get(scope, 0) + 1
+        self._rounds_since_maintenance[scope] = count % every
+        if count < every:
+            return
+        try:
+            self.consolidate(scope)
+            self.store.purge_expired_documents(now)
+        except Exception:
+            # The round is already stored; maintenance retries after the next N rounds.
+            logger.warning("Retain maintenance failed for %s", scope, exc_info=True)
 
     def consolidate(self, reader: Scope) -> list[Observation]:
         """Periodic observation pass (proposal step 4); a no-op without a builder."""
@@ -178,37 +201,58 @@ class Retainer:
     def _decide(self, facts: list[MemoryFact]) -> list[UpdateDecision]:
         """Classify new facts, then enforce the trust boundary on the model's targets.
 
-        Each target must be stored, current, and visible from the new fact's scope (so same
-        user); a supersede target must also be no broader than the new fact.
+        One decision per new fact. A missing, repeated or invalid decision becomes ADD
+        (see _target_problem), so one bad model answer never loses the rest of the turn.
         """
         if self.classifier is None or not facts:
             return [UpdateDecision(fact.fact_id) for fact in facts]
-        decisions = list(self.classifier.classify(facts))
-        if sorted(d.fact_id for d in decisions) != sorted(f.fact_id for f in facts):
-            raise ValueError("Classifier must return exactly one decision per new fact")
         by_id = {fact.fact_id: fact for fact in facts}
-        target_ids = sorted({target for d in decisions for target in d.target_ids})
+        proposed = {}
+        for decision in self.classifier.classify(facts):
+            if decision.fact_id not in by_id or decision.fact_id in proposed:
+                logger.warning("Ignoring classifier decision for unknown or repeated fact")
+                continue
+            proposed[decision.fact_id] = decision
+        target_ids = sorted({target for d in proposed.values() for target in d.target_ids})
         stored = {fact.fact_id: fact for fact in self.store.get_facts(target_ids)}
-        for decision in decisions:
-            new = by_id[decision.fact_id]
-            for target_id in decision.target_ids:
-                old = stored.get(target_id)
-                if (
-                    old is None
-                    or not old.is_current
-                    or not old.visible_to(new.scope)
-                    or old.speaker != new.speaker
-                ):
-                    raise ValueError(f"Invalid {decision.action} target {target_id}")
-                if is_broader(new.visibility, old.visibility):
-                    raise ValueError(
-                        f"{new.visibility} fact cannot use narrower {old.visibility} target"
-                    )
-                if decision.action == UpdateAction.SUPERSEDE and is_broader(
-                    old.visibility, new.visibility
-                ):
-                    raise ValueError(f"{new.visibility} fact cannot supersede {old.visibility}")
+        decisions, superseded = [], set()
+        for fact in facts:
+            decision = proposed.get(fact.fact_id, UpdateDecision(fact.fact_id))
+            problem = _target_problem(decision, fact, stored)
+            is_supersede = decision.action == UpdateAction.SUPERSEDE
+            if not problem and is_supersede and superseded & set(decision.target_ids):
+                # A stored fact can be closed only once per round.
+                problem = "target already superseded by another fact in this round"
+            if problem:
+                # Model output is untrusted: keep the fact as new rather than lose the turn.
+                logger.warning("Treating fact %s as new: %s", fact.fact_id, problem)
+                decision = UpdateDecision(fact.fact_id)
+            if decision.action == UpdateAction.SUPERSEDE:
+                superseded |= set(decision.target_ids)
+            decisions.append(decision)
         return decisions
+
+
+def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | None:
+    """Why `decision` cannot be applied, or None.
+
+    Targets must be stored, current, same speaker, visible from the new fact's scope (so same
+    user) and not narrower than it; a supersede target must also be no broader than it.
+    """
+    for target_id in decision.target_ids:
+        old = stored.get(target_id)
+        if (
+            old is None
+            or not old.is_current
+            or not old.visible_to(new.scope)
+            or old.speaker != new.speaker
+        ):
+            return f"invalid {decision.action} target {target_id}"
+        if is_broader(new.visibility, old.visibility):
+            return f"{new.visibility} fact cannot use narrower {old.visibility} target"
+        if decision.action == UpdateAction.SUPERSEDE and is_broader(old.visibility, new.visibility):
+            return f"{new.visibility} fact cannot supersede {old.visibility}"
+    return None
 
 
 def _episode_id(scope: Scope, messages: Sequence[Message]) -> str:

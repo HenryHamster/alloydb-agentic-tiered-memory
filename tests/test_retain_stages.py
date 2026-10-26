@@ -19,6 +19,7 @@ from retain.models import (
     Scope,
     Speaker,
     UpdateAction,
+    UpdateDecision,
     Visibility,
     stable_id,
 )
@@ -144,6 +145,30 @@ def test_entity_resolution_does_not_merge_ambiguous_or_other_user_candidates():
         candidate.entity_id for candidate in candidates
     }
     assert resolution.upserts[0].user_id == SCOPE.user_id
+
+
+def test_ambiguous_exact_entity_match_falls_back_instead_of_failing():
+    company = entity("Apple", EntityType.ORGANIZATION)
+    product = entity("Apple", EntityType.PRODUCT)
+    resolver = FuzzyEntityResolver(EntityStore([company, product]))
+
+    typed = EntityMention("Apple", EntityType.PRODUCT)
+    untyped = EntityMention("Apple", EntityType.OTHER)
+    resolution = resolver.resolve(SCOPE.user_id, [typed, untyped])
+
+    assert resolution.entity_ids[mention_key(typed)] == product.entity_id
+    own = resolution.entity_ids[mention_key(untyped)]
+    assert own not in {company.entity_id, product.entity_id}
+    assert [e.entity_type for e in resolution.upserts] == [EntityType.OTHER]
+
+
+def test_entity_lookup_sends_raw_normalized_and_suffix_free_names():
+    store = EntityStore([])
+    FuzzyEntityResolver(store).resolve(
+        SCOPE.user_id, [EntityMention(" Google  LLC", EntityType.ORGANIZATION)]
+    )
+    ((_, names),) = store.queries
+    assert names == ("Google  LLC", "google llc", "google")
 
 
 def test_entity_resolution_collapses_exact_same_batch_mentions():
@@ -315,7 +340,7 @@ def test_classifier_does_not_reconcile_facts_from_different_speakers():
     client.models.generate_content.assert_not_called()
 
 
-def test_classifier_rejects_attempt_to_supersede_global_memory():
+def test_classifier_never_supersedes_global_memory_from_a_project_fact():
     new = fact("Project setting changed", fact_id="project-new", visibility=Visibility.PROJECT)
     global_old = fact(
         "Global setting",
@@ -325,33 +350,36 @@ def test_classifier_rejects_attempt_to_supersede_global_memory():
     )
     client = controlled_client([decision_row(new, "supersede", [global_old.fact_id])])
 
-    with pytest.raises(ValueError, match="broader-scope"):
-        GeminiSupersedeClassifier(client, ClassifierStore(similar=[(global_old, 0.99)])).classify(
-            [new]
-        )
+    (decision,) = GeminiSupersedeClassifier(
+        client, ClassifierStore(similar=[(global_old, 0.99)])
+    ).classify([new])
+
+    assert decision == UpdateDecision(new.fact_id)  # kept as new; the global fact stays current
 
 
 @pytest.mark.parametrize(
-    "rows,error",
+    "rows",
     [
-        ("not-json", "malformed supersession JSON"),
-        ([{"fact_id": "new", "action": "unknown", "target_ids": []}], "invalid update decision"),
-        (
-            [{"fact_id": "new", "action": "duplicate", "target_ids": ["unlisted"]}],
-            "outside the candidate set",
-        ),
-        ([], "exactly one decision"),
+        "not-json",
+        {"fact_id": "new"},
+        [{"fact_id": "new", "action": "unknown", "target_ids": []}],
+        [{"fact_id": "new", "action": "duplicate", "target_ids": ["unlisted"]}],
+        [{"fact_id": "invented", "action": "add", "target_ids": []}],
+        [],
     ],
 )
-def test_classifier_fails_safely_on_malformed_or_unsupported_output(rows, error):
+def test_classifier_falls_back_to_add_on_malformed_or_unsupported_output(rows):
     old = fact("A prior fact", fact_id="old")
     new = fact("A new fact", fact_id="new")
     client = Mock()
     text = rows if isinstance(rows, str) else json.dumps(rows)
     client.models.generate_content.return_value = SimpleNamespace(text=text)
 
-    with pytest.raises(ValueError, match=error):
-        GeminiSupersedeClassifier(client, ClassifierStore(similar=[(old, 0.9)])).classify([new])
+    decisions = GeminiSupersedeClassifier(client, ClassifierStore(similar=[(old, 0.9)])).classify(
+        [new]
+    )
+
+    assert decisions == [UpdateDecision("new")]
 
 
 def test_classifier_keeps_supported_contradiction_as_new_fact():

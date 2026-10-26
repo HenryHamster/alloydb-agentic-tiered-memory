@@ -3,6 +3,7 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 from concurrent.futures import CancelledError, Future
 from concurrent.futures import wait as wait_futures
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from typing import Optional
 from retain.models import Scope
 
 logger = logging.getLogger(__name__)
+
+MAX_KEPT_FAILURES = 100
 
 
 def build_temporal_rules_prompt(
@@ -40,7 +43,9 @@ class AsyncMemoryWorker:
         self.total_extraction_tokens = 0
         self._lock = threading.Lock()
         self._pending: set[Future] = set()
-        self._failures = []
+        # Bounded so an unwatched long-running worker cannot grow without limit; every error
+        # also stays on its job's Future.
+        self._failures = deque(maxlen=MAX_KEPT_FAILURES)
         self._closed = False
         self.worker_thread = threading.Thread(target=self._run_worker, daemon=True)
         self.worker_thread.start()
@@ -95,7 +100,7 @@ class AsyncMemoryWorker:
                     raise TimeoutError("Memory worker completion was not reported before timeout")
         with self._lock:
             if self._failures:
-                raise self._failures.pop(0)
+                raise self._failures.popleft()
 
     def close(self, timeout: float | None = None) -> None:
         with self._lock:

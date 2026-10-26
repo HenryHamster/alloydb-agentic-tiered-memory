@@ -1,6 +1,7 @@
 """Proposal step 3: semantic, temporal and causal links, plus supersession decisions."""
 
 import json
+import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
@@ -18,6 +19,8 @@ from retain.models import (
     Visibility,
     is_broader,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Linker(Protocol):
@@ -239,7 +242,7 @@ class GeminiSupersedeClassifier:
     either cosine >= `min_similarity` or sharing an entity in the same category; at most
     `candidates_k`. A new fact may supersede only facts whose visibility is no broader than its
     own (a project rule never closes a global preference); Retainer re-checks both rules.
-    Targets outside the candidate set are rejected; facts with no candidates skip the LLM and are added.
+    Invalid or missing decisions leave that fact as add; facts with no candidates skip the LLM.
     """
 
     def __init__(
@@ -314,51 +317,18 @@ class GeminiSupersedeClassifier:
             "supersede has one or more listed target IDs. Never invent IDs.\nINPUT:\n"
             + json.dumps(payload, ensure_ascii=False)
         )
-        response = self._generate(prompt)
-        if not isinstance(getattr(response, "text", None), str):
-            raise ValueError("Gemini returned no supersession decisions")
-        try:
-            rows = json.loads(response.text)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise ValueError("Gemini returned malformed supersession JSON") from error
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise ValueError("Gemini supersession response must be an array of objects")
-
+        rows = _decision_rows(self._generate(prompt))
         new_by_id = {fact.fact_id: fact for fact in facts}
         decisions = {}
         for row in rows:
-            if set(row) != {"fact_id", "action", "target_ids"}:
-                raise ValueError("Gemini returned invalid supersession fields")
-            fact_id, action_value, target_ids = row["fact_id"], row["action"], row["target_ids"]
-            if not isinstance(fact_id, str) or fact_id not in new_by_id or fact_id in decisions:
-                raise ValueError("Gemini returned an unknown or repeated fact ID")
-            if not isinstance(action_value, str):
-                raise ValueError("Gemini returned an invalid action")
-            if not isinstance(target_ids, list) or any(
-                not isinstance(value, str) for value in target_ids
-            ):
-                raise ValueError("Gemini target_ids must be an array of fact IDs")
-            if len(set(target_ids)) != len(target_ids):
-                raise ValueError("Gemini returned duplicate target IDs")
             try:
-                action = UpdateAction(action_value)
-                decision = UpdateDecision(fact_id, action, tuple(target_ids))
-            except ValueError as error:
-                raise ValueError("Gemini returned an invalid update decision") from error
-
-            allowed = {candidate.fact_id: candidate for candidate in candidate_map[fact_id]}
-            if any(target not in allowed or target == fact_id for target in target_ids):
-                raise ValueError("Gemini selected a target outside the candidate set")
-            fact = new_by_id[fact_id]
-            if action == UpdateAction.SUPERSEDE and any(
-                is_broader(allowed[target].visibility, fact.visibility) for target in target_ids
-            ):
-                raise ValueError("Gemini attempted to supersede a broader-scope fact")
-            decisions[fact_id] = decision
-
-        if set(decisions) != set(new_by_id):
-            raise ValueError("Gemini must return exactly one decision per fact")
-        return [decisions[fact.fact_id] for fact in facts]
+                decision = _parse_decision(row, new_by_id, candidate_map, decisions)
+            except (TypeError, ValueError) as error:
+                # One bad row only costs that fact its update: it is kept as new.
+                logger.warning("Ignoring invalid supersession decision: %s", error)
+                continue
+            decisions[decision.fact_id] = decision
+        return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
 
     def _candidates(self, fact):
         candidates = {}
@@ -418,6 +388,41 @@ class GeminiSupersedeClassifier:
                 if not retryable or attempt == 3:
                     raise
                 time.sleep(3 * (2**attempt))
+
+
+def _decision_rows(response):
+    """Decision rows from a response; a malformed response yields none (every fact is added)."""
+    try:
+        rows = json.loads(response.text)
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        logger.warning("Gemini returned no valid supersession JSON; adding every fact")
+        return []
+    if not isinstance(rows, list):
+        logger.warning("Gemini supersession response is not an array; adding every fact")
+        return []
+    return rows
+
+
+def _parse_decision(row, new_by_id, candidate_map, seen):
+    if not isinstance(row, dict) or set(row) != {"fact_id", "action", "target_ids"}:
+        raise ValueError("invalid supersession fields")
+    fact_id, target_ids = row["fact_id"], row["target_ids"]
+    if not isinstance(fact_id, str) or fact_id not in new_by_id or fact_id in seen:
+        raise ValueError("unknown or repeated fact ID")
+    if not isinstance(target_ids, list) or any(not isinstance(t, str) for t in target_ids):
+        raise ValueError("target_ids must be an array of fact IDs")
+    if len(set(target_ids)) != len(target_ids):
+        raise ValueError("duplicate target IDs")
+    decision = UpdateDecision(fact_id, UpdateAction(row["action"]), tuple(target_ids))
+    allowed = {candidate.fact_id: candidate for candidate in candidate_map[fact_id]}
+    if any(target not in allowed for target in target_ids):
+        raise ValueError("target outside the candidate set")
+    if decision.action == UpdateAction.SUPERSEDE and any(
+        is_broader(allowed[target].visibility, new_by_id[fact_id].visibility)
+        for target in target_ids
+    ):
+        raise ValueError("attempted to supersede a broader-scope fact")
+    return decision
 
 
 def _decision_schema():

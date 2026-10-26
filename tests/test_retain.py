@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from async_worker import AsyncMemoryWorker
-from retain import InMemoryRetainStore, Retainer, Scope, build_retainer
+from retain import InMemoryRetainStore, RetainConfig, Retainer, Scope, build_retainer
 from retain.entities import mention_key, normalize_name
 from retain.models import (
     Category,
@@ -282,30 +282,28 @@ def test_duplicate_reinforces_and_supersede_closes_validity():
     assert (new_id, old.fact_id, Relation.SUPERSEDES) in store.links
 
 
-def test_failed_stage_writes_nothing_and_leaves_episode_retryable():
+def test_decision_for_an_unknown_fact_is_ignored_and_the_fact_added():
     extractor = ScriptedExtractor(dict(text="User prefers tabs.", evidence="tabs"))
     store = InMemoryRetainStore()
     wrong_id = ScriptedClassifier(lambda fact: UpdateDecision("not-a-new-fact"))
-    with pytest.raises(ValueError, match="one decision per new fact"):
-        retainer(extractor, store, classifier=wrong_id).retain_turn(
-            SCOPE, "I use tabs.", "Ok.", timestamp=T0
-        )
-    assert not store.documents and not store.facts
-    retry = retainer(extractor, store).retain_turn(SCOPE, "I use tabs.", "Ok.", timestamp=T0)
-    assert not retry.skipped and len(store.facts) == 1
+    retainer(extractor, store, classifier=wrong_id).retain_turn(
+        SCOPE, "I use tabs.", "Ok.", timestamp=T0
+    )
+    (fact,) = store.facts.values()
+    assert fact.text == "User prefers tabs." and fact.is_current
 
 
 @pytest.mark.parametrize(
-    "action,target,error",
+    "action,target",
     [
-        (UpdateAction.DUPLICATE, "missing", "Invalid duplicate target"),
-        (UpdateAction.SUPERSEDE, "other_user", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "other_project", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "closed", "Invalid supersede target"),
-        (UpdateAction.SUPERSEDE, "global", "project fact cannot supersede global"),
+        (UpdateAction.DUPLICATE, "missing"),
+        (UpdateAction.SUPERSEDE, "other_user"),
+        (UpdateAction.SUPERSEDE, "other_project"),
+        (UpdateAction.SUPERSEDE, "closed"),
+        (UpdateAction.SUPERSEDE, "global"),
     ],
 )
-def test_classifier_targets_are_checked_before_writing(action, target, error):
+def test_invalid_classifier_targets_leave_stored_facts_untouched(action, target):
     targets = {
         "other_user": stored_fact("Intruder prefers Go.", scope=Scope("intruder", "CloudRetail")),
         "other_project": stored_fact(
@@ -323,11 +321,11 @@ def test_classifier_targets_are_checked_before_writing(action, target, error):
     extractor = ScriptedExtractor(
         dict(text="CloudRetail uses Rust.", evidence="Rust", visibility=Visibility.PROJECT)
     )
-    with pytest.raises(ValueError, match=error):
-        retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Rust here.", "Ok.")
-    assert not store.documents
-    assert not store.documents
-    assert store.facts == {fact.fact_id: fact for fact in targets.values()}
+    retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Rust here.", "Ok.")
+
+    new = [fact for fact in store.facts.values() if fact.text == "CloudRetail uses Rust."]
+    assert len(new) == 1 and new[0].is_current and store.documents
+    assert all(store.facts[fact.fact_id] == fact for fact in targets.values())
 
 
 def test_global_duplicate_cannot_target_a_narrower_project_fact():
@@ -350,9 +348,10 @@ def test_global_duplicate_cannot_target_a_narrower_project_fact():
         )
     )
 
-    with pytest.raises(ValueError, match="global fact cannot use narrower project target"):
-        retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Go", "Ok.")
-    assert not store.documents
+    retainer(extractor, store, classifier=classifier).retain_turn(SCOPE, "Go", "Ok.")
+
+    assert store.facts[project_fact.fact_id].evidence_count == 1
+    assert any(fact.text == "User prefers Go globally." for fact in store.facts.values())
 
 
 def test_store_rejects_bad_batches_atomically():
@@ -427,3 +426,76 @@ def test_production_wiring_can_use_regional_embedding_client():
     assert len(production.embedder(["fact"])[0]) == 768
     embedding.models.embed_content.assert_called_once()
     generation.models.embed_content.assert_not_called()
+
+
+class CountingBuilder:
+    def __init__(self, fail=False):
+        self.readers, self.fail = [], fail
+
+    def consolidate(self, reader):
+        self.readers.append(reader)
+        if self.fail:
+            raise RuntimeError("model down")
+        return []
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_maintenance_runs_every_n_rounds_per_scope_and_never_fails_a_turn(fail):
+    builder = CountingBuilder(fail)
+    store = InMemoryRetainStore()
+    pipeline = retainer(
+        ScriptedExtractor(),
+        store,
+        observation_builder=builder,
+        config=RetainConfig(maintenance_every=2),
+    )
+    other = Scope("user_dev_42", "Other", "sess_9")
+    for index, scope in enumerate([SCOPE, other, SCOPE, other, SCOPE]):
+        result = pipeline.retain_turn(scope, f"turn {index}", "ok", timestamp=T0)
+        assert not result.skipped  # maintenance errors are logged, the round is kept
+    assert builder.readers == [SCOPE, other]
+    assert len(store.retained) == 10
+
+
+def test_maintenance_can_be_disabled():
+    builder = CountingBuilder()
+    pipeline = retainer(
+        ScriptedExtractor(), observation_builder=builder, config=RetainConfig(maintenance_every=0)
+    )
+    for index in range(3):
+        pipeline.retain_turn(SCOPE, f"turn {index}", "ok", timestamp=T0)
+    assert builder.readers == []
+
+
+def test_worker_keeps_a_bounded_failure_list(monkeypatch):
+    import async_worker
+
+    monkeypatch.setattr(async_worker, "MAX_KEPT_FAILURES", 2)
+    failing = MagicMock()
+    failing.retain_turn.side_effect = RuntimeError("boom")
+    worker = AsyncMemoryWorker(MagicMock(), MagicMock(), retainer=failing)
+    jobs = [worker.enqueue_extraction("u", "s", "a", "b", project_id="p") for _ in range(4)]
+    assert all(isinstance(job.exception(timeout=5), RuntimeError) for job in jobs)
+    with pytest.raises(RuntimeError, match="boom"):
+        worker.wait(timeout=5)
+    assert len(worker._failures) <= 1
+
+
+def test_two_facts_superseding_one_stored_fact_keep_the_round():
+    store = InMemoryRetainStore()
+    old = stored_fact("User prefers PostgreSQL.")
+    store.write(WriteBatch(documents=(), facts=(old,)))
+    classifier = ScriptedClassifier(
+        lambda fact: UpdateDecision(fact.fact_id, UpdateAction.SUPERSEDE, (old.fact_id,))
+    )
+    pipeline = retainer(
+        ScriptedExtractor(
+            dict(text="User now prefers MySQL.", evidence="MySQL"),
+            dict(text="User now prefers SQLite.", evidence="SQLite"),
+        ),
+        store,
+        classifier=classifier,
+    )
+    pipeline.retain_turn(SCOPE, "MySQL or SQLite now.", "Ok.")
+    assert store.facts[old.fact_id].valid_to is not None
+    assert len([fact for fact in store.facts.values() if fact.is_current]) == 2

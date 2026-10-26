@@ -122,20 +122,28 @@ def test_extractor_discards_unsupported_or_ambiguous_evidence(evidence):
     row = fact_row(selected[0], evidence=evidence)
     extractor, _ = extractor_for([row])
 
-    with pytest.raises(ValueError, match="no valid facts"):
-        extractor.extract(selected)
+    assert extractor.extract(selected) == []
 
 
-@pytest.mark.parametrize(
-    "response",
-    ["not-json", "{}", "[null]"],
-)
+@pytest.mark.parametrize("response", ["not-json", "{}"])
 def test_extractor_rejects_malformed_provider_responses(response):
+    # The turn stays unretained, so a transient model failure can be retried.
     client = Mock()
     client.models.generate_content.return_value.text = response
 
     with pytest.raises(ValueError):
         GeminiFactExtractor(client).extract(chunks())
+
+
+def test_extractor_drops_non_object_and_repeated_key_rows():
+    selected = chunks()
+    first = fact_row(selected[0], key=4)
+    repeated = fact_row(selected[0], key=4, text="A different claim.")
+    extractor, _ = extractor_for([None, first, repeated])
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.text == first["text"]
 
 
 def test_extractor_discards_rows_with_unknown_chunks_or_invalid_fields():
@@ -166,8 +174,7 @@ def test_relative_dates_must_be_in_the_cited_evidence_and_match_the_source_time(
     )
     extractor, _ = extractor_for([unsupported, conflict])
 
-    with pytest.raises(ValueError, match="no valid facts"):
-        extractor.extract(selected)
+    assert extractor.extract(selected) == []
 
 
 def test_extracted_fact_keeps_pipeline_document_scope_and_provenance():

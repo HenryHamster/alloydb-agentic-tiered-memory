@@ -236,8 +236,9 @@ class AlloyDBRetainStore:
                 batch.fact_entities, batch.entity_relations, facts_by_id, entities_by_id
             )
             _validate_links(batch.links, facts_by_id)
-            _apply_supersessions(batch.supersessions, facts_by_id, cur)
+            # Reinforce first: a round may repeat a fact and then supersede it.
             _reinforce(batch.reinforced_fact_ids, batch.documents, cur)
+            _apply_supersessions(batch.supersessions, facts_by_id, cur)
 
             for row in batch.fact_entities:
                 cur.execute(

@@ -168,7 +168,10 @@ ORDER BY updated_at DESC;
   for the new Retain tables.
 - The legacy `hybrid_retriever.py` reads `agent_entities`; it cannot retrieve Retain facts until
   Recall supplies its adapter for `memory_facts`, `observations`, and source episodes.
-- Observation generation is an explicit consolidation call, not part of every message write.
+- Observations are not built on every message write. The Retainer consolidates a scope's
+  observations and purges expired documents every `RetainConfig.maintenance_every` rounds
+  (default 20; 0 disables), after the round commits; a maintenance failure is logged and never
+  loses the round. `--consolidate` runs it on demand.
 - Entities are canonicalized per user as specified by the current model/schema.
 - Offline adapter tests do not validate the live AlloyDB SQL dialect, IAM access, Gemini model
   availability, or the complete Retain → Recall → Reflect flow. Those checks remain with the PM

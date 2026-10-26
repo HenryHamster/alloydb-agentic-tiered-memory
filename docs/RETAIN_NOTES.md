@@ -12,17 +12,19 @@ AsyncMemoryWorker (retainer=...)          one queued turn, trusted Scope(user, p
 └─ Retainer.retain_turn
    1 documents        store both messages; episode = one round; skip if already retained
    2 chunk_documents  700-char lossless spans (shared/chunking.py)
-   3 FactExtractor    concise facts + evidence quote, who/what/when/where/why, entities,
+   3 FactExtractor    ~8-15 word facts + evidence quote, who/what/when/where/why, entities,
                       relations, causal refs, proposed visibility
    4 EntityResolver   mentions -> canonical per-user entities (exact, alias, fuzzy)
    5 Embedder         768-dim text-embedding-005 vectors
    6 SupersedeClassifier  add / duplicate (reinforce) / supersede (close valid_to)
    7 links            supersedes + causal (from extraction) + Linker (semantic, temporal)
    8 RetainStore.write    one transaction; marks documents retained
-Retainer.consolidate      periodic: ObservationBuilder -> observations
+Retainer maintenance     every 20 rounds per scope (RetainConfig.maintenance_every):
+                          ObservationBuilder -> observations, then purge expired documents
 ```
 
-Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_buffer.py`.
+Short-term memory is `valkey_buffer.py`: the sliding window and rolling summary. Its `round_id`
+is passed to Retain as the `episode_id`, so Recall can skip rounds still in the window.
 
 ## Files
 
@@ -36,7 +38,7 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
 | `retain/entities.py` | `normalize_name`; `FuzzyEntityResolver` | Implemented |
 | `retain/embeddings.py` | `Embedder` type; `GeminiEmbedder` | Implemented |
 | `retain/linking.py` | `causal_links`; `StoreLinker`, `GeminiSupersedeClassifier` | Implemented |
-| `retain/observations.py` | `GeminiObservationBuilder` | Implemented; explicit consolidation pass |
+| `retain/observations.py` | `GeminiObservationBuilder` | Implemented; runs in periodic maintenance or `Retainer.consolidate` |
 | `retain/alloydb_store.py` | `AlloyDBRetainStore`, shared visibility SQL | Implemented |
 | `async_worker.py` | `retainer=` replaces the `agent_entities` upsert; passes `project_id` and message time | Complete |
 
@@ -57,6 +59,10 @@ Short-term memory (Valkey rolling summary) is unchanged codelab code in `valkey_
   assert a user preference; it is stored as `proposed`.
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
   same user and visible from the new fact; a fact never supersedes a broader one.
+- **Fail-soft on model output.** A bad extraction row, repeated key or bad reference drops only
+  that row; an invalid or missing classifier decision keeps the fact as new; an ambiguous entity
+  name gets its own entity. A response that is not valid JSON still fails the round, which then
+  stays unretained so it can be retried.
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].

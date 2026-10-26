@@ -1,11 +1,14 @@
 """Proposal step 3, entity linking: resolve mentions to canonical per-user entities."""
 
+import logging
 import unicodedata
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from typing import Protocol
 
 from retain.models import Entity, EntityMention, EntityResolution, EntityType, stable_id
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_name(name: str) -> str:
@@ -44,7 +47,19 @@ class FuzzyEntityResolver:
         if not mentions:
             return EntityResolution({})
 
-        names = list(dict.fromkeys(mention.name for mention in mentions if mention.name.strip()))
+        # Raw forms match stored aliases; normalized forms match canonical_name.
+        names = list(
+            dict.fromkeys(
+                name
+                for mention in mentions
+                if mention.name.strip()
+                for name in (
+                    mention.name.strip(),
+                    normalize_name(mention.name),
+                    _comparison_name(mention.name, mention.entity_type),
+                )
+            )
+        )
         candidates = self.store.find_entities(user_id, names) if names else []
         by_id = {entity.entity_id: entity for entity in candidates if entity.user_id == user_id}
         resolved, upserts = {}, {}
@@ -64,10 +79,16 @@ class FuzzyEntityResolver:
                 and _comparison_name(mention.name, mention.entity_type)
                 in _entity_names(entity, mention.entity_type)
             ]
-            exact_ids = {entity.entity_id for entity in exact}
-            if len(exact_ids) > 1:
-                raise ValueError(f"Ambiguous exact entity match for {mention.name!r}")
-            selected = exact[0] if exact else None
+            own_id = stable_id(user_id, mention.entity_type.value, normalized)
+            selected = _pick_exact(exact, mention.entity_type, own_id)
+            if selected is None and exact:
+                # Ambiguous (e.g. OTHER "Apple" vs organization and product): fall back to the
+                # mention's own entity instead of guessing or failing the turn.
+                logger.warning(
+                    "Ambiguous entity %r; using its own %s entity",
+                    mention.name,
+                    mention.entity_type.value,
+                )
 
             if selected is None and not exact and mention.entity_type != EntityType.PERSON:
                 scored = _fuzzy_candidates(mention, by_id.values(), self.threshold)
@@ -75,8 +96,8 @@ class FuzzyEntityResolver:
                     selected = scored[0][1]
 
             if selected is None:
-                entity_id = stable_id(user_id, mention.entity_type.value, normalized)
-                selected = Entity(
+                entity_id = own_id
+                selected = by_id.get(entity_id) or Entity(
                     entity_id=entity_id,
                     user_id=user_id,
                     name=mention.name.strip(),
@@ -100,6 +121,16 @@ class FuzzyEntityResolver:
             resolved[key] = selected.entity_id
 
         return EntityResolution(resolved, tuple(upserts.values()))
+
+
+def _pick_exact(exact, entity_type, own_id):
+    """The single exact match, else the unique one of the mention's type, else its own entity."""
+    if len({entity.entity_id for entity in exact}) == 1:
+        return exact[0]
+    same_type = {e.entity_id: e for e in exact if e.entity_type == entity_type}
+    if len(same_type) == 1:
+        return next(iter(same_type.values()))
+    return same_type.get(own_id)
 
 
 def _type_matches(mention, entity):
