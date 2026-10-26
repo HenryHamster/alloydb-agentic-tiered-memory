@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from retain.models import ClaimType, Observation, Scope, Visibility, stable_id
+from shared.llm import is_rate_limited
 
 
 class ObservationBuilder(Protocol):
@@ -200,8 +201,7 @@ class GeminiObservationBuilder:
                     },
                 )
             except Exception as error:
-                retryable = "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
-                if not retryable or attempt == 3:
+                if not is_rate_limited(error) or attempt == 3:
                     raise
                 time.sleep(3 * (2**attempt))
 

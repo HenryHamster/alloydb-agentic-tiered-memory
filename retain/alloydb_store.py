@@ -18,6 +18,7 @@ from retain.models import (
     Speaker,
     Visibility,
     is_broader,
+    is_visible,
     resolve_visibility,
 )
 
@@ -506,30 +507,9 @@ def _insert_fact(cur, fact):
 
 
 def _same_fact(left, right):
-    return all(
-        getattr(left, key) == getattr(right, key)
-        for key in (
-            "scope",
-            "visibility",
-            "fact_type",
-            "category",
-            "speaker",
-            "claim_type",
-            "text",
-            "evidence",
-            "source_document_id",
-            "source_episode_id",
-            "recorded_at",
-            "valid_from",
-            "details",
-            "occurred_at",
-            "valid_to",
-            "superseded_by",
-            "evidence_count",
-            "embedding",
-            "entity_ids",
-        )
-    )
+    # Dataclass equality skips details (a dict) and the embedding, which comes back from pgvector
+    # as float32 and need not equal the float64 vector that was written.
+    return left == right and left.details == right.details
 
 
 def _batch_fact_ids(batch):
@@ -673,7 +653,7 @@ def _reinforce(fact_ids, documents, cur):
         origin = Scope(row["user_id"], row["project_id"], row["session_id"])
         visibility = Visibility(row["visibility"])
         if row["valid_to"] is not None or not any(
-            _scope_can_read(scope, visibility, origin) for scope in document_scopes
+            is_visible(visibility, origin, scope) for scope in document_scopes
         ):
             raise ValueError("Cannot reinforce fact outside the current visibility domain")
     cur.execute(
@@ -683,16 +663,6 @@ def _reinforce(fact_ids, documents, cur):
     )
     if cur.rowcount != len(set(fact_ids)):
         raise ValueError("Cannot reinforce missing or closed fact")
-
-
-def _scope_can_read(reader, visibility, origin):
-    if reader.user_id != origin.user_id:
-        return False
-    if visibility == Visibility.GLOBAL:
-        return True
-    if visibility == Visibility.PROJECT:
-        return reader.project_id == origin.project_id
-    return reader.session_id == origin.session_id
 
 
 def _observation_can_include(

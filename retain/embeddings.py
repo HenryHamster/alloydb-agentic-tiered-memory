@@ -4,6 +4,8 @@ import math
 import time
 from collections.abc import Callable, Sequence
 
+from shared.llm import is_rate_limited
+
 Embedder = Callable[[Sequence[str]], list[list[float]]]
 EMBEDDING_DIMENSIONS = 768
 
@@ -37,8 +39,7 @@ class GeminiEmbedder:
             try:
                 return self.client.models.embed_content(model=self.model, contents=list(batch))
             except Exception as error:
-                retryable = "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
-                if not retryable or attempt == 3:
+                if not is_rate_limited(error) or attempt == 3:
                     raise
                 time.sleep(3 * (2**attempt))
 

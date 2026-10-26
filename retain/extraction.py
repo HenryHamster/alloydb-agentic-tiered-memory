@@ -24,6 +24,7 @@ from retain.models import (
     stable_id,
 )
 from shared.chunking import chunk_spans
+from shared.llm import is_rate_limited
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
@@ -238,8 +239,7 @@ class GeminiFactExtractor:
                 )
                 break
             except Exception as error:
-                retryable = "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
-                if not retryable or attempt == 3:
+                if not is_rate_limited(error) or attempt == 3:
                     raise
                 time.sleep(3 * (2**attempt))
         if response is None or not isinstance(getattr(response, "text", None), str):

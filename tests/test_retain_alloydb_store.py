@@ -1,8 +1,10 @@
+import struct
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from retain.alloydb_store import AlloyDBRetainStore, _fact
+from retain.alloydb_store import AlloyDBRetainStore, _fact, _same_fact
 from retain.models import (
     Category,
     ClaimType,
@@ -645,3 +647,15 @@ def test_stale_observation_refresh_cannot_create_a_second_current_version():
         store.write_observations((stale_new, stale_close))
     assert connection.commits == 0
     assert connection.rollbacks == 1
+
+
+def test_replayed_fact_matches_despite_float32_embedding_round_trip():
+    written = make_fact(embedding=tuple(i / 3 for i in range(768)))
+    stored = replace(  # pgvector keeps float32
+        written,
+        embedding=tuple(struct.unpack("f", struct.pack("f", v))[0] for v in written.embedding),
+    )
+    assert stored.embedding != written.embedding
+    assert _same_fact(stored, written)
+    assert not _same_fact(replace(stored, details={"who": "assistant"}), written)
+    assert not _same_fact(replace(stored, text="User uses Go."), written)
