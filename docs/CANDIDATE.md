@@ -50,3 +50,32 @@ The pilot's canonical records live in the adjacent benchmark-kit workspace:
 `experiments/candidate-mem2act-001/RECORD.md`. Its experiment registry preserves the
 earlier original-codelab evidence and scoring implementation. No accuracy result
 is inferred from offline checks.
+
+## Bounded pilot, 2026-10-26
+
+Executed source `879ceba7dc17609986caf8937aaab7798538ce98` includes all of PR #7.
+Seven of ten sampled Mem2Act questions completed before the USD 10 spending guard
+refused the next generation. Strict score was **1/7 versus the original's 4/7** on
+the same questions; schema-default completion gave 2/7 versus 5/7. This is one run
+per question, with the original JSON tool-proposal protocol and full linked histories.
+
+Median answer latency was 21.14s versus 39.31s; median history preparation including
+maintenance was 531.33s versus 126.59s. Four answers received empty recalled context,
+so faster answers do not establish useful improvement. The movie ID was retained
+for qa_400, but Recall delivered no memories after its final .3 score filter rejected
+all 30 reranked candidates. Extraction validation also rejected 10 of 247 generated
+fact rows for malformed dates or evidence quotations. These quality issues remain.
+
+Generation estimate was USD 6.8498775; reserve-inclusive accounting USD 9.50446275,
+with peak outstanding USD 9.99657775. Provider receipts reported 386,307 input,
+81,726 visible-output and 614,987 thinking tokens, excluding one interrupted call
+whose full cost reservation remains held. VM and AlloyDB shutdown were verified.
+Full evidence, score tables, hashes and paired usage are in the adjacent canonical
+workspace at `benchmark-kit/runs/candidate10c_20261026/RESULTS.md`.
+
+Next design check: separate the natural-language retrieval query from the tool
+schema/output instructions and record rejected candidates and scores. The existing
+trace cannot distinguish candidate cutoff, query formatting and score calibration.
+This is a proposed controlled comparison, not an applied fix; thresholds were not
+tuned to the seven observed answers. Keep this candidate in review until retrieval
+quality improves.
