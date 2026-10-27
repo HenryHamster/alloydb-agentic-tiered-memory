@@ -170,6 +170,19 @@ def test_abstains_when_nothing_stored_is_relevant(memories):
     assert not recaller.recall(SCOPE, "orders database").abstained
 
 
+def test_low_reranker_scores_keep_the_best_few_instead_of_abstaining(memories):
+    for n in range(5):
+        memories.fact(f"Movie note {n}: the user rated a film")
+
+    def low(query, texts):
+        return [0.1] * len(texts)
+
+    result = memories.recaller(reranker=low).recall(SCOPE, "favourite movie")
+    assert len(result.items) == RecallConfig().floor_fallback_top and not result.abstained
+    strict = memories.recaller(reranker=low, config=RecallConfig(floor_fallback_top=0))
+    assert strict.recall(SCOPE, "favourite movie").abstained
+
+
 @pytest.mark.parametrize("budget", [1, 15, 60, 10_000])
 def test_packed_context_never_exceeds_the_token_budget(memories, budget):
     for n in range(20):

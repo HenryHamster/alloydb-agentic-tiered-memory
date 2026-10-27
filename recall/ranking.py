@@ -98,18 +98,29 @@ def apply_boosts(
 
 
 def filter_and_abstain(
-    scored: Sequence[Scored], as_of: datetime, include_invalid: bool, score_floor: float
+    scored: Sequence[Scored],
+    as_of: datetime,
+    include_invalid: bool,
+    score_floor: float,
+    fallback_top: int = 0,
 ) -> tuple[list[Scored], dict[str, int]]:
     """Drops results below the relevance floor (before boosts) and hides superseded memories.
 
+    If the floor rejects every live result, the best `fallback_top` with positive relevance are
+    kept instead (counted as "fallback"), so only results with no signal at all abstain.
     Stores already exclude superseded rows; this check also covers stores that do not.
     """
-    kept, below_floor, stale = [], 0, 0
+    kept, below, stale = [], [], 0
     for item in scored:
-        if item.relevance < score_floor:
-            below_floor += 1
-        elif item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
+        if item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
             stale += 1
+        elif item.relevance < score_floor:
+            below.append(item)
         else:
             kept.append(item)
-    return kept, {"below_floor": below_floor, "stale_hidden": stale}
+    fallback = [] if kept else [item for item in below if item.relevance > 0][:fallback_top]
+    return kept or fallback, {
+        "below_floor": len(below) - len(fallback),
+        "stale_hidden": stale,
+        "fallback": len(fallback),
+    }
