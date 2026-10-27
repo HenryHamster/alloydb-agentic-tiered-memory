@@ -77,5 +77,5 @@ Next design check: separate the natural-language retrieval query from the tool
 schema/output instructions and record rejected candidates and scores. The existing
 trace cannot distinguish candidate cutoff, query formatting and score calibration.
 This is a proposed controlled comparison, not an applied fix; thresholds were not
-tuned to the seven observed answers. Keep this candidate in review until retrieval
-quality improves.
+tuned to the seven observed answers. These known quality failures remain for
+follow-up; this integration does not establish an improvement over the original.
