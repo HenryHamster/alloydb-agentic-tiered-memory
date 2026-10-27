@@ -153,6 +153,7 @@ class GeminiFactExtractor:
         model: str = "gemini-3.5-flash",
         max_request_chars: int = 6000,
         context_chars: int = 600,
+        source_dates_known: bool = True,
     ):
         if max_request_chars <= 0 or context_chars < 0:
             raise ValueError("Extraction character limits must be positive")
@@ -160,6 +161,7 @@ class GeminiFactExtractor:
         self.model = model
         self.max_request_chars = max_request_chars
         self.context_chars = context_chars
+        self.source_dates_known = source_dates_known
 
     def extract(self, chunks: Sequence[Chunk]) -> list[ExtractedFact]:
         chunks = tuple(chunks)
@@ -179,7 +181,11 @@ class GeminiFactExtractor:
                 parsed, key_map = [], {}
                 for row in rows:
                     try:
-                        fact = _parse_row(row, {c.chunk_id: c for c in request_chunks})
+                        fact = _parse_row(
+                            row,
+                            {c.chunk_id: c for c in request_chunks},
+                            source_dates_known=self.source_dates_known,
+                        )
                     except (KeyError, TypeError, ValueError) as error:
                         logger.warning("Discarding invalid Gemini fact row: %s", error)
                         continue
@@ -225,6 +231,13 @@ class GeminiFactExtractor:
 
     def _extract_request(self, chunks, contexts):
         payload = {"chunks": [_chunk_payload(chunk, contexts[chunk.chunk_id]) for chunk in chunks]}
+        if not self.source_dates_known:
+            for entry in payload["chunks"]:
+                entry["timestamp"] = None
+            payload["date_policy"] = (
+                "Source dates are unknown. Do not infer calendar dates from relative phrases; "
+                "leave their occurred_at and valid_from null. Explicit source dates are allowed."
+            )
         prompt = _PROMPT_PREFIX + json.dumps(payload, ensure_ascii=False)
         response = None
         for attempt in range(4):
@@ -356,9 +369,10 @@ def _resolve_relative_dates(row, chunk):
         return row
     if re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", row["evidence"], re.IGNORECASE) is None:
         raise ValueError("Relative date is not present in cited evidence")
-    days = _RELATIVE_DAYS[normalized]
     if match:
         days = -int(match[1]) if match[1] else int(match[2])
+    else:
+        days = _RELATIVE_DAYS[normalized]
     timestamp = chunk.document.occurred_at
     resolved = (timestamp + timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
     field = (
@@ -373,7 +387,7 @@ def _resolve_relative_dates(row, chunk):
     return row
 
 
-def _parse_row(row, chunks_by_id):
+def _parse_row(row, chunks_by_id, *, source_dates_known=True):
     required = {
         "key",
         "chunk_id",
@@ -428,7 +442,8 @@ def _parse_row(row, chunks_by_id):
     parsed["fact_type"] = fact_type
     parsed["occurred_at"] = _parse_timestamp(row["occurred_at"])
     parsed["valid_from"] = _parse_timestamp(row["valid_from"])
-    parsed = _resolve_relative_dates(parsed, chunk)
+    if source_dates_known:
+        parsed = _resolve_relative_dates(parsed, chunk)
     parsed["occurred_at"] = _parse_timestamp(parsed["occurred_at"])
     parsed["valid_from"] = _parse_timestamp(parsed["valid_from"])
 

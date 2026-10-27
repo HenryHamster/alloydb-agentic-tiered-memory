@@ -129,6 +129,8 @@ def analyze_query(
     decompose: bool = True,
     generate: Generate | None = None,
     max_sub_queries: int = 4,
+    *,
+    strict: bool = False,
 ) -> QueryPlan:
     """Turns time phrases into a date window and splits multi-part questions.
 
@@ -164,5 +166,7 @@ def analyze_query(
             )
             plan.window_source = "llm"
     except Exception as e:
+        if strict:
+            raise
         logger.warning("Query analysis fell back to the original query: %s", e)
     return plan

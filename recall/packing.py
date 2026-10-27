@@ -19,6 +19,10 @@ def format_line(memory: Memory, stale: bool) -> str:
         labels.append(str(memory.claim_type))
     if stale and memory.valid_to:
         labels.append(f"superseded {memory.valid_to.date().isoformat()}")
+    if memory.conflicts_with:
+        labels.append("unresolved conflict: " + ", ".join(memory.conflicts_with))
+    if memory.confidence < 1:
+        labels.append(f"confidence {memory.confidence:g}")
     return f"[{memory.id}] ({' | '.join(labels)}) {memory.text}"
 
 

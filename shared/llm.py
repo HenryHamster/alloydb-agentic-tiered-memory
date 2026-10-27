@@ -1,5 +1,6 @@
 """Text generation boundary shared by the summarizer and Recall's query analysis."""
 
+import json
 import time
 from collections.abc import Callable
 
@@ -15,6 +16,27 @@ class GeminiGenerator:
 
     def __call__(self, prompt: str) -> str:
         return self.client.models.generate_content(model=self.model, contents=prompt).text
+
+
+class GeminiStructuredGenerator(GeminiGenerator):
+    """Reflect's provider-neutral prompt/schema interface backed by Gemini JSON output."""
+
+    def __call__(self, prompt, response_schema):
+        def generate(text):
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=text,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": dict(response_schema),
+                },
+            )
+            return response.text
+
+        value = json.loads(generate_with_retry(generate, prompt))
+        if not isinstance(value, dict):
+            raise ValueError("Reflect generation must return a JSON object")
+        return value
 
 
 def is_rate_limited(error: Exception) -> bool:

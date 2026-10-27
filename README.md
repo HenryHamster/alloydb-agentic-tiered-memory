@@ -18,6 +18,22 @@ Alternatively, create a virtual environment and run `python -m pip install -r re
 
 ## Configure and run
 
+The integrated candidate uses Retain, Recall, Reflect and a Valkey session window:
+
+```bash
+# Apply sql/004_retain_schema.sql and sql/005_reflect_schema.sql first.
+uv run python -m tiered_memory --user alice --project demo --session session-1
+```
+
+Use `build_memory_system` for application wiring, or pass the result as
+`memory_system=` to `run_agent_turn` / `ADKTieredMemoryProvider`. Call
+`finish_session(scope)` at each completed session to build observations and run
+Reflect; `maintain(scope)` is the explicit scheduled-maintenance entry point.
+`system.tools(scope)` exposes native ADK memory tools. The interactive entry point
+uses ambient recalled context. See [candidate integration and benchmark](docs/CANDIDATE.md).
+
+The original codelab demonstrations remain available below.
+
 1. Provision the cloud resources using [the setup guide](docs/SETUP.md). Existing shared infrastructure can be reused; authentication and environment variables are specific to each developer.
 2. Copy `.env.example` to `.env` and fill in the project, endpoint, and IAM user values. Python reads exported environment variables; it does not load `.env` automatically.
 3. Apply the [SQL files](sql/README.md) in order in AlloyDB Studio.
@@ -53,6 +69,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `shared/chunking.py` | Lossless length-bounded text chunking |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
+| `bench/` | LongMemEval harness for Recall; see [benchmarks](docs/BENCHMARKS.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |

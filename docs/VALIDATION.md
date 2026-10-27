@@ -10,13 +10,17 @@ Google ADK agent with the callback and function tool, and checks prompt assembly
 Ruff checks imports, undefined names, and consistent formatting.
 `tests/test_retain.py` covers the Retain skeleton: chunking, visibility rules, the pipeline
 with fake stages, idempotent replay, duplicates and supersession, classifier target checks,
-atomic store writes and worker wiring. Its Gemini and AlloyDB stages are stubs.
-`tests/test_reflect.py` covers Reflect: rank score and tier transitions, candidate grouping and
-every verdict (including untrusted judge output), clustering and macro versioning, full
-`Reflector` passes on the in-memory store (idempotent rerun, access promotion, dormancy purge,
-`forget`), and the AlloyDB store's SQL against a recording fake connection. The AlloyDB store
-was also run end to end on PostgreSQL 16 with pgvector stubbed. Recall integration with
-facts/macros is not implemented.
+atomic store writes and worker wiring. `tests/test_retain_*.py` cover its Gemini stages and
+AlloyDB store against fakes; `tests/test_retain_live.py` runs only with `RETAIN_LIVE=1`.
+`tests/test_recall.py` and `tests/test_session_window.py` check Recall over Retain's in-memory
+tables: scope isolation, supersession, time windows, entity and graph reach, abstention, token
+budgets, the agent tools, and the sliding window feeding Recall. `tests/test_recall_alloydb.py`
+checks bound SQL parameters, row decoding and reconnects against a scripted connection.
+`tests/test_bench.py` runs the LongMemEval harness with verbatim and scripted Gemini stages.
+`tests/test_reflect.py` covers tier transitions, consolidation verdicts, clustering, macro
+versioning, full in-memory Reflect passes, access promotion, purge and forgetting. Its AlloyDB
+adapter is covered with a recording connection and was also exercised on PostgreSQL 16 with
+pgvector stubbed. Live AlloyDB and full-system qualification are separate checks.
 
 On October 10, 2026, all 11 offline tests passed on Windows with Python 3.14.7,
 Google GenAI 2.29.0, and Google ADK 2.11.0. Ruff checks and formatting passed.

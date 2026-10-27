@@ -27,7 +27,7 @@ class MemoryType(StrEnum):
     FACT = "fact"  # memory_facts
     OBSERVATION = "observation"  # observations
     EPISODE = "episode"  # documents grouped by episode_id
-    MENTAL_MODEL = "mental_model"  # Reflect; no table yet, so stores return none
+    MENTAL_MODEL = "mental_model"  # Reflect macro_memories
 
 
 DEFAULT_TYPES = (MemoryType.FACT, MemoryType.OBSERVATION)
@@ -63,3 +63,6 @@ class RecallConfig:
     evidence_boost: float = 0.05
     # TODO(recall): tune once real fact ages are available.
     recency_half_life_days: float = 90.0
+    # With Reflect enabled, widen from hot to warm/archived until this many relevant hits.
+    # Without a calibrated reranker, search all tiers rather than assuming relevance.
+    tier_min_hits: int = 3

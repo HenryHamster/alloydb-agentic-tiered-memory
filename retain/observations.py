@@ -156,38 +156,54 @@ class GeminiObservationBuilder:
         prompt = (
             "Write a concise observation supported only by these asserted facts. Preserve "
             "qualifiers, dates, and contradictions; do not infer unstated causes or attributes. "
-            "If the facts do not support a useful synthesis, return an empty summary and an "
-            "empty fact_ids array. Otherwise include every input fact_id that supports the "
-            "summary exactly once. Return only the requested JSON object.\n"
+            "Cover ALL provided facts, including separate topics; do not select a subset. "
+            "If a useful complete synthesis is impossible, return an empty summary and an "
+            "empty fact_ids array. Otherwise fact_ids MUST contain EVERY input fact_id "
+            "exactly once. Return only the requested JSON object.\n"
             + json.dumps(source, ensure_ascii=False)
         )
-        response = self._generate(prompt)
-        if not isinstance(getattr(response, "text", None), str):
-            raise ValueError("Gemini returned no observation")
-        try:
-            row = json.loads(response.text)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise ValueError("Gemini returned malformed observation JSON") from error
-        if not isinstance(row, dict) or set(row) != {"summary", "fact_ids"}:
-            raise ValueError("Gemini returned invalid observation fields")
-        summary, fact_ids = row["summary"], row["fact_ids"]
-        expected_ids = {fact.fact_id for fact in facts}
-        if (
-            not isinstance(summary, str)
-            or not isinstance(fact_ids, list)
-            or any(not isinstance(fact_id, str) for fact_id in fact_ids)
-        ):
-            raise ValueError("Gemini returned invalid observation values")
-        summary = summary.strip()
-        if not summary and not fact_ids:
-            return None
-        if not summary:
-            raise ValueError("Observation summary cannot be empty")
-        if len(fact_ids) != len(set(fact_ids)) or set(fact_ids) != expected_ids:
-            raise ValueError("Observation provenance must match its supporting facts")
-        if any(summary == fact.text.strip() or summary == fact.evidence.strip() for fact in facts):
-            return None
-        return summary
+        original_prompt = prompt
+        for attempt in range(2):
+            try:
+                response = self._generate(prompt)
+                if not isinstance(getattr(response, "text", None), str):
+                    raise ValueError("Gemini returned no observation")
+                try:
+                    row = json.loads(response.text)
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError("Gemini returned malformed observation JSON") from error
+                if not isinstance(row, dict) or set(row) != {"summary", "fact_ids"}:
+                    raise ValueError("Gemini returned invalid observation fields")
+                summary, fact_ids = row["summary"], row["fact_ids"]
+                expected_ids = {fact.fact_id for fact in facts}
+                if (
+                    not isinstance(summary, str)
+                    or not isinstance(fact_ids, list)
+                    or any(not isinstance(fact_id, str) for fact_id in fact_ids)
+                ):
+                    raise ValueError("Gemini returned invalid observation values")
+                summary = summary.strip()
+                if not summary and not fact_ids:
+                    return None
+                if not summary:
+                    raise ValueError("Observation summary cannot be empty")
+                if len(fact_ids) != len(set(fact_ids)) or set(fact_ids) != expected_ids:
+                    raise ValueError("Observation provenance must match its supporting facts")
+                if any(
+                    summary == fact.text.strip() or summary == fact.evidence.strip()
+                    for fact in facts
+                ):
+                    return None
+                return summary
+            except ValueError as error:
+                if attempt:
+                    raise
+                prompt = (
+                    "The previous response failed validation: " + str(error) + ". "
+                    "Return a corrected response; do not drop any input IDs for a nonempty summary.\n"
+                    + original_prompt
+                )
+        raise AssertionError("unreachable")
 
     def _generate(self, prompt):
         for attempt in range(4):

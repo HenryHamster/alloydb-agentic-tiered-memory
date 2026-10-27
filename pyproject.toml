@@ -30,10 +30,12 @@ py-modules = [
     "db_clients", "valkey_buffer", "async_worker", "hybrid_retriever",
     "agent_orchestrator", "enterprise_engine", "adk_memory_provider",
     "adk_memory_tools", "adk_guardrails", "turn_context",
+    "tiered_memory",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # bench/ is a repo-local harness, not an installed package
 addopts = "-q"
 
 [tool.ruff]

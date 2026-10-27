@@ -59,11 +59,16 @@ def build_turn_context(
     prev_session_id: Optional[str] = None,
     query_time: Optional[datetime] = None,
     max_tokens: int = TURN_MAX_TOKENS,
+    *,
+    strict: bool = False,
+    depth: RecallDepth = TURN_DEPTH,
 ) -> TurnContext:
     """Reads the session window, then recalls long-term memory into the remaining budget."""
     if not scope.session_id:
         raise ValueError("build_turn_context needs a session_id in scope")
     window = buffer.read(scope.session_id)
+    if strict and window.degraded:
+        raise RuntimeError("Valkey is unavailable; refusing a degraded candidate turn")
     summary = window.summary
     if not summary and prev_session_id:
         # A fresh session starts from the previous session's summary.
@@ -81,10 +86,12 @@ def build_turn_context(
             query,
             query_time=query_time,
             max_tokens=recall_budget,
-            depth=TURN_DEPTH,
+            depth=depth,
             exclude_episode_ids=window.round_ids,
         )
     except Exception:
+        if strict:
+            raise
         # Short-term context alone still lets the turn proceed.
         logger.warning("Recall failed; continuing with the session window only", exc_info=True)
         result = None

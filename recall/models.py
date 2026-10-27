@@ -73,9 +73,13 @@ class Memory:
     supporting_ids: tuple[str, ...] = ()
     entity_ids: tuple[str, ...] = ()
     evidence_count: int = 1
+    tier: str | None = None
+    confidence: float = 1.0
+    consolidated_into: str | None = None
+    conflicts_with: tuple[str, ...] = ()
 
     @classmethod
-    def from_fact(cls, fact: MemoryFact) -> "Memory":
+    def from_fact(cls, fact: MemoryFact, *, state=None) -> "Memory":
         return cls(
             id=fact.fact_id,
             type=MemoryType.FACT,
@@ -91,6 +95,25 @@ class Memory:
             source_episode_id=fact.source_episode_id,
             entity_ids=fact.entity_ids,
             evidence_count=fact.evidence_count,
+            tier=getattr(state, "tier", None),
+            confidence=getattr(state, "confidence", 1.0),
+            consolidated_into=getattr(state, "consolidated_into", None),
+            conflicts_with=getattr(state, "conflicts_with", ()),
+        )
+
+    @classmethod
+    def from_macro(cls, macro) -> "Memory":
+        return cls(
+            id=macro.macro_id,
+            type=MemoryType.MENTAL_MODEL,
+            text=macro.macro_title + "\n" + macro.macro_summary,
+            recorded_at=macro.created_at,
+            valid_from=macro.updated_at,
+            valid_to=macro.valid_to,
+            supporting_ids=macro.supporting_fact_ids,
+            entity_ids=macro.primary_entity_ids,
+            evidence_count=len(macro.supporting_fact_ids),
+            tier=str(macro.tier),
         )
 
     @classmethod
@@ -153,6 +176,10 @@ class Memory:
             "source_episode_id": self.source_episode_id,
             "supporting_ids": list(self.supporting_ids),
             "entity_ids": list(self.entity_ids),
+            "tier": self.tier,
+            "confidence": self.confidence,
+            "consolidated_into": self.consolidated_into,
+            "conflicts_with": list(self.conflicts_with),
         }
 
 
