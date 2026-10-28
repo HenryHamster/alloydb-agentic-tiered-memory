@@ -48,12 +48,17 @@ def rerank(
     if reranker is not None:
         try:
             texts = [scored.memory.text for scored in head]
-            best = [0.0] * len(head)
+            # Start from the first sub-query's scores, not 0.0: seeding with zeros would clamp
+            # any negative reranker score to 0 and make a real score look like "no signal".
+            best: list[float] | None = None
             for query in queries:
                 scores = reranker(query, texts)
                 if len(scores) != len(head):
                     raise ValueError(f"Reranker returned {len(scores)} scores for {len(head)}")
-                best = [max(old, float(new)) for old, new in zip(best, scores)]
+                scores = [float(score) for score in scores]
+                best = scores if best is None else [max(o, n) for o, n in zip(best, scores)]
+            if best is None:
+                best = [0.0] * len(head)
             reranked = [Scored(scored.memory, score) for scored, score in zip(head, best)]
             reranked.sort(key=lambda scored: scored.relevance, reverse=True)
             return reranked[:top], True
@@ -118,8 +123,12 @@ def filter_and_abstain(
             below.append(item)
         else:
             kept.append(item)
-    fallback = [] if kept else [item for item in below if item.relevance > 0][:fallback_top]
-    return kept or fallback, {
+    need = max(0, fallback_top - len(kept))
+    fallback = [item for item in below if item.relevance > 0][:need]
+    if fallback:
+        # Keep the combined list best-first so packing spends the budget on the strongest.
+        kept = sorted([*kept, *fallback], key=lambda item: item.score, reverse=True)
+    return kept, {
         "below_floor": len(below) - len(fallback),
         "stale_hidden": stale,
         "fallback": len(fallback),
