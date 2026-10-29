@@ -45,7 +45,9 @@ for claims about the user or world, and experience for what the agent did or sai
 the supplied category, claim_type, and visibility enums. The caller will narrow visibility
 to the trusted source scope. Put supported who/what/when/where/why values in `details` and
 leave unknown values null. Resolve exact relative dates from the source timestamp; do not
-invent dates. Use timezone-aware ISO timestamps, or a date-only ISO value. Emit entity mentions
+invent dates. Use timezone-aware ISO timestamps, or a date-only ISO value. For a year-only
+or year-month source date, preserve it in `details.when` and leave exact timestamps null;
+never invent a month or day. Emit entity mentions
 with roles and entity types, relation triples only when explicitly stated, and causal/evidence
 references only to other integer keys in this response. Include all required JSON fields.
 SOURCE JSON:\n"""
@@ -350,12 +352,41 @@ def _parse_timestamp(value):
         return value
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Timestamps must be ISO strings or null")
+    value = value.strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.utcoffset() is None:
         raise ValueError("Date-time values must include a timezone")
     return result
+
+
+def _partial_date_parts(value):
+    """Recognize valid reduced-precision ISO dates without assigning a missing day."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"([0-9]{4})(?:-([0-9]{2}))?", value.strip())
+    if match is None:
+        return None
+    year = int(match[1])
+    month = int(match[2]) if match[2] is not None else None
+    if not 1 <= year <= 9999 or (month is not None and not 1 <= month <= 12):
+        raise ValueError("Partial dates require a valid year and month")
+    return year, month
+
+
+def _parse_fact_timestamp(value, details, field):
+    if _partial_date_parts(value) is None:
+        return _parse_timestamp(value)
+    # Storage timestamps cannot express year/month precision. Keep it as text instead
+    # of either dropping the fact or making up January 1/the first day of the month.
+    partial = value.strip()
+    existing = details.get("when")
+    if existing is None:
+        details["when"] = partial
+    elif existing != partial:
+        details["when"] = f"{existing}; {field}: {partial}"
+    return None
 
 
 def _resolve_relative_dates(row, chunk):
@@ -380,7 +411,12 @@ def _resolve_relative_dates(row, chunk):
         if row["category"] == Category.EVENT or row["fact_type"] == FactType.EXPERIENCE
         else "valid_from"
     )
-    supplied = _parse_timestamp(row[field])
+    partial = _partial_date_parts(row[field])
+    if partial is not None and (
+        partial[0] != resolved.year or (partial[1] is not None and partial[1] != resolved.month)
+    ):
+        raise ValueError("Model date disagrees with relative source date")
+    supplied = _parse_timestamp(row[field]) if partial is None else None
     if supplied is not None and supplied.astimezone(timestamp.tzinfo).date() != resolved.date():
         raise ValueError("Model date disagrees with relative source date")
     row[field] = (supplied or resolved).isoformat()
@@ -440,12 +476,11 @@ def _parse_row(row, chunks_by_id, *, source_dates_known=True):
     parsed = dict(row)
     parsed["category"] = category
     parsed["fact_type"] = fact_type
-    parsed["occurred_at"] = _parse_timestamp(row["occurred_at"])
-    parsed["valid_from"] = _parse_timestamp(row["valid_from"])
     if source_dates_known:
         parsed = _resolve_relative_dates(parsed, chunk)
-    parsed["occurred_at"] = _parse_timestamp(parsed["occurred_at"])
-    parsed["valid_from"] = _parse_timestamp(parsed["valid_from"])
+    details = dict(details)
+    parsed["occurred_at"] = _parse_fact_timestamp(parsed["occurred_at"], details, "occurred_at")
+    parsed["valid_from"] = _parse_fact_timestamp(parsed["valid_from"], details, "valid_from")
 
     entities = []
     for entity in row["entities"]:
