@@ -27,7 +27,7 @@ from devtools.cache import (
 )
 from devtools.cli import collect_archive
 from devtools.files import read_json, save_json
-from devtools.state import RunSchema
+from devtools.state import PrefixedValkey, RunSchema
 from devtools.worker import run_job
 from recall import InMemoryRecallStore, Recaller
 from reflect import Reflector
@@ -166,6 +166,9 @@ class MemoryBackend:
     def __init__(self, config, cache, models, source, clock, run_id):
         self.cache, self.models, self.clock = cache, models, clock
         self.schemas = []
+        storage = MemoryValkey()
+        storage.close = lambda: None
+        self.valkey = PrefixedValkey(storage, run_id)
 
     def schema(self):
         schema = MemorySchema()
@@ -217,11 +220,13 @@ class MemoryBackend:
             retainer=retainer,
             reflector=reflector,
             recaller=recaller,
-            buffer=SessionBuffer(MemoryValkey(), generate, strict=True),
+            buffer=SessionBuffer(self.valkey, generate, strict=True),
             generate=generate,
         )
 
     def close(self):
+        self.valkey.close()
+        assert not self.valkey.client.values
         assert not any(s.created for s in self.schemas)
 
 
@@ -243,14 +248,17 @@ def model(tmp_path, mode="cached", run="run"):
 
 def test_provider_cache_replay_preserves_responses_and_reports_usage(tmp_path):
     first, usage, provider = model(tmp_path)
+    provider.models.generate_content.return_value.parsed = [{"fact": "array response"}]
     # Cache keys contain model names; the cache imposes no pricing/model allowlist.
     request = dict(model="developer-selected-model", contents="hello")
-    assert first.generate_content(**request).text == "hello"
+    response = first.generate_content(**request)
+    assert response.text == "hello" and response.parsed == [{"fact": "array response"}]
     first.embed_content(model="developer-selected-embedding", contents=["hello"])
     assert usage.calls[0]["usage_metadata"]["thoughts_token_count"] == 7
     assert all(c["status"] == "completed" and c["seconds"] >= 0 for c in usage.calls)
     replay, recorded, untouched = model(tmp_path, "replay", "second")
-    assert replay.generate_content(**request).text == "hello"
+    response = replay.generate_content(**request)
+    assert response.text == "hello" and response.parsed == [{"fact": "array response"}]
     assert (
         replay.embed_content(model="developer-selected-embedding", contents=["hello"])
         .embeddings[0]
@@ -279,7 +287,7 @@ def test_archive_traversal_rejected(tmp_path):
         collect_archive(archive, digest, tmp_path / "results", "a" * 32)
 
 
-def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, monkeypatch):
+def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, capsys):
     from types import SimpleNamespace
 
     from devtools.cli import run_remote
@@ -367,6 +375,8 @@ def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, monkeypatc
     assert run_remote(FakeCloud(), args, SOURCE) == 0
     report = read_json(next((tmp_path / "results").glob("*/report.json")))
     assert report["questions"][0]["score"]["correct"]
+    console = capsys.readouterr().out
+    assert "Reported new tokens:" in console and "Full results:" in console
     assert report["api_usage"]["calls"]
     assert any(
         c.get("usage_metadata", {}).get("thoughts_token_count")

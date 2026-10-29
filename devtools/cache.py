@@ -128,15 +128,20 @@ class CachedModels:
             config.get("max_output_tokens") or self.maximum, self.maximum
         )
         request = {**kwargs, "config": config}
-        return GenerateContentResponse.model_validate(
-            self.cache.call(
-                "generate",
-                request,
-                lambda _: self.generation.models.generate_content(**request).model_dump(
-                    mode="json", exclude={"sdk_http_response"}
-                ),
-            )
+        raw = self.cache.call(
+            "generate",
+            request,
+            lambda _: self.generation.models.generate_content(**request).model_dump(
+                mode="json", exclude={"sdk_http_response"}, warnings=False
+            ),
         )
+        # The SDK assigns arrays to parsed despite its narrower Pydantic annotation.
+        # Validate wire fields, then restore this derived value as the SDK does.
+        response = GenerateContentResponse.model_validate(
+            {k: v for k, v in raw.items() if k != "parsed"}
+        )
+        response.parsed = raw.get("parsed")
+        return response
 
     def embed_content(self, **kwargs):
         from google.genai.types import EmbedContentResponse

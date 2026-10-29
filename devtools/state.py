@@ -163,6 +163,9 @@ class PrefixedValkey:
         return call
 
     def close(self):
-        if self.keys:
-            self.client.delete(*self.keys)
-        self.client.close()
+        try:
+            # Clustered Valkey rejects a multi-key DEL spanning hash slots.
+            for key in self.keys:
+                self.client.delete(key)
+        finally:
+            self.client.close()

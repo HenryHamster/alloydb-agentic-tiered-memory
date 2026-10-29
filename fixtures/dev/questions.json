@@ -1,13 +1,36 @@
 {
   "questions": [
-    {"id": "chosen_movie", "question": "Which movie did we pick?", "expected_answer": "Inception"},
+    {
+      "id": "chosen_movie",
+      "question": "Which movie did we pick? Reply with only the movie title and no punctuation.",
+      "expected_answer": "Inception"
+    },
     {
       "id": "movie_reviews",
       "question": "Get reviews for the movie we picked.",
-      "tools": [{"name": "Get Movie Reviews", "description": "Retrieves reviews for a movie.", "parameters": {
-        "type": "object", "properties": {"movie_id": {"type": "integer"}}, "required": ["movie_id"]
-      }}],
-      "expected_tool_call": {"name": "Get Movie Reviews", "arguments": {"movie_id": 1375666}}
+      "tools": [
+        {
+          "name": "Get Movie Reviews",
+          "description": "Retrieves reviews for a movie.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "movie_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "movie_id"
+            ]
+          }
+        }
+      ],
+      "expected_tool_call": {
+        "name": "Get Movie Reviews",
+        "arguments": {
+          "movie_id": 1375666
+        }
+      }
     }
   ]
 }

@@ -4,9 +4,12 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -31,7 +34,24 @@ def load_config(path):
 
 
 def command(args, *, timeout=120):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    executable = shutil.which(args[0])
+    if executable is None and sys.platform == "win32":
+        candidates = {
+            "gcloud": Path.home() / "google-cloud-sdk/bin/gcloud.cmd",
+            "git": Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/cmd/git.exe",
+        }
+        candidate = candidates.get(args[0])
+        if candidate and candidate.is_file():
+            executable = str(candidate)
+    if executable is None:
+        raise RuntimeError(f"Install {args[0]} and add it to PATH")
+    env = dict(os.environ)
+    if args[0] == "gcloud" and sys.platform == "win32":
+        # IAP's PuTTY proxy needs a real Python executable, not a shell alias.
+        env.setdefault("CLOUDSDK_PYTHON", sys.executable)
+    result = subprocess.run(
+        [executable, *args[1:]], text=True, capture_output=True, timeout=timeout, env=env
+    )
     if result.returncode:
         raise RuntimeError(f"Command failed ({result.returncode}): " + result.stderr[-1500:])
     return result.stdout
@@ -265,7 +285,7 @@ def collect_archive(archive, expected_hash, output, run_id):
                 or not (member.isdir() or member.isfile())
             ):
                 raise ValueError("Unsafe result archive")
-        bundle.extractall(output, filter="data")
+        bundle.extractall(output, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
 
 
 def run_remote(cloud, args, source):
@@ -372,7 +392,27 @@ def run_remote(cloud, args, source):
         },
     }
     save_json(output / "report.json", report)
-    print(json.dumps(report, indent=2))
+    calls = report["api_usage"]["calls"]
+    hits = report["api_usage"]["cache_hits"]
+    print(
+        f"{report['status']['status']}: {len(rows)} answers, {len(calls)} new provider calls, {len(hits)} cache hits."
+    )
+    for row in rows:
+        check = (
+            ""
+            if row["score"] is None
+            else ("; exact match" if row["score"]["correct"] else "; exact match failed")
+        )
+        print(f"{row['id']} ({row['answer_seconds']:.2f}s{check}): {row['answer']}")
+    totals = {
+        key: sum((c.get("usage_metadata") or {}).get(key) or 0 for c in calls)
+        for key in ("prompt_token_count", "candidates_token_count", "thoughts_token_count")
+    }
+    print(
+        f"Reported new tokens: {totals['prompt_token_count']} input, "
+        f"{totals['candidates_token_count']} output, {totals['thoughts_token_count']} thinking."
+    )
+    print(f"Full results: {output / 'report.json'}")
     return 0 if report["status"]["status"] == "completed" else 2
 
 

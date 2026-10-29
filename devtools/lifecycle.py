@@ -206,6 +206,7 @@ def main(argv=None):
     elif args.action == "touch":
         with Lease():
             pass
+        print(json.dumps({"touched": True}))
     else:
         path = private_dir(STATE / "activity" / str(os.getuid())) / (uuid.uuid4().hex + ".json")
         save_json(path, {"action": "stop"})

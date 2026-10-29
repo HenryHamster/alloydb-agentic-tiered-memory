@@ -24,7 +24,9 @@ def extract_bundle(archive, destination):
                 raise ValueError("Unsafe source archive member")
         if sum(m.size for m in bundle.getmembers()) > 512 * 1024 * 1024:
             raise ValueError("Source bundle exceeds 512 MiB")
-        bundle.extractall(destination, filter="data")
+        bundle.extractall(
+            destination, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {})
+        )
 
 
 def main(argv=None):
