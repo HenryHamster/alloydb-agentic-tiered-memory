@@ -7,16 +7,14 @@ Use a local CLI to run the **current checkout** on the team's existing VM. This 
 Install Git, Python 3.11+, uv and the Google Cloud CLI; ensure `git` and `gcloud` are on PATH. The shared VM controller and development database are installed. Your personal Google account still needs VM/IAP access; the administrator section below covers access grants and rebuilding the setup.
 
 ```bash
-uv sync --locked --extra dev
 gcloud auth login
 cp dev.config.example.json dev.config.json
-uv run python dev.py status
 uv run python dev.py start
 uv run python dev.py run --history fixtures/dev/history.json --questions fixtures/dev/questions.json --question-id chosen_movie --name movie-v1
 uv run python dev.py stop
 ```
 
-`start` waits for IAP, the installed shutdown controller, and AlloyDB readiness (allow about seven minutes). `run` requires a ready environment; it does not start it implicitly. Run one question with `--question-id ID`, all questions by omitting that flag, or ad hoc text with `--question 'Which movie did we pick?'` instead of `--questions`. PowerShell uses `Copy-Item` instead of `cp` if preferred.
+`uv run` installs the required Python packages automatically on first use. `start` waits for IAP, the installed shutdown controller, and AlloyDB readiness (allow about seven minutes). `run` requires a ready environment; it does not start it implicitly. Run one question with `--question-id ID`, all questions by omitting that flag, or ad hoc text with `--question 'Which movie did we pick?'` instead of `--questions`. PowerShell uses `Copy-Item` instead of `cp` if preferred.
 
 Default generation limits match production (65,536 output/thinking tokens). Optionally choose `--max-output-tokens 4096` for shorter development responses. This changes the request and its cache key. The CLI records usage; it does not enforce a spending limit.
 
@@ -35,7 +33,7 @@ History IDs, session IDs and question IDs must be unique within their respective
 
 ```json
 {"questions":[
-  {"id":"movie","question":"Which movie did we pick?","expected_answer":"Inception"},
+  {"id":"movie","question":"Which movie did we pick? Reply with only the title and no punctuation.","expected_answer":"Inception"},
   {"id":"reviews","question":"Get reviews for our movie.",
    "tools":[{"name":"Get Movie Reviews","parameters":{"type":"object","properties":{"movie_id":{"type":"integer"}},"required":["movie_id"]}}],
    "expected_tool_call":{"name":"Get Movie Reviews","arguments":{"movie_id":1375666}}}
