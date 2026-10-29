@@ -131,7 +131,12 @@ def tick(
         state_path = root / "state.json"
         old = read_json(state_path) if state_path.exists() else {}
         if old.get("boot_id") != boot_id:
-            old = {"boot_id": boot_id, "last_active": now, "stopping": False}
+            old = {
+                "boot_id": boot_id,
+                "last_active": now,
+                "stopping": False,
+                "last_stop_request": now - uptime,
+            }
         active, requests = [], []
         last = old.get("last_active", now)
         for user in (root / "activity").iterdir():

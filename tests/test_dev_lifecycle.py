@@ -37,6 +37,7 @@ def entry(root, name, value, modified):
 
 def test_idle_deadline_and_live_jobs(controller):
     calls = []
+    entry(controller, "previous-boot-stop", {"action": "stop"}, 50)
     assert not step(controller, 100).get("stopping")
     entry(controller, "job", {"action": "run", "active": True}, 110)
     entry(controller, "stop", {"action": "stop"}, 120)
