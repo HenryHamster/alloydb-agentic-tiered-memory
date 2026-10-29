@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,6 +76,8 @@ def test_database_shutdown_failure_never_stops_vm():
 
     def fail(args, **kwargs):
         calls.append(args)
+        if "describe" in args:
+            return SimpleNamespace(stdout="READY")
         raise subprocess.CalledProcessError(1, args)
 
     config = dict(
@@ -87,10 +90,15 @@ def test_database_shutdown_failure_never_stops_vm():
     )
     with pytest.raises(subprocess.CalledProcessError):
         cloud_stop(config, run=fail)
-    assert len(calls) == 1 and calls[0][1] == "alloydb"
+    assert len(calls) == 2 and all(c[1] == "alloydb" for c in calls)
     assert "--project=fixture" in calls[0]
     calls.clear()
-    cloud_stop(config, run=lambda args, **_: calls.append(args))
+
+    def already_stopped(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout="STOPPED")
+
+    cloud_stop(config, run=already_stopped)
     assert [c[1] for c in calls] == ["alloydb", "compute"]
 
 

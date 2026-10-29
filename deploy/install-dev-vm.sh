@@ -49,7 +49,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/tiered-dev/control.py tick
-TimeoutStartSec=110
+TimeoutStartSec=155
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

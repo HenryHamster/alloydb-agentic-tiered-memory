@@ -85,24 +85,43 @@ def cloud_stop(config, run=subprocess.run):
         if k != "GOOGLE_APPLICATION_CREDENTIALS" and not k.startswith("CLOUDSDK_AUTH_")
     }
     clean["CLOUDSDK_CONFIG"] = str(STATE / "gcloud")
-    run(
+    state = run(
         [
             gcloud,
             "alloydb",
             "instances",
-            "update",
+            "describe",
             config["db_instance"],
             "--cluster=" + config["db_cluster"],
             "--region=" + config["region"],
-            "--activation-policy=NEVER",
-            "--async",
+            "--format=value(state)",
             *common,
         ],
         check=True,
         env=clean,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        text=True,
         timeout=45,
-    )
+    ).stdout.strip()
+    if state not in {"STOPPED", "STOPPING"}:
+        run(
+            [
+                gcloud,
+                "alloydb",
+                "instances",
+                "update",
+                config["db_instance"],
+                "--cluster=" + config["db_cluster"],
+                "--region=" + config["region"],
+                "--activation-policy=NEVER",
+                "--async",
+                *common,
+            ],
+            check=True,
+            env=clean,
+            stdout=subprocess.DEVNULL,
+            timeout=45,
+        )
     run(
         [
             gcloud,
