@@ -123,6 +123,7 @@ class Cloud:
         state = self.vm_state()
         if state not in {"RUNNING", "TERMINATED"}:
             raise RuntimeError(f"VM is {state}; wait for its current operation")
+        fresh_after = time.time() if state == "TERMINATED" else None
         if state == "TERMINATED":
             # Root idle controller has an independent DB deadline before this VM backstop.
             seconds = int(self.config["max_hours"] * 3600 + 600)
@@ -161,6 +162,8 @@ class Cloud:
                         raise ValueError(
                             "Local idle/runtime policy differs from installed VM policy"
                         )
+                    if fresh_after and controller.get("checked_at", 0) < fresh_after:
+                        raise RuntimeError("Waiting for a fresh controller check after startup")
                     if controller.get("booting"):
                         raise RuntimeError("Waiting for this boot's controller state")
                     if controller.get("stopping"):
@@ -177,6 +180,13 @@ class Cloud:
             print("Waiting for VM/IAP and its idle controller...", flush=True)
             self.sleep(10)
         db = self.db_state()
+        while db["state"] == "STOPPING":
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Previous database shutdown has not finished; use dev status")
+            print("Waiting for the previous AlloyDB shutdown...", flush=True)
+            self.control("touch")
+            self.sleep(15)
+            db = self.db_state()
         if db["state"] == "STOPPED":
             self.gcloud(
                 [

@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -127,6 +128,7 @@ def test_cloud_start_waits_for_matching_controller_before_database():
                 checks += 1
                 return json.dumps(
                     {
+                        "checked_at": time.time(),
                         "booting": checks == 1,
                         "target": {k: config[k] for k in TARGETS},
                         "policy": {k: config[k] for k in ("idle_minutes", "max_hours")},
