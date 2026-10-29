@@ -21,3 +21,9 @@ application_default_credentials.json
 data/
 bench_results/
 .bench_cache/
+
+# Private developer runner inputs/config, artifacts and provider responses
+dev.config.json
+dev_runs/
+.tiered-dev/
+deploy/dev-vm.json

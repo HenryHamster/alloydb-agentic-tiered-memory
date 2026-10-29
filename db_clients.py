@@ -1,8 +1,9 @@
 import os
-import subprocess
 
+import google.auth
 import psycopg2
 import redis
+from google.auth.transport.requests import Request
 
 # Initialize database & Valkey connection clients from environment variables
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
@@ -14,18 +15,24 @@ VALKEY_HOST = os.getenv("VALKEY_HOST", "127.0.0.1")
 VALKEY_PORT = int(os.getenv("VALKEY_PORT", "6379"))
 
 
-def get_db_connection():
-    # Fetch Application Default Credentials (ADC) token for IAM Database Authentication & enable SSL encryption
-    access_token = subprocess.check_output(
-        ["gcloud", "auth", "application-default", "print-access-token"], text=True
-    ).strip()
+def get_db_connection(*, credentials=None):
+    # ADC uses the attached VM identity when no local credentials were configured.
+    # The developer worker passes Compute Engine credentials explicitly, so a user's
+    # gcloud login or ADC file cannot silently replace its service identity.
+    if credentials is None:
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    if not credentials.valid:
+        credentials.refresh(Request())
     return psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
         dbname=DB_NAME,
         user=DB_USER,
-        password=access_token,
+        password=credentials.token,
         sslmode="require",
+        connect_timeout=20,
     )
 
 

@@ -1,0 +1,12 @@
+{
+  "id": "film-club",
+  "sessions": [
+    {
+      "id": "planning",
+      "messages": [
+        {"role": "user", "content": "We picked Inception for the club. Its IMDb ID is tt1375666."},
+        {"role": "assistant", "content": "Got it—we'll use Inception."}
+      ]
+    }
+  ]
+}

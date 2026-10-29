@@ -1,0 +1,11 @@
+{
+  "project": "alloydb-memory",
+  "zone": "us-east1-b",
+  "vm": "codelab-benchmark-vm",
+  "region": "us-east1",
+  "db_cluster": "agent-memory-cluster",
+  "db_instance": "agent-memory-instance",
+  "generation_location": "global",
+  "idle_minutes": 30,
+  "max_hours": 4
+}
