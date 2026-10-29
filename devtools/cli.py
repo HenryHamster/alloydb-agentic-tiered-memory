@@ -161,6 +161,8 @@ class Cloud:
                         raise ValueError(
                             "Local idle/runtime policy differs from installed VM policy"
                         )
+                    if controller.get("booting"):
+                        raise RuntimeError("Waiting for this boot's controller state")
                     if controller.get("stopping"):
                         raise ValueError("VM shutdown is already pending; wait until it stops")
                     self.control("touch")
@@ -207,7 +209,14 @@ class Cloud:
             request = self.control("stop")
             deadline = time.monotonic() + 150
             while self.vm_state() == "RUNNING":
-                state = self.control("status")
+                try:
+                    state = self.control("status")
+                except RuntimeError:
+                    # SSH can disappear before Compute reports STOPPING.
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Shutdown status unavailable; use dev status") from None
+                    self.sleep(3)
+                    continue
                 if state.get("last_stop_request", 0) >= request["requested_at"]:
                     if state.get("stop_result") == "busy":
                         raise RuntimeError("Other runs are active; shutdown refused")

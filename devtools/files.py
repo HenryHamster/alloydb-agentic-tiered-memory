@@ -31,12 +31,13 @@ def private_dir(path):
     return path
 
 
-def save_json(path, value):
+def save_json(path, value, *, mode=0o600):
     path = Path(path)
     private_dir(path.parent)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".write-")
     try:
         with os.fdopen(fd, "w", encoding="utf8") as stream:
+            os.chmod(temporary, mode)
             stream.write(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
         os.replace(temporary, path)
     finally:

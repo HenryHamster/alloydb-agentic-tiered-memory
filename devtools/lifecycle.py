@@ -182,9 +182,8 @@ def tick(
             except (subprocess.SubprocessError, OSError) as error:
                 # Retry on the next tick; do not admit runs into a half-stopped environment.
                 state["stop_error"] = type(error).__name__
-        save_json(state_path, state)
+        save_json(state_path, state, mode=0o644)
         # Non-root users only need read access to controller health, not its credentials/configuration.
-        os.chmod(state_path, 0o644)
         return state
 
 
@@ -198,6 +197,9 @@ def main(argv=None):
     elif args.action == "status":
         state = read_json(STATE / "state.json")
         config = read_json(args.config)
+        state["booting"] = (
+            state.get("boot_id") != Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        )
         state["target"] = {
             k: config[k] for k in ("project", "vm", "zone", "db_cluster", "db_instance", "region")
         }

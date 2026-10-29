@@ -59,6 +59,8 @@ def test_hard_deadline_and_failed_shutdown_remain_closed(controller):
 
     state = step(controller, 120, active=True, uptime=14401, stop=fail)
     assert state["stopping"] and state["stop_error"] == "OSError"
+    if os.name == "posix":
+        assert (controller / "state.json").stat().st_mode & 0o777 == 0o644
     assert read_json(controller / "state.json")["stopping"]
     assert state["stop_reason"] == "maximum_runtime"
     calls = []
@@ -105,9 +107,10 @@ def test_cloud_start_waits_for_matching_controller_before_database():
     commands = []
     running = False
     ready = False
+    checks = 0
 
     def invoke(args, **kwargs):
-        nonlocal running, ready
+        nonlocal running, ready, checks
         commands.append(args)
         assert "--project=fixture" in args
         if args[1:4] == ["compute", "instances", "describe"]:
@@ -121,8 +124,10 @@ def test_cloud_start_waits_for_matching_controller_before_database():
         if args[1:3] == ["compute", "ssh"]:
             command = args[args.index("--command") + 1]
             if command.endswith("status"):
+                checks += 1
                 return json.dumps(
                     {
+                        "booting": checks == 1,
                         "target": {k: config[k] for k in TARGETS},
                         "policy": {k: config[k] for k in ("idle_minutes", "max_hours")},
                     }
