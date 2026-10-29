@@ -188,14 +188,108 @@ def test_relative_dates_must_be_in_the_cited_evidence_and_match_the_source_time(
     assert extractor.extract(selected) == []
 
 
-def test_extracted_fact_keeps_pipeline_document_scope_and_provenance():
+@pytest.mark.parametrize("field", ["occurred_at", "valid_from"])
+@pytest.mark.parametrize("partial", ["2023", "2024-03"])
+@pytest.mark.parametrize("source_dates_known", [True, False])
+def test_partial_dates_preserve_facts_without_inventing_exact_dates(
+    field, partial, source_dates_known
+):
+    source = f"Jakarta has 4,237 schools according to {partial} data."
+    selected = chunks(source)
+    row = fact_row(selected[0], text=source, evidence=source, entities=[], **{field: partial})
+    extractor, _ = extractor_for([row])
+    extractor.source_dates_known = source_dates_known
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.text == source and fact.evidence == source
+    assert fact.occurred_at is None and fact.valid_from is None
+    assert fact.details["when"] == partial
+
+
+def test_partial_dates_preserve_existing_when_and_both_date_fields():
+    selected = chunks()
+    row = fact_row(selected[0], occurred_at="2023", valid_from="2024-03")
+    row["details"]["when"] = "during the annual survey"
+    extractor, _ = extractor_for([row])
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.details["when"] == (
+        "during the annual survey; occurred_at: 2023; valid_from: 2024-03"
+    )
+    assert fact.occurred_at is None and fact.valid_from is None
+
+
+def test_partial_date_already_in_when_is_not_duplicated():
+    selected = chunks()
+    row = fact_row(selected[0], occurred_at=" 2023 ")
+    row["details"]["when"] = "2023"
+    extractor, _ = extractor_for([row])
+
+    assert extractor.extract(selected)[0].details["when"] == "2023"
+
+
+@pytest.mark.parametrize("field", ["occurred_at", "valid_from"])
+@pytest.mark.parametrize("value", ["0000", "2024-00", "2024-13", "2023-02-29", "not a date"])
+def test_invalid_dates_still_reject_the_row(field, value):
+    selected = chunks()
+    extractor, _ = extractor_for([fact_row(selected[0], **{field: value})])
+
+    assert extractor.extract(selected) == []
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("2024-02-29", datetime(2024, 2, 29, tzinfo=timezone.utc)),
+        ("2024-02-29T12:30:00Z", datetime(2024, 2, 29, 12, 30, tzinfo=timezone.utc)),
+    ],
+)
+def test_complete_dates_keep_their_exact_timestamp(value, expected):
+    selected = chunks()
+    extractor, _ = extractor_for([fact_row(selected[0], occurred_at=value)])
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.occurred_at == expected
+    assert "when" not in fact.details
+
+
+@pytest.mark.parametrize("field", ["occurred_at", "valid_from"])
+@pytest.mark.parametrize("partial", ["2026", "2026-10", "2023", "2026-09"])
+def test_relative_dates_refine_only_compatible_partial_dates(field, partial):
+    selected = chunks()
+    row = fact_row(
+        selected[0],
+        evidence="The project starts yesterday.",
+        category="event" if field == "occurred_at" else "preference",
+        **{field: partial},
+    )
+    row["details"]["when"] = "yesterday"
+    extractor, _ = extractor_for([row])
+
+    facts = extractor.extract(selected)
+
+    if partial in {"2026", "2026-10"}:
+        assert len(facts) == 1
+        assert getattr(facts[0], field) == datetime(2026, 10, 24, tzinfo=timezone.utc)
+        assert facts[0].details["when"] == "yesterday"
+    else:
+        assert facts == []
+
+
+@pytest.mark.parametrize("partial", [None, "2023", "2024-03"])
+def test_extracted_fact_keeps_pipeline_document_scope_and_provenance(partial):
     scope = Scope("user-a", "project-a", "session-a")
     message = Message(Speaker.USER, SOURCE, STAMP)
 
     def generate(*, contents, **kwargs):
         # Cite whichever chunk the pipeline sent, so its real chunk IDs are exercised.
         chunk_id = json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"][0]["chunk_id"]
-        row = fact_row(chunks()[0], chunk_id=chunk_id, entities=[])
+        row = fact_row(
+            chunks()[0], chunk_id=chunk_id, entities=[], occurred_at=partial, valid_from=partial
+        )
         return SimpleNamespace(text=json.dumps([row]))
 
     client = Mock()
@@ -220,6 +314,11 @@ def test_extracted_fact_keeps_pipeline_document_scope_and_provenance():
     assert fact.speaker == Speaker.USER
     assert fact.recorded_at == STAMP
     assert fact.evidence == "I prefer Python only for embedded tasks."
+    assert fact.occurred_at is None
+    assert fact.valid_from == STAMP  # Source-time default, never a fabricated January 1.
+    if partial is not None:
+        assert fact.details["when"] == partial
+    assert store.facts[fact.fact_id] == fact
 
 
 def test_extractor_returns_empty_without_calling_gemini():

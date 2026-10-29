@@ -55,6 +55,11 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
 - **Time.** `occurred_at` is event time (null for timeless states); `valid_from` defaults to the
   message time; `recorded_at` is ingestion time and never stands in for either. Supersession
   sets the old fact's `valid_to` to the new fact's `valid_from`, never earlier than the old start.
+  Reduced-precision ISO dates (`2023`, `2024-03`) in either extracted timestamp field preserve
+  the fact and date in `details.when`, leaving the exact timestamp unset. The usual source-time
+  default for `valid_from` still applies in storage; it does not mean the partial date was
+  resolved. No missing month or day is invented. Complete dates and timestamps remain validated;
+  a cited relative phrase can supply an exact date only when the source timestamp is known.
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
