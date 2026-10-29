@@ -108,4 +108,4 @@ uv run --extra adk --extra dev ruff format --check .
 uv run --extra adk --extra dev pytest
 ```
 
-Optional SQL integration: point `DEV_TEST_DSN` at a **disposable PostgreSQL 16 + pgvector** database and run `pytest tests/test_dev_postgres.py`. These tests install a deterministic SQL ranker fixture and use scripted model responses: real migrations, SQL stores, vectors, ranges, cyclic foreign keys, snapshots and pipeline wiring; no paid API calls. Do not point them at a real benchmark database. The cloud acceptance smoke remains separate.
+Optional SQL integration: point `DEV_TEST_DSN` at a **disposable PostgreSQL 16 + pgvector** database and run `pytest tests/test_dev_runner.py -k real_sql`. These tests install a deterministic SQL ranker fixture and use scripted model responses: real migrations, SQL stores, vectors, ranges, cyclic foreign keys, snapshots and pipeline wiring; no paid API calls. Do not point them at a real benchmark database. The cloud acceptance smoke remains separate.

@@ -1,10 +1,12 @@
+import json
 import os
 import subprocess
+import sys
 
 import pytest
 
 from devtools.files import read_json, save_json
-from devtools.lifecycle import cloud_stop, process_alive, tick
+from devtools.lifecycle import Lease, cloud_stop, process_alive, process_start, tick
 
 
 @pytest.fixture
@@ -36,22 +38,16 @@ def test_idle_deadline_and_live_jobs(controller):
     calls = []
     assert not step(controller, 100).get("stopping")
     entry(controller, "job", {"action": "run", "active": True}, 110)
-    assert not step(controller, 2000, active=True).get("stopping")
+    entry(controller, "stop", {"action": "stop"}, 120)
+    busy = step(controller, 2000, active=True)
+    assert busy["stop_result"] == "busy" and not busy["stopping"]
+    entry(controller, "job", {"action": "run", "active": False}, 1999)
+    assert not step(controller, 2000).get("stopping")  # Busy requests are not queued.
+    assert not process_alive({"pid": -1234567, "process_start": "0"}, 0)
     entry(controller, "job", {"action": "run", "active": False}, 2001)
     assert not step(controller, 2002).get("stopping")
     assert step(controller, 3802, stop=calls.append)["stopping"]
     assert len(calls) == 1
-
-
-def test_busy_stop_is_not_queued_and_dead_pid_cannot_hold_vm(controller):
-    step(controller, 100)
-    entry(controller, "job", {"action": "run", "active": True}, 110)
-    entry(controller, "stop", {"action": "stop"}, 120)
-    state = step(controller, 121, active=True)
-    assert state["stop_result"] == "busy" and not state["stopping"]
-    assert not step(controller, 122).get("stopping")
-    assert step(controller, 2000)["stopping"]
-    assert not process_alive({"pid": -1234567, "process_start": "0"}, 0)
 
 
 def test_hard_deadline_and_failed_shutdown_remain_closed(controller):
@@ -92,3 +88,75 @@ def test_database_shutdown_failure_never_stops_vm():
     calls.clear()
     cloud_stop(config, run=lambda args, **_: calls.append(args))
     assert [c[1] for c in calls] == ["alloydb", "compute"]
+
+
+def test_cloud_start_waits_for_matching_controller_before_database():
+    from devtools.cli import DEFAULTS, TARGETS, Cloud
+
+    config = dict(
+        project="fixture",
+        zone="us-east1-b",
+        vm="vm",
+        region="us-east1",
+        db_cluster="cluster",
+        db_instance="db",
+        **DEFAULTS,
+    )
+    commands = []
+    running = False
+    ready = False
+
+    def invoke(args, **kwargs):
+        nonlocal running, ready
+        commands.append(args)
+        assert "--project=fixture" in args
+        if args[1:4] == ["compute", "instances", "describe"]:
+            return json.dumps({"status": "RUNNING" if running else "TERMINATED"})
+        if args[1:4] == ["compute", "instances", "start"]:
+            running = True
+        if args[1:4] == ["alloydb", "instances", "describe"]:
+            return json.dumps({"state": "READY" if ready else "STOPPED", "reconciling": False})
+        if args[1:4] == ["alloydb", "instances", "update"]:
+            ready = True
+        if args[1:3] == ["compute", "ssh"]:
+            command = args[args.index("--command") + 1]
+            if command.endswith("status"):
+                return json.dumps(
+                    {
+                        "target": {k: config[k] for k in TARGETS},
+                        "policy": {k: config[k] for k in ("idle_minutes", "max_hours")},
+                    }
+                )
+            return "{}"
+        return ""
+
+    result = Cloud(config, invoke=invoke, sleep=lambda _: None).start()
+    assert result["database"]["state"] == "READY"
+    scheduling = next(c for c in commands if "set-scheduling" in c)
+    assert "--max-run-duration=15000s" in scheduling
+    update = next(i for i, c in enumerate(commands) if c[1:4] == ["alloydb", "instances", "update"])
+    assert any("touch" in " ".join(c) for c in commands[:update])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="VM process identity requires Linux")
+def test_real_process_lease_admission_cleanup_and_stopping(controller):
+    config = {"max_hours": 4, "idle_minutes": 30}
+    tick(config, root=controller, uptime=10, stop=lambda _: pytest.fail("unexpected shutdown"))
+    with Lease(controller, interval=0.01) as lease:
+        entry = read_json(lease.path)
+        assert process_alive(entry, os.getuid())
+        assert entry["process_start"] == process_start(os.getpid())
+        state = tick(
+            config, root=controller, uptime=10, stop=lambda _: pytest.fail("active shutdown")
+        )
+        assert state["active_jobs"] == 1
+    assert not read_json(lease.path)["active"]
+    state = tick(config, root=controller, uptime=10, stop=lambda _: None)
+    assert state["active_jobs"] == 0
+    state["stopping"] = True
+    save_json(controller / "state.json", state)
+    with pytest.raises(RuntimeError):
+        with Lease(controller):
+            pytest.fail("admitted during stop")
+    entry["process_start"] = "not-the-same-start"
+    assert not process_alive(entry, os.getuid())
