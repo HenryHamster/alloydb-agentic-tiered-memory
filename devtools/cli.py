@@ -239,6 +239,9 @@ class Cloud:
                 self.sleep(5)
             return self.status()
         # No jobs can be active on a stopped VM. Reconcile an orphan running database.
+        database = self.db_state()
+        if database["state"] in {"STOPPED", "STOPPING"}:
+            return {"vm": self.vm_state(), "database": database}
         self.gcloud(
             [
                 "alloydb",

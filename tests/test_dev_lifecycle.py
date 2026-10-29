@@ -146,12 +146,17 @@ def test_cloud_start_waits_for_matching_controller_before_database():
             return "{}"
         return ""
 
-    result = Cloud(config, invoke=invoke, sleep=lambda _: None).start()
+    cloud = Cloud(config, invoke=invoke, sleep=lambda _: None)
+    result = cloud.start()
     assert result["database"]["state"] == "READY"
     scheduling = next(c for c in commands if "set-scheduling" in c)
     assert "--max-run-duration=15000s" in scheduling
     update = next(i for i, c in enumerate(commands) if c[1:4] == ["alloydb", "instances", "update"])
     assert any("touch" in " ".join(c) for c in commands[:update])
+    running, ready = False, False
+    previous = len(commands)
+    assert cloud.stop()["database"]["state"] == "STOPPED"
+    assert not any("update" in c for c in commands[previous:])
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="VM process identity requires Linux")
