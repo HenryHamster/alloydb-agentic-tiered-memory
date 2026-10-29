@@ -113,7 +113,6 @@ def test_real_sql_pipeline_preparation_restore_answer_replay(tmp_path):
     client = SimpleNamespace(models=fixture)
     job = {
         "run_id": "a" * 32,
-        "budget": 2,
         "mode": "cached",
         "max_output_tokens": 1024,
         "config": {
@@ -148,4 +147,5 @@ def test_real_sql_pipeline_preparation_restore_answer_replay(tmp_path):
         backend_factory=PostgresBackend,
     )
     assert second["status"] == "completed", second
-    assert second["accounted_api_usd"] == 0 and len(fixture.requests) == count
+    assert not read_json(tmp_path / "second/usage.json")["calls"]
+    assert len(fixture.requests) == count

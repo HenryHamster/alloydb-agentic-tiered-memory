@@ -281,11 +281,6 @@ def run_remote(cloud, args, source):
         if not questions:
             raise ValueError("Question ID not found")
     questions = validate_questions({"questions": questions})
-    # Validate budget before any SSH/upload or cloud model call.
-    import math
-
-    if not math.isfinite(args.budget) or args.budget <= 0:
-        raise ValueError("Budget must be finite and positive")
     status = cloud.status()
     if status["vm"] != "RUNNING" or status["database"]["state"] != "READY":
         raise RuntimeError("Environment is stopped or starting; run dev start first")
@@ -299,7 +294,6 @@ def run_remote(cloud, args, source):
         "run_id": run_id,
         "history": history,
         "questions": inference_questions(questions),
-        "budget": args.budget,
         "mode": args.mode,
         "max_output_tokens": args.max_output_tokens,
         "cache_epoch": args.cache_epoch,
@@ -320,10 +314,8 @@ def run_remote(cloud, args, source):
         timeout=180,
     )
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    print(
-        f"Run {run_id}: results will be saved in {output}. API cap ${args.budget:.2f}.", flush=True
-    )
-    # Bootstrap returns an export even when the worker reaches its API cap/cache miss.
+    print(f"Run {run_id}: results will be saved in {output}.", flush=True)
+    # Bootstrap returns an export even when the worker fails or reaches a replay miss.
     remote = " ".join(
         shlex.quote(s) for s in ("python3", "/opt/tiered-dev/bootstrap.py", upload, digest, run_id)
     )
@@ -371,7 +363,7 @@ def run_remote(cloud, args, source):
         "status": read_json(remote_output / "status.json"),
         "api_usage": read_json(remote_output / "usage.json"),
         "infrastructure": {
-            "scope": "Separate shared uptime charges, before credits; not included in --budget.",
+            "scope": "Separate shared uptime estimates, before credits.",
             "estimated_vm_plus_db_usd_per_hour": 0.37837142,
             "run_wall_seconds": time.time() - run_started,
             "estimated_run_share_usd": (time.time() - run_started) / 3600 * 0.37837142,
@@ -397,9 +389,6 @@ def main(argv=None):
     selection.add_argument("--question")
     run.add_argument("--question-id")
     run.add_argument("--name")
-    run.add_argument(
-        "--budget", type=float, required=True, help="New API allowance for this entire run"
-    )
     run.add_argument("--mode", choices=["cached", "replay", "fresh"], default="cached")
     run.add_argument("--max-output-tokens", type=int, default=65536)
     run.add_argument("--cache-epoch", default="1")

@@ -56,18 +56,14 @@ def main(argv=None):
                     output / "status.json", {"status": "failed", "error_type": type(error).__name__}
                 )
             if not (output / "usage.json").exists():
-                save_json(
-                    output / "usage.json", {"accounted_api_usd": 0, "calls": [], "cache_hits": []}
-                )
+                save_json(output / "usage.json", {"calls": [], "cache_hits": []})
         status_path = output / "status.json"
         status = read_json(status_path) if status_path.exists() else {"status": "failed"}
         if status.get("status") == "running":
             status.update(status="failed", error_type="WorkerInterrupted")
         save_json(status_path, status)
         if not (output / "usage.json").exists():
-            save_json(
-                output / "usage.json", {"accounted_api_usd": 0, "calls": [], "cache_hits": []}
-            )
+            save_json(output / "usage.json", {"calls": [], "cache_hits": []})
         if not (output / "worker-exit.json").exists():
             save_json(output / "worker-exit.json", {"returncode": return_code})
         archive = root / "runs" / (run_id + ".tar.gz")

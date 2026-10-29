@@ -18,7 +18,7 @@ Alternatively, create a virtual environment and run `python -m pip install -r re
 
 ## Run your own questions
 
-Use the [developer runner](docs/DEV_RUNNER.md) to start the shared VM/AlloyDB, run one question or a fixture file from your current checkout, and stop them afterward. It supports cached/replay/fresh execution, per-run API budgets, isolated memory snapshots, token/latency receipts and local scoring. One-time VM/IAM setup is documented in that guide.
+Use the [developer runner](docs/DEV_RUNNER.md) to start the shared VM/AlloyDB, run one question or a fixture file from your current checkout, and stop them afterward. It supports cached/replay/fresh execution, isolated memory snapshots, token/latency receipts and local scoring. One-time VM/IAM setup is documented in that guide.
 
 ## Configure and run
 

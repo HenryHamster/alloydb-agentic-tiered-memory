@@ -12,13 +12,13 @@ gcloud auth login
 cp dev.config.example.json dev.config.json
 uv run python dev.py status
 uv run python dev.py start
-uv run python dev.py run --history fixtures/dev/history.json --questions fixtures/dev/questions.json --question-id chosen_movie --name movie-v1 --budget 2
+uv run python dev.py run --history fixtures/dev/history.json --questions fixtures/dev/questions.json --question-id chosen_movie --name movie-v1
 uv run python dev.py stop
 ```
 
 `start` waits for IAP, the installed shutdown controller, and AlloyDB readiness (allow about seven minutes). `run` requires a ready environment; it does not start it implicitly. Run one question with `--question-id ID`, all questions by omitting that flag, or ad hoc text with `--question 'Which movie did we pick?'` instead of `--questions`. PowerShell uses `Copy-Item` instead of `cp` if preferred.
 
-`--budget` is a **new API allowance for the entire invocation**, including Retain, Reflect, Recall, answers and retries. Default generation limits match the production maximum (65,536 output/thinking tokens); a small budget can refuse a single call's conservative reservation. Explicitly choose `--max-output-tokens 4096` for cheaper, shorter development responses. This changes model configuration and therefore its cache key.
+Default generation limits match production (65,536 output/thinking tokens). Optionally choose `--max-output-tokens 4096` for shorter development responses. This changes the request and its cache key. The CLI records usage; it does not enforce a spending limit.
 
 ## Input and experiment versions
 
@@ -58,11 +58,11 @@ Each preparation and **each question** uses a new random database schema and a c
 
 ## Results and costs
 
-Local results are in `dev_runs/<name>-<UUID>/report.json`; the nested UUID directory contains raw worker output. `usage.json` separates cache hits, generation token counts (prompt, visible output, thinking), embeddings/ranking reserves and per-stage call latency. Answers include their retrieved context and exact answer prompt. Source manifests hash all uploaded code, including uncommitted changes. Keep artifacts private; they contain history and prompts.
+Local results are in `dev_runs/<name>-<UUID>/report.json`; the nested UUID directory contains raw worker output. `usage.json` separates cache hits, generation token counts (prompt, visible output, thinking), reported provider usage and per-stage call latency. Answers include their retrieved context and exact answer prompt. Source manifests hash all uploaded code, including uncommitted changes. Keep artifacts private; they contain history and prompts.
 
-API usage is estimated from a pinned rate card for `gemini-3.5-flash`, `text-embedding-005` and the current ranker. The runner reserves before each request and retains uncertain-completion reserves. It refuses unsupported generation/embedding models. Update the rate card and tests when changing models or pricing. SDK automatic retries are disabled; adapter retries are metered separately. A budget stop/cache miss returns exit code 2 and exports partial results. This is an application guard for this runner, not a GCP billing cap or a sandbox against modified code.
+`usage.json` records new calls separately from cache hits, including provider usage metadata and failures. Failed calls can have unreported usage, so these receipts are not a billing total. No rate card or model allowlist is maintained by the runner. A replay miss or failed run returns exit code 2 and exports partial results.
 
-Infrastructure is separate from `--budget`. Planning rates for the existing us-east1 resources, before credits (28 October 2026):
+Infrastructure estimates are separate from model usage. Planning rates for the existing us-east1 resources, before credits (28 October 2026):
 
 | Component | Estimate |
 |---|---:|
@@ -95,7 +95,7 @@ This PR does not deploy or grant access. Reuse the existing private VM/AlloyDB/V
    ```
 
    Install/upgrade only with no active jobs. Install on a freshly started VM: a boot older than the configured four-hour deadline is stopped immediately. The installer preserves the lifecycle lock inode and installs root-owned controller/config files. Its timer begins immediately; do not use this VM for unrelated always-on work. The idle/runtime values in developers' local config must match the installed values.
-6. Verify an ordinary developer can `dev status`, start, run the tiny fixture with an approved API allowance, and stop. This live IAP/IAM/Vertex smoke is the deployment acceptance step; offline tests do not establish those project-specific permissions.
+6. Verify an ordinary developer can `dev status`, start, run the tiny fixture and stop. This live IAP/IAM/Vertex smoke is the deployment acceptance step; offline tests do not establish those project-specific permissions.
 
 Developers authenticate personally with `gcloud auth login` locally. Do not upload ADC files, service account keys, `.env`, or access tokens. Uploaded source is Python/SQL plus pyproject/lockfile, along with explicitly supplied fixture data. Workers explicitly use Compute Engine credentials for DB/Vertex; local user ADC is not consulted. All trusted users who can execute code on this VM can exercise its attached service identity. Use a separate project/VM if that trust is inappropriate.
 

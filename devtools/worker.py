@@ -11,12 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from devtools.cache import (
-    Budget,
-    BudgetStop,
     CachedConnection,
     CachedModels,
     CacheMiss,
     RequestCache,
+    Usage,
 )
 from devtools.files import fingerprint, locked, private_dir, read_json, save_json
 from devtools.inputs import (
@@ -59,7 +58,7 @@ def preparation_source(source):
     }
 
 
-def ingest(system, history, logical, clock, budget, output):
+def ingest(system, history, logical, clock, usage, output):
     from bench.mem2act import HistoryVisibility, exchanges
     from retain import Scope
 
@@ -81,14 +80,14 @@ def ingest(system, history, logical, clock, budget, output):
                 else clock
                 - timedelta(seconds=sum(len(s["messages"]) for s in history["sessions"]) - ordinal)
             )
-            budget.context = {"stage": "retain", "session": session["id"], "round": index}
+            usage.context = {"stage": "retain", "session": session["id"], "round": index}
             receipt = system.record_turn(
                 scope, user, events, timestamp=at, episode_id=f"{logical}:{session['id']}:{index}"
             )
             save_json(output / "retention" / f"{ordinal:05d}.json", serial(receipt))
             mapping.append({"session": session["id"], "round": index, "messages": indices})
             ordinal += 1
-        budget.context = {"stage": "reflect", "session": session["id"]}
+        usage.context = {"stage": "reflect", "session": session["id"]}
         save_json(output / f"reflect-{session['id']}.json", serial(system.finish_session(scope)))
     save_json(output / "message-mapping.json", mapping)
 
@@ -129,18 +128,18 @@ class CloudBackend:
 def run_job(
     job, source, cache_folder, output, generation, embedding, *, backend_factory=CloudBackend
 ):
-    """All receipts persist even on budget stop/cache miss. Fresh schemas start each question."""
+    """Usage receipts persist on failures and replay misses. Fresh schemas start each question."""
     source, output = Path(source), private_dir(output)
     history = validate_history(job["history"])
     questions = validate_questions({"questions": job["questions"]})
     if questions != inference_questions(questions):
         raise ValueError("Scoring labels must not be sent to the worker")
     save_json(output / "job.json", job)
-    budget = Budget(output, job["budget"])
+    usage = Usage(output)
     config = job["config"]
     cache = RequestCache(
         Path(cache_folder) / "requests",
-        budget,
+        usage,
         mode=job["mode"],
         provider={
             "project": config["project"],
@@ -172,7 +171,7 @@ def run_job(
                 "provider": cache.provider,
                 "epoch": cache.epoch,
                 "max_output_tokens": job["max_output_tokens"],
-                "format": 2,
+                "format": 3,
             }
         )
         prepared = Path(cache_folder) / "prepared" / f"{prep_key}.json"
@@ -190,7 +189,7 @@ def run_job(
                 try:
                     schema.create()
                     system = backend.system(schema)
-                    ingest(system, history, logical, clock, budget, output)
+                    ingest(system, history, logical, clock, usage, output)
                     snapshot = schema.snapshot()
                     if not prepared.exists():
                         save_json(prepared, {"hash": fingerprint(snapshot), "snapshot": snapshot})
@@ -209,7 +208,7 @@ def run_job(
         from retain import Scope
 
         for question in questions:
-            budget.context = {"stage": "question", "question_id": question["id"]}
+            usage.context = {"stage": "question", "question_id": question["id"]}
             schema = backend.schema()
             system = None
             try:
@@ -248,11 +247,8 @@ def run_job(
                 finally:
                     schema.close()
         status["status"] = "completed"
-    except (BudgetStop, CacheMiss) as error:
-        status.update(
-            status="budget_stopped" if isinstance(error, BudgetStop) else "cache_miss",
-            error=str(error),
-        )
+    except CacheMiss as error:
+        status.update(status="cache_miss", error=str(error))
     except BaseException as error:
         # Error class only: SDK exception strings can contain credentials/request headers.
         import traceback
@@ -271,9 +267,9 @@ def run_job(
                 backend.close()
             except Exception as error:
                 status.update(status="failed", cleanup_error_type=type(error).__name__)
-        status.update(finished_at=time.time(), accounted_api_usd=budget.accounted)
+        status.update(finished_at=time.time())
         save_json(output / "status.json", status)
-        budget.write()
+        usage.write()
     return status
 
 
@@ -295,7 +291,7 @@ def main(argv=None):
     from google.auth import compute_engine
 
     credentials = compute_engine.Credentials()
-    # One SDK attempt per metered call: retries in production adapters are separately reserved.
+    # One SDK attempt per recorded call; adapter retries get separate usage receipts.
     options = {"timeout": 90000, "retry_options": {"attempts": 1}}
     generation = genai.Client(
         vertexai=True,
