@@ -56,6 +56,10 @@ class RecallConfig:
     max_sub_queries: int = 4
     # TODO(recall): calibrate against real ai.rank() scores on a labelled sample.
     score_floor: float = 0.3
+    # When the floor rejects every live result, keep this many of the best with a positive
+    # reranker score instead of returning nothing; an uncalibrated floor emptied whole contexts
+    # in the candidate pilot (docs/CANDIDATE.md). 0 restores strict abstention.
+    floor_fallback_top: int = 3
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
     recency_boost: float = 0.10

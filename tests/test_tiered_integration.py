@@ -201,3 +201,46 @@ def test_recovery_rejects_changed_or_uncommitted_source(tmp_path):
     case["haystack_sessions"][0][0]["content"] = "Keep 18"
     with pytest.raises(ValueError, match="differs from source"):
         verify_retained_history(case, system, tmp_path, "n")
+
+
+def test_session_tagged_history_facts_are_recalled_from_the_query_session():
+    from dataclasses import replace
+
+    from bench.longmemeval import NoEntities, NoLinks, VerbatimExtractor
+    from bench.mem2act import HistoryVisibility
+    from retain import InMemoryRetainStore, RetainConfig, Retainer
+    from retain.models import Visibility
+
+    class SessionTagging(VerbatimExtractor):
+        def extract(self, chunks):
+            return [replace(f, visibility=Visibility.SESSION) for f in super().extract(chunks)]
+
+    namespace = "run:q"
+    history = Scope(namespace, namespace, f"{namespace}:history:0")
+    query = Scope(namespace, namespace, f"{namespace}:query")
+    found = {}
+    for label, extractor in (
+        ("raw", SessionTagging()),
+        ("wrapped", HistoryVisibility(SessionTagging())),
+    ):
+        store = InMemoryRetainStore()
+        Retainer(
+            store=store,
+            extractor=extractor,
+            entity_resolver=NoEntities(),
+            embedder=embed,
+            linker=NoLinks(),
+            config=RetainConfig(maintenance_every=0),
+            clock=lambda: NOW,
+        ).retain_turn(history, "My favourite movie id is tt2543164", "Saved", timestamp=NOW)
+        lifecycle = InMemoryReflectStore(store)
+        recaller = Recaller(
+            store=InMemoryRecallStore(store, lifecycle),
+            reflect_store=lifecycle,
+            embedder=embed,
+            clock=lambda: NOW,
+            strict=True,
+        )
+        found[label] = recaller.recall(query, "favourite movie id", decompose=False).items
+    assert not found["raw"]
+    assert any("tt2543164" in item.memory.text for item in found["wrapped"])

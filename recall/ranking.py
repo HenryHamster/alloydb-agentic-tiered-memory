@@ -48,12 +48,17 @@ def rerank(
     if reranker is not None:
         try:
             texts = [scored.memory.text for scored in head]
-            best = [0.0] * len(head)
+            # Start from the first sub-query's scores, not 0.0: seeding with zeros would clamp
+            # any negative reranker score to 0 and make a real score look like "no signal".
+            best: list[float] | None = None
             for query in queries:
                 scores = reranker(query, texts)
                 if len(scores) != len(head):
                     raise ValueError(f"Reranker returned {len(scores)} scores for {len(head)}")
-                best = [max(old, float(new)) for old, new in zip(best, scores)]
+                scores = [float(score) for score in scores]
+                best = scores if best is None else [max(o, n) for o, n in zip(best, scores)]
+            if best is None:
+                best = [0.0] * len(head)
             reranked = [Scored(scored.memory, score) for scored, score in zip(head, best)]
             reranked.sort(key=lambda scored: scored.relevance, reverse=True)
             return reranked[:top], True
@@ -98,18 +103,33 @@ def apply_boosts(
 
 
 def filter_and_abstain(
-    scored: Sequence[Scored], as_of: datetime, include_invalid: bool, score_floor: float
+    scored: Sequence[Scored],
+    as_of: datetime,
+    include_invalid: bool,
+    score_floor: float,
+    fallback_top: int = 0,
 ) -> tuple[list[Scored], dict[str, int]]:
     """Drops results below the relevance floor (before boosts) and hides superseded memories.
 
+    If the floor rejects every live result, the best `fallback_top` with positive relevance are
+    kept instead (counted as "fallback"), so only results with no signal at all abstain.
     Stores already exclude superseded rows; this check also covers stores that do not.
     """
-    kept, below_floor, stale = [], 0, 0
+    kept, below, stale = [], [], 0
     for item in scored:
-        if item.relevance < score_floor:
-            below_floor += 1
-        elif item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
+        if item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
             stale += 1
+        elif item.relevance < score_floor:
+            below.append(item)
         else:
             kept.append(item)
-    return kept, {"below_floor": below_floor, "stale_hidden": stale}
+    need = max(0, fallback_top - len(kept))
+    fallback = [item for item in below if item.relevance > 0][:need]
+    if fallback:
+        # Keep the combined list best-first so packing spends the budget on the strongest.
+        kept = sorted([*kept, *fallback], key=lambda item: item.score, reverse=True)
+    return kept, {
+        "below_floor": len(below) - len(fallback),
+        "stale_hidden": stale,
+        "fallback": len(fallback),
+    }

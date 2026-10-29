@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 from bench.metering import BudgetStop, Ledger, Models, RankConnection, digest, save
 from retain import Scope
+from retain.models import Visibility
 from tiered_memory import build_memory_system
 
 
@@ -36,6 +37,26 @@ def exchanges(messages):
             events.append(messages[i])
             i += 1
         yield user, json.dumps(events, ensure_ascii=False), list(range(start, i))
+
+
+class HistoryVisibility:
+    """Each history session is its own Retain session, but the question is asked from a fresh
+    one, so a fact the model tags session-visible could never be recalled. Widen those to the
+    project, which is the question's namespace."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def extract(self, chunks):
+        return [
+            dataclasses.replace(fact, visibility=Visibility.PROJECT)
+            if fact.visibility == Visibility.SESSION
+            else fact
+            for fact in self.inner.extract(chunks)
+        ]
 
 
 def serial(value):
@@ -284,6 +305,7 @@ def main():
             strict=True,
         )
         system.retainer.extractor.source_dates_known = False
+        system.retainer.extractor = HistoryVisibility(system.retainer.extractor)
         status = {"status": "running", **identity, "started_at": time.time()}
         save(a.output / "status.json", status)
         try:

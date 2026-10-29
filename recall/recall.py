@@ -7,7 +7,8 @@
     fuse_rrf         reciprocal rank fusion; drops memories from rounds the caller already shows
     rerank           cross-encode the fused head against every sub-query
     apply_boosts     small capped recency / window-fit / evidence boosts
-    filter_and_abstain  relevance floor (reranked only) and superseded memories
+    filter_and_abstain  relevance floor (reranked only; best few kept if all fall below)
+                        and superseded memories
     pack             best-first into the token budget as dated, typed lines
 
 Every stage is injected or pure, so the pipeline runs offline with InMemoryRecallStore.
@@ -193,10 +194,13 @@ class Recaller:
 
             with tracer.stage("filter_and_abstain") as stage:
                 floor = config.score_floor if reranked else 0.0
-                kept, dropped = filter_and_abstain(boosted, as_of, include_invalid, floor)
+                kept, dropped = filter_and_abstain(
+                    boosted, as_of, include_invalid, floor, config.floor_fallback_top
+                )
                 stage.count = len(kept)
                 stage.detail = {"score_floor": floor, **dropped}
-            if reranked and len(kept) >= config.tier_min_hits:
+            # Fallback hits are below the floor, so they never end the tier search early.
+            if reranked and not dropped["fallback"] and len(kept) >= config.tier_min_hits:
                 break
 
         # Format the survivors as dated, typed lines until the token budget runs out.
