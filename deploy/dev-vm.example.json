@@ -1,0 +1,17 @@
+{
+  "project": "alloydb-memory",
+  "zone": "us-east1-b",
+  "vm": "codelab-benchmark-vm",
+  "region": "us-east1",
+  "db_cluster": "agent-memory-cluster",
+  "db_instance": "agent-memory-instance",
+  "generation_location": "global",
+  "idle_minutes": 30,
+  "max_hours": 4,
+  "DB_HOST": "FILL_PRIVATE_ALLOYDB_ADDRESS",
+  "DB_PORT": 5432,
+  "DB_NAME": "developer_runner",
+  "DB_USER": "FILL_ATTACHED_SERVICE_ACCOUNT_DATABASE_USERNAME",
+  "VALKEY_HOST": "FILL_PRIVATE_VALKEY_ADDRESS",
+  "VALKEY_PORT": 6379
+}

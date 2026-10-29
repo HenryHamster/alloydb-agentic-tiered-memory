@@ -1,3 +1,6 @@
 * text=auto eol=lf
 *.png binary
 *.jpg binary
+
+# VM installer must remain executable by bash after Windows checkouts.
+*.sh text eol=lf
