@@ -300,7 +300,7 @@ def test_cache_is_shared_only_when_installed_and_requested(tmp_path, monkeypatch
         team.mkdir()
         assert bootstrap.cache_folder(tmp_path, {}) == tmp_path / "cache"
         assert bootstrap.cache_folder(tmp_path, {"shared_cache": True}) == team
-        assert os.umask(0o007) == 0o007
+        assert os.umask(0) == 0
 
         save_json(team / "requests" / "generation" / "key.json", {})
         with files.locked(team / "prepared" / "key.lock"):
@@ -309,9 +309,9 @@ def test_cache_is_shared_only_when_installed_and_requested(tmp_path, monkeypatch
     finally:
         os.umask(previous)
     mode = lambda path: path.stat().st_mode & 0o777  # noqa: E731
-    assert mode(team / "requests") == mode(team / "requests" / "generation") == 0o770
-    assert mode(team / "requests" / "generation" / "key.json") == 0o660
-    assert mode(team / "prepared" / "key.lock") == 0o660
+    assert mode(team / "requests") == mode(team / "requests" / "generation") == 0o777
+    assert mode(team / "requests" / "generation" / "key.json") == 0o666
+    assert mode(team / "prepared" / "key.lock") == 0o666
     assert mode(tmp_path / "private") == 0o700
     assert mode(tmp_path / "private" / "run.json") == 0o600
 

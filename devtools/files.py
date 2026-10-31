@@ -8,7 +8,7 @@ import re
 import tempfile
 from pathlib import Path
 
-# Team cache on the VM (deploy/install-dev-vm.sh): group members read and write everything below.
+# Team cache on the VM (deploy/install-dev-vm.sh): every VM user reads and writes everything below.
 SHARED_CACHE = Path("/var/lib/tiered-dev/cache")
 
 
@@ -32,7 +32,7 @@ def shared(path):
 
 def private_dir(path):
     path = Path(path)
-    path.mkdir(parents=True, exist_ok=True, mode=0o770 if shared(path) else 0o700)
+    path.mkdir(parents=True, exist_ok=True, mode=0o777 if shared(path) else 0o700)
     if path.is_symlink():
         raise ValueError("Artifact directories must not be symlinks")
     return path
@@ -40,7 +40,7 @@ def private_dir(path):
 
 def save_json(path, value, *, mode=None):
     path = Path(path)
-    mode = mode if mode is not None else 0o660 if shared(path) else 0o600
+    mode = mode if mode is not None else 0o666 if shared(path) else 0o600
     private_dir(path.parent)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".write-")
     try:

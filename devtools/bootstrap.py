@@ -30,9 +30,9 @@ def extract_bundle(archive, destination):
 
 
 def cache_folder(root, job):
-    """The team cache once installed and joined; otherwise, and for older checkouts, a private one."""
+    """The team cache once installed; otherwise, and for older checkouts, a private one."""
     if job.get("shared_cache") and os.access(SHARED_CACHE, os.R_OK | os.W_OK | os.X_OK):
-        os.umask(0o007)  # Lock files and parent folders stay writable for the group.
+        os.umask(0)  # Lock files and parent folders stay writable for other developers.
         return SHARED_CACHE
     return root / "cache"
 
