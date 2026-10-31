@@ -339,6 +339,7 @@ def run_remote(cloud, args, source):
         "mode": args.mode,
         "max_output_tokens": args.max_output_tokens,
         "cache_epoch": args.cache_epoch,
+        "shared_cache": True,
         "config": cloud.config,
     }
     archive = output / "upload.tar.gz"

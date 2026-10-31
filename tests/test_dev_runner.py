@@ -17,6 +17,7 @@ import pytest
 from google.genai import types
 from test_offline import MemoryValkey
 
+from devtools import bootstrap, files
 from devtools.bootstrap import extract_bundle
 from devtools.cache import (
     CachedConnection,
@@ -285,6 +286,34 @@ def test_archive_traversal_rejected(tmp_path):
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     with pytest.raises(ValueError):
         collect_archive(archive, digest, tmp_path / "results", "a" * 32)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_cache_is_shared_only_when_installed_and_requested(tmp_path, monkeypatch):
+    team = tmp_path / "team"
+    monkeypatch.setattr(bootstrap, "SHARED_CACHE", team)
+    monkeypatch.setattr(files, "SHARED_CACHE", team)
+    previous = os.umask(0o022)
+    try:
+        # Older checkouts and VMs without the team folder keep the private per-user cache.
+        assert bootstrap.cache_folder(tmp_path, {"shared_cache": True}) == tmp_path / "cache"
+        team.mkdir()
+        assert bootstrap.cache_folder(tmp_path, {}) == tmp_path / "cache"
+        assert bootstrap.cache_folder(tmp_path, {"shared_cache": True}) == team
+        assert os.umask(0o007) == 0o007
+
+        save_json(team / "requests" / "generation" / "key.json", {})
+        with files.locked(team / "prepared" / "key.lock"):
+            pass
+        save_json(tmp_path / "private" / "run.json", {})
+    finally:
+        os.umask(previous)
+    mode = lambda path: path.stat().st_mode & 0o777  # noqa: E731
+    assert mode(team / "requests") == mode(team / "requests" / "generation") == 0o770
+    assert mode(team / "requests" / "generation" / "key.json") == 0o660
+    assert mode(team / "prepared" / "key.lock") == 0o660
+    assert mode(tmp_path / "private") == 0o700
+    assert mode(tmp_path / "private" / "run.json") == 0o600
 
 
 def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, capsys):

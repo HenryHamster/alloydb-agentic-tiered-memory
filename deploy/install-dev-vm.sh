@@ -26,6 +26,9 @@ fi
 install -d -m 755 /opt/tiered-dev/devtools /etc/tiered-dev /var/lib/tiered-dev
 install -d -m 1777 /var/lib/tiered-dev/activity
 install -d -m 700 /var/lib/tiered-dev/gcloud
+# Team cache: developers in this group reuse each other's prepared memory and provider responses.
+groupadd -f tiered-dev
+install -d -m 2770 -o root -g tiered-dev /var/lib/tiered-dev/cache
 touch /var/lib/tiered-dev/lifecycle.lock
 chmod 666 /var/lib/tiered-dev/lifecycle.lock
 install -m 644 "$config_path" /etc/tiered-dev/config.json

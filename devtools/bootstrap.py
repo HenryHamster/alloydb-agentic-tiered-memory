@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-from devtools.files import locked, private_dir, read_json, save_json
+from devtools.files import SHARED_CACHE, locked, private_dir, read_json, save_json
 from devtools.lifecycle import Lease
 
 
@@ -27,6 +27,14 @@ def extract_bundle(archive, destination):
         bundle.extractall(
             destination, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {})
         )
+
+
+def cache_folder(root, job):
+    """The team cache once installed and joined; otherwise, and for older checkouts, a private one."""
+    if job.get("shared_cache") and os.access(SHARED_CACHE, os.R_OK | os.W_OK | os.X_OK):
+        os.umask(0o007)  # Lock files and parent folders stay writable for the group.
+        return SHARED_CACHE
+    return root / "cache"
 
 
 def main(argv=None):
@@ -128,7 +136,7 @@ def execute(args, root, workspace, output, run_id):
                 "--job",
                 str(workspace / "job.json"),
                 "--cache",
-                str(root / "cache"),
+                str(cache_folder(root, job)),
                 "--output",
                 str(output),
             ],

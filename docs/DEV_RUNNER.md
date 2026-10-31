@@ -50,7 +50,7 @@ For changed history, save `history-v2.json` and pass that path. Keep multiple ve
 - `--mode replay`: require recorded provider responses; a missing request stops with `cache_miss`, without a paid fallback. It still needs the VM, PostgreSQL and Valkey.
 - `--mode fresh`: execute preparation and provider requests again. Existing cache baselines are preserved. Use a new `--cache-epoch experiment-v2` if you want a separate reusable baseline.
 
-Prepared keys include Retain/Reflect/shared/orchestration/SQL code, runner/harness code, history, provider project/locations, output limit and cache epoch. Recall-only edits can reuse prepared memory. Provider keys include the complete request and configuration. Different developers have separate OS-user caches; there is no shared response pool across users.
+Prepared keys include Retain/Reflect/shared/orchestration/SQL code, runner/harness code, history, provider project/locations, output limit and cache epoch. Recall-only edits can reuse prepared memory. Provider keys include the complete request and configuration. Developers in the VM's `tiered-dev` group share one cache at `/var/lib/tiered-dev/cache`: an unchanged question prepared by anyone, with the same code, history and options, is a cache hit for everyone. Without that folder or group membership, or from a checkout older than this feature, each developer keeps a private cache in `~/.tiered-dev/cache`. Shared entries contain team histories and prompts and are trusted like the code that wrote them.
 
 Each preparation and **each question** uses a new random database schema and a copy of prepared memory, including lifecycle/access state. Query results are not retained into history. Valkey keys use a run prefix. Schemas and touched Valkey keys are removed on normal completion/failure. Hard termination can leave a schema; an administrator can inspect/drop the specifically recorded `dev_<UUID>` schema later. These namespaces prevent accidental experiment contamination; they are not security boundaries for arbitrary developer code.
 
@@ -74,7 +74,7 @@ At two active hours/day for 30 days, VM + DB + existing Valkey + VM disk are abo
 
 The root-owned controller checks every 30 seconds, stops AlloyDB then the VM after 30 idle minutes, and refuses manual shutdown while jobs are active. Its four-hour boot deadline can terminate a long-running job; the VM has a separate provider stop deadline ten minutes later. Idle time starts after the last process finishes, including dependency setup. A failed DB stop request keeps the VM watchdog alive to retry. A complete VM/controller failure can still leave AlloyDB running: use `dev stop` to reconcile it. A strict shutdown guarantee across VM failures would require an external watchdog, outside this small design.
 
-Caches/source/result files stay on each developer's VM home disk. Keep valuable result exports locally; delete old per-run work/results or unused cache epochs explicitly when no jobs are using them. There is no automatic deletion of experiment evidence.
+Source/result files, and private caches, stay on each developer's VM home disk; the team cache stays in `/var/lib/tiered-dev/cache`. Keep valuable result exports locally; delete old per-run work/results or unused cache epochs explicitly when no jobs are using them. There is no automatic deletion of experiment evidence.
 
 ## One-time administrator setup (review before applying)
 
@@ -93,7 +93,14 @@ Installing the Python package does not provision cloud resources or grant access
    ```
 
    Install/upgrade only with no active jobs. Install on a freshly started VM: a boot older than the configured four-hour deadline is stopped immediately. The installer preserves the lifecycle lock inode and installs root-owned controller/config files. Its timer begins immediately; do not use this VM for unrelated always-on work. The idle/runtime values in developers' local config must match the installed values.
-6. Verify an ordinary developer can `dev status`, start, run the tiny fixture and stop. This live IAP/IAM/Vertex smoke is the deployment acceptance step; offline tests do not establish those project-specific permissions.
+6. Add each developer to the team cache group (their OS Login username is shown by `gcloud compute os-login describe-profile`), then have them reconnect:
+
+   ```bash
+   sudo gpasswd -a OS_LOGIN_USERNAME tiered-dev
+   ```
+
+   Developers outside the group keep working with a private cache.
+7. Verify an ordinary developer can `dev status`, start, run the tiny fixture and stop. This live IAP/IAM/Vertex smoke is the deployment acceptance step; offline tests do not establish those project-specific permissions.
 
 Developers authenticate personally with `gcloud auth login` locally. Do not upload ADC files, service account keys, `.env`, or access tokens. Uploaded source is Python/SQL plus pyproject/lockfile, along with explicitly supplied fixture data. Workers explicitly use Compute Engine credentials for DB/Vertex; local user ADC is not consulted. All trusted users who can execute code on this VM can exercise its attached service identity. Use a separate project/VM if that trust is inappropriate.
 
