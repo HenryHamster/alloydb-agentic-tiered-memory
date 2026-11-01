@@ -73,8 +73,9 @@ def gemini_returning(text):
 
 
 def extractor_for(rows):
+    """Row-validation tests see only model rows, without the verbatim user-message fallback."""
     client = gemini_returning(json.dumps(rows))
-    return GeminiFactExtractor(client), client
+    return GeminiFactExtractor(client, keep_unrecorded_user_messages=False), client
 
 
 def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date():
@@ -404,3 +405,75 @@ def test_embedder_propagates_non_retryable_provider_failure():
         GeminiEmbedder(client)(["fact"])
 
     client.models.embed_content.assert_called_once()
+
+
+def assistant_chunks(text):
+    document = Document(
+        document_id="document-b",
+        episode_id="episode-a",
+        position=1,
+        scope=Scope("user-a", "project-a", "session-a"),
+        speaker=Speaker.ASSISTANT,
+        text=text,
+        occurred_at=STAMP,
+        recorded_at=STAMP,
+    )
+    return chunk_documents([document], 700)
+
+
+def test_tool_calls_become_exact_facts_without_the_model():
+    call = {"name": "get_server_status", "arguments": json.dumps({"server_id": "psql-001"})}
+    events = [{"role": "assistant", "content": "Checking.", "tool_calls": [{"function": call}]}]
+    selected = assistant_chunks(json.dumps(events, ensure_ascii=False))
+    extractor, _ = extractor_for([])
+
+    (fact,) = extractor.extract(selected)
+
+    assert (
+        fact.text == 'The assistant called the get_server_status tool with server_id = "psql-001".'
+    )
+    assert fact.evidence in selected[0].text
+    assert fact.fact_type == FactType.EXPERIENCE
+    assert [(e.name, e.entity_type) for e in fact.entities] == [("psql-001", EntityType.OTHER)]
+    # Plain-text replies, as in production, have no tool calls to read.
+    assert extractor.extract(assistant_chunks("Checking the server now.")) == []
+
+
+def test_user_message_is_kept_verbatim_only_when_extraction_recorded_nothing():
+    request = "Can you check the status of the server with ID 'psql-001'?"
+    selected = chunks(request)
+    client = gemini_returning("[]")
+
+    (fact,) = GeminiFactExtractor(client).extract(selected)
+    assert fact.text == "The user said: " + request
+    assert fact.evidence == request
+
+    row = fact_row(selected[0], text="The user asked about psql-001.", evidence=request)
+    covered = GeminiFactExtractor(gemini_returning(json.dumps([row]))).extract(selected)
+    assert [f.text for f in covered] == ["The user asked about psql-001."]
+
+
+def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
+    client = gemini_returning("[]")
+    assert GeminiFactExtractor(client).extract(chunks("Thanks!")) == []
+    client.models.generate_content.assert_not_called()
+
+    people = [
+        {"name": "the user", "entity_type": "person", "role": "subject"},
+        {"name": "Assistant", "entity_type": "person", "role": "mentioned"},
+        {"name": "Python", "entity_type": "technology", "role": "object"},
+    ]
+    extractor, _ = extractor_for([fact_row(chunks()[0], entities=people)])
+    (fact,) = extractor.extract(chunks())
+    assert [e.name for e in fact.entities] == ["Python"]
+
+
+def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
+    extractor, client = extractor_for([fact_row(chunks()[0])])
+    extractor.extract(chunks())
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert config["thinking_config"] == {"thinking_level": "medium"}
+
+    client = gemini_returning("[]")
+    GeminiFactExtractor(client, thinking_level=None).extract(chunks())
+    assert "thinking_config" not in client.models.generate_content.call_args.kwargs["config"]

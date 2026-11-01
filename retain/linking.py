@@ -19,7 +19,7 @@ from retain.models import (
     Visibility,
     is_broader,
 )
-from shared.llm import is_rate_limited
+from shared.llm import is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,7 @@ class GeminiSupersedeClassifier:
         model: str = "gemini-3.5-flash",
         candidates_k: int = 6,
         min_similarity: float = 0.6,
+        thinking_level: str | None = "low",
     ):
         if candidates_k < 0:
             raise ValueError("candidates_k must be nonnegative")
@@ -264,6 +265,7 @@ class GeminiSupersedeClassifier:
         self.model = model
         self.candidates_k = candidates_k
         self.min_similarity = min_similarity
+        self.thinking_level = thinking_level
 
     def classify(self, facts: Sequence[MemoryFact]) -> list[UpdateDecision]:
         facts = tuple(facts)
@@ -382,6 +384,7 @@ class GeminiSupersedeClassifier:
                     config={
                         "response_mime_type": "application/json",
                         "response_json_schema": _decision_schema(),
+                        **thinking(self.thinking_level),
                     },
                 )
             except Exception as error:

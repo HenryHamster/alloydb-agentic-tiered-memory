@@ -311,10 +311,9 @@ def test_classifier_uses_relevant_candidates_and_accepts_supported_duplicate():
     )
     candidates = payload[0]["candidates"]
     assert [candidate["fact_id"] for candidate in candidates] == [old.fact_id]
-    assert (
-        client.models.generate_content.call_args.kwargs["config"]["response_mime_type"]
-        == "application/json"
-    )
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert config["response_mime_type"] == "application/json"
+    assert config["thinking_config"] == {"thinking_level": "low"}
 
 
 def test_classifier_does_not_offer_project_fact_as_a_candidate_to_global_fact():
@@ -404,3 +403,15 @@ def test_classifier_keeps_supported_contradiction_as_new_fact():
         "Keep contradictions as separate facts"
         in client.models.generate_content.call_args.kwargs["contents"]
     )
+
+
+def test_concept_and_technology_share_an_exact_name_but_other_types_stay_apart():
+    known = entity("artificial intelligence", EntityType.CONCEPT)
+    same = EntityMention("Artificial Intelligence", EntityType.TECHNOLOGY)
+    resolution = FuzzyEntityResolver(EntityStore([known])).resolve(SCOPE.user_id, [same])
+    assert resolution.entity_ids[mention_key(same)] == known.entity_id
+
+    company = entity("Mercury", EntityType.ORGANIZATION)
+    place = EntityMention("Mercury", EntityType.PLACE)
+    resolution = FuzzyEntityResolver(EntityStore([company])).resolve(SCOPE.user_id, [place])
+    assert resolution.entity_ids[mention_key(place)] != company.entity_id

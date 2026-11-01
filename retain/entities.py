@@ -11,6 +11,8 @@ from cleanco import basename
 from retain.models import Entity, EntityMention, EntityResolution, EntityType, stable_id
 
 logger = logging.getLogger(__name__)
+# The model labels the same idea either way ("artificial intelligence"); exact names merge.
+_INTERCHANGEABLE = frozenset({EntityType.CONCEPT, EntityType.TECHNOLOGY})
 
 
 def normalize_name(name: str) -> str:
@@ -31,7 +33,8 @@ class EntityResolver(Protocol):
 class FuzzyEntityResolver:
     """Exact name/alias match first, then fuzzy alias match within the same entity type.
 
-    Rules: types must agree (OTHER may match an exact name of any type); strip organization legal
+    Rules: types must agree (OTHER may match an exact name of any type, and concept/technology
+    match each other's exact names); strip organization legal
     forms (cleanco) before comparing; accept ratio >= `threshold`; a fuzzy hit adds the surface
     form to the entity's aliases; unmatched mentions become new entities with
     entity_id = stable_id(user_id, entity_type, canonical_name). Mentions in one batch that
@@ -136,8 +139,9 @@ def _pick_exact(exact, entity_type, own_id):
 
 
 def _type_matches(mention, entity):
+    interchangeable = {mention.entity_type, entity.entity_type} <= _INTERCHANGEABLE
     return entity.entity_type == mention.entity_type or (
-        mention.entity_type == EntityType.OTHER
+        (mention.entity_type == EntityType.OTHER or interchangeable)
         and _comparison_name(mention.name, mention.entity_type)
         in _entity_names(entity, mention.entity_type)
     )

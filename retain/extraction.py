@@ -20,14 +20,28 @@ from retain.models import (
     ExtractedFact,
     FactType,
     RelationMention,
+    Speaker,
     Visibility,
     stable_id,
 )
 from shared.chunking import chunk_spans
-from shared.llm import is_rate_limited
+from shared.llm import is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
+# Whole messages with nothing to remember; they skip the model call.
+_ACKNOWLEDGEMENTS = frozenset(
+    {
+        "ok", "okay", "ok thanks", "okay thanks", "thanks", "thank you", "thanks a lot",
+        "thank you so much", "great", "great thanks", "cool", "got it", "perfect", "awesome",
+        "hi", "hello", "hey", "bye", "goodbye", "you're welcome", "you are welcome",
+        "no problem", "sounds good",
+    }
+)  # fmt: skip
+# The conversation's own participants are not entities: every fact already records its speaker.
+_SPEAKER_NAMES = frozenset(
+    {"user", "the user", "assistant", "the assistant", "ai assistant", "the ai assistant"}
+)
 _RELATIVE_DAYS = {
     "yesterday": -1,
     "today": 0,
@@ -49,7 +63,11 @@ invent dates. Use timezone-aware ISO timestamps, or a date-only ISO value. For a
 or year-month source date, preserve it in `details.when` and leave exact timestamps null;
 never invent a month or day. Emit entity mentions
 with roles and entity types, relation triples only when explicitly stated, and causal/evidence
-references only to other integer keys in this response. Include all required JSON fields.
+references only to other integer keys in this response. Record what the user asked for or
+asked the assistant to do as a user fact, even when the reply is also recorded. Copy IDs, codes,
+names, URLs and numbers exactly as written; never reformat them, add prefixes, or merge them
+with other values. Never emit the user or the assistant as entities. Include all required JSON
+fields.
 SOURCE JSON:\n"""
 
 
@@ -156,6 +174,8 @@ class GeminiFactExtractor:
         max_request_chars: int = 6000,
         context_chars: int = 600,
         source_dates_known: bool = True,
+        thinking_level: str | None = "medium",
+        keep_unrecorded_user_messages: bool = True,
     ):
         if max_request_chars <= 0 or context_chars < 0:
             raise ValueError("Extraction character limits must be positive")
@@ -164,6 +184,8 @@ class GeminiFactExtractor:
         self.max_request_chars = max_request_chars
         self.context_chars = context_chars
         self.source_dates_known = source_dates_known
+        self.thinking_level = thinking_level
+        self.keep_unrecorded_user_messages = keep_unrecorded_user_messages
 
     def extract(self, chunks: Sequence[Chunk]) -> list[ExtractedFact]:
         chunks = tuple(chunks)
@@ -176,7 +198,7 @@ class GeminiFactExtractor:
 
         output = []
         next_key = 0
-        for group in _group_chunks(chunks):
+        for group in _group_chunks([c for c in chunks if not _is_acknowledgement(c.text)]):
             contexts = _preceding_contexts(group, self.context_chars)
             for request_chunks in _pack_chunks(group, contexts, self.max_request_chars):
                 rows = self._extract_request(request_chunks, contexts)
@@ -229,6 +251,9 @@ class GeminiFactExtractor:
                         )
                     )
                 next_key += len(key_map)
+        output += _tool_call_facts(chunks, len(output), self.source_dates_known)
+        if self.keep_unrecorded_user_messages:
+            output += _unrecorded_user_messages(chunks, output, len(output))
         return output
 
     def _extract_request(self, chunks, contexts):
@@ -250,6 +275,7 @@ class GeminiFactExtractor:
                     config={
                         "response_mime_type": "application/json",
                         "response_json_schema": _schema(),
+                        **thinking(self.thinking_level),
                     },
                 )
                 break
@@ -268,6 +294,125 @@ class GeminiFactExtractor:
         if any(not isinstance(row, dict) for row in rows):
             logger.warning("Discarding non-object Gemini fact rows")
         return [row for row in rows if isinstance(row, dict)]
+
+
+def _is_acknowledgement(text):
+    words = re.sub(r"[^\w\s']", " ", text.casefold()).split()
+    return not words or " ".join(words) in _ACKNOWLEDGEMENTS
+
+
+def _tool_calls(text):
+    """Function calls in a serialized message list ([{"tool_calls": [...]}, ...]), else none."""
+    try:
+        events = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(events, list):
+        return []
+    return [
+        call["function"]
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("tool_calls"), list)
+        for call in event["tool_calls"]
+        if isinstance(call, dict)
+        and isinstance(call.get("function"), dict)
+        and isinstance(call["function"].get("name"), str)
+        and call["function"]["name"].strip()
+    ]
+
+
+def _tool_call_facts(chunks, first_key, source_dates_known):
+    """One fact per tool call, built from its JSON so names and arguments stay exact.
+
+    The quoted call must lie inside one chunk; a call split across chunks is left to the model.
+    """
+    facts, calls_by_document = [], {}
+    for chunk in chunks:
+        document = chunk.document
+        if document.speaker == Speaker.USER:
+            continue
+        if document.document_id not in calls_by_document:
+            calls_by_document[document.document_id] = _tool_calls(document.text)
+        for function in calls_by_document[document.document_id]:
+            evidence = json.dumps(function, ensure_ascii=False)
+            if chunk.text.count(evidence) != 1:
+                continue
+            arguments = function.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments) if arguments.strip() else {}
+                except ValueError:
+                    pass
+            if isinstance(arguments, dict):
+                values = [str(v) if isinstance(v, str) else None for v in arguments.values()]
+                shown = ", ".join(
+                    f"{name} = {json.dumps(value, ensure_ascii=False)}"
+                    for name, value in arguments.items()
+                )
+            else:
+                values, shown = [], json.dumps(arguments, ensure_ascii=False)
+            name = function["name"].strip()
+            identifiers = dict.fromkeys(
+                v.strip()
+                for v in values
+                if v and len(v) <= 80 and re.search(r"\d", v) and re.search(r"[^\W\d_]", v)
+            )
+            facts.append(
+                ExtractedFact(
+                    key=first_key + len(facts),
+                    chunk_id=chunk.chunk_id,
+                    text=f"The assistant called the {name} tool with {shown or 'no arguments'}.",
+                    evidence=evidence,
+                    fact_type=FactType.EXPERIENCE,
+                    category=Category.EVENT,
+                    claim_type=ClaimType.ASSERTED,
+                    visibility=Visibility.SESSION,
+                    occurred_at=document.occurred_at if source_dates_known else None,
+                    details={"what": f"called {name}"},
+                    entities=tuple(
+                        EntityMention(value, EntityType.OTHER, EntityRole.OBJECT)
+                        for value in identifiers
+                    ),
+                )
+            )
+    return facts
+
+
+def _unrecorded_user_messages(chunks, extracted, first_key):
+    """Keep a short user message verbatim when extraction recorded nothing from it.
+
+    Requests ("check the status of server psql-001") are what later questions refer back to,
+    and the model tends to keep only the reply.
+    """
+    cited = {fact.chunk_id for fact in extracted}
+    by_document = defaultdict(list)
+    for chunk in chunks:
+        by_document[chunk.document.document_id].append(chunk)
+    facts = []
+    for parts in by_document.values():
+        chunk = parts[0]
+        text = " ".join(chunk.text.split())
+        if (
+            chunk.document.speaker != Speaker.USER
+            or len(parts) != 1
+            or chunk.chunk_id in cited
+            or len(text.split()) < 3
+            or _is_acknowledgement(text)
+        ):
+            continue
+        facts.append(
+            ExtractedFact(
+                key=first_key + len(facts),
+                chunk_id=chunk.chunk_id,
+                text=f"The user said: {text}",
+                evidence=chunk.text.strip(),
+                fact_type=FactType.WORLD,
+                category=Category.OTHER,
+                claim_type=ClaimType.ASSERTED,
+                visibility=Visibility.SESSION,
+            )
+        )
+    return facts
 
 
 def _group_chunks(chunks):
@@ -488,6 +633,8 @@ def _parse_row(row, chunks_by_id, *, source_dates_known=True):
             raise ValueError("Entity mention fields do not match the schema")
         if not isinstance(entity["name"], str) or not entity["name"].strip():
             raise ValueError("Entity mention needs a name")
+        if " ".join(entity["name"].casefold().split()) in _SPEAKER_NAMES:
+            continue
         entities.append(
             EntityMention(
                 entity["name"], EntityType(entity["entity_type"]), EntityRole(entity["role"])
