@@ -817,9 +817,11 @@ def _parse_row(row, chunks_by_id, *, source_dates_known=True, exact_evidence=Tru
 
     chunk = chunks_by_id[chunk_id]
     if exact_evidence:
-        first = chunk.text.find(row["evidence"])
-        if first < 0 or chunk.text.find(row["evidence"], first + 1) >= 0:
+        # The quote, or its JSON-escaped form for serialized assistant turns, exactly once.
+        found = [q for q in (row["evidence"], _escaped(row["evidence"])) if q in chunk.text]
+        if not found or chunk.text.count(found[0]) != 1:
             raise ValueError("Evidence must occur exactly once in its cited chunk")
+        row = {**row, "evidence": found[0]}
     else:
         located = _locate_evidence(chunk.text, row["evidence"])
         if located is None:

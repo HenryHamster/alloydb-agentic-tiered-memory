@@ -547,3 +547,16 @@ def test_lean_mode_matches_quotes_of_serialized_multiline_replies():
     assert first.evidence == r"store ID 157:\n\n- Last week: $54,841.75 total \"net\" sales"
     assert second.evidence == r"store ID 157:\n\n- Last week: $54,841.75"
     assert all(fact.evidence in selected[0].text for fact in (first, second))
+
+
+def test_strict_mode_accepts_a_unique_quote_of_a_serialized_reply():
+    reply = "Summary:\n- Last week: $54,841.75\n- Previous week: $48,001.50"
+    selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
+    extractor, _ = extractor_for([fact_row(selected[0], evidence="- Last week: $54,841.75\n")])
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.evidence == r"- Last week: $54,841.75\n"
+    assert fact.evidence in selected[0].text
+    repeated, _ = extractor_for([fact_row(selected[0], evidence="week: $")])
+    assert repeated.extract(selected) == []
