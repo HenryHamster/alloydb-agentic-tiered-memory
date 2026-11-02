@@ -336,7 +336,11 @@ def build_retainer(
     embedder = GeminiEmbedder(embedding_client or genai_client)
     return Retainer(
         store=store,
-        extractor=GeminiFactExtractor(genai_client),
+        # Low thinking with the lean schema; tool results are recorded by code, since low thinking
+        # tends to skip them. About 87% cheaper than medium with the same key facts (Mem2Act A/B).
+        extractor=GeminiFactExtractor(
+            genai_client, thinking_level="low", lean=True, tool_result_facts=True
+        ),
         entity_resolver=FuzzyEntityResolver(store),
         embedder=embedder,
         linker=StoreLinker(store),

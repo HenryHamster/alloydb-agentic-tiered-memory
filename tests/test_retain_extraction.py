@@ -477,3 +477,52 @@ def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
     client = gemini_returning("[]")
     GeminiFactExtractor(client, thinking_level=None).extract(chunks())
     assert "thinking_config" not in client.models.generate_content.call_args.kwargs["config"]
+
+
+def lean_row(chunk, **overrides):
+    row = fact_row(chunk)
+    row["when"] = row.pop("details")["when"]
+    row.update(overrides)
+    return row
+
+
+def test_lean_mode_asks_for_less_and_finds_requoted_or_repeated_evidence():
+    selected = chunks("I prefer Python   only for embedded tasks. More embedded tasks soon.")
+    respaced = lean_row(selected[0], when="2026-03")
+    repeated = lean_row(selected[0], key=8, evidence="embedded tasks")
+    client = gemini_returning(json.dumps([respaced, repeated]))
+    extractor = GeminiFactExtractor(client, lean=True, keep_unrecorded_user_messages=False)
+
+    first, second = extractor.extract(selected)
+
+    # Quotes are kept in the chunk's own wording, even when re-spaced or repeated.
+    assert first.evidence == "I prefer Python   only for embedded tasks."
+    assert first.details == {"when": "2026-03"}
+    assert second.evidence == "embedded tasks"
+    config = client.models.generate_content.call_args.kwargs["config"]
+    properties = config["response_json_schema"]["items"]["properties"]
+    assert "details" not in properties and "when" in properties
+    # The default keeps the strict single-occurrence rule.
+    strict, _ = extractor_for(
+        [fact_row(selected[0]), fact_row(selected[0], key=8, **{"evidence": "embedded tasks"})]
+    )
+    assert strict.extract(selected) == []
+
+
+def test_tool_results_become_exact_facts_only_when_enabled():
+    result = {"server_id": "psql-002", "message": "Restart initiated.", "at": "2024-06-15T10:30Z"}
+    events = [
+        {"role": "assistant", "content": "Restarting it now..."},
+        {"role": "tool", "content": json.dumps(result)},
+    ]
+    selected = assistant_chunks(json.dumps(events, ensure_ascii=False))
+
+    (fact,) = GeminiFactExtractor(gemini_returning("[]"), tool_result_facts=True).extract(selected)
+
+    assert fact.text == (
+        'A tool returned: server_id = "psql-002"; message = "Restart initiated."; '
+        'at = "2024-06-15T10:30Z".'
+    )
+    assert fact.evidence in selected[0].text
+    assert [e.name for e in fact.entities] == ["psql-002"]
+    assert GeminiFactExtractor(gemini_returning("[]")).extract(selected) == []
