@@ -526,3 +526,24 @@ def test_tool_results_become_exact_facts_only_when_enabled():
     assert fact.evidence in selected[0].text
     assert [e.name for e in fact.entities] == ["psql-002"]
     assert GeminiFactExtractor(gemini_returning("[]")).extract(selected) == []
+
+
+def test_lean_mode_matches_quotes_of_serialized_multiline_replies():
+    reply = 'Here\'s the summary for store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
+    selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
+    quoted = 'store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
+    respaced = "store ID 157: - Last week: $54,841.75"
+    rows = [
+        lean_row(selected[0], evidence=quoted),
+        lean_row(selected[0], key=8, evidence=respaced),
+        lean_row(selected[0], key=9, evidence="Last week: $99"),
+    ]
+    extractor = GeminiFactExtractor(
+        gemini_returning(json.dumps(rows)), lean=True, keep_unrecorded_user_messages=False
+    )
+
+    first, second = extractor.extract(selected)
+
+    assert first.evidence == r"store ID 157:\n\n- Last week: $54,841.75 total \"net\" sales"
+    assert second.evidence == r"store ID 157:\n\n- Last week: $54,841.75"
+    assert all(fact.evidence in selected[0].text for fact in (first, second))

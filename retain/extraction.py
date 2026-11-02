@@ -750,14 +750,25 @@ def _resolve_relative_dates(row, chunk):
     return row
 
 
+def _escaped(text):
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
 def _locate_evidence(text, quote):
-    """The chunk's own wording of a quote the model may have re-spaced or that repeats."""
-    if quote in text:
-        return quote
+    """The chunk's own wording of a quote the model may have re-spaced, unescaped, or repeated.
+
+    Assistant turns are stored as serialized JSON events, so the model reads line breaks and
+    quotes that the chunk holds as \\n and \\". The words must still appear in order.
+    """
+    for candidate in (quote, _escaped(quote)):
+        if candidate in text:
+            return candidate
     words = quote.split()
     if not words:
         return None
-    pattern = r"\s+".join(re.escape(word) for word in words)
+    pattern = r"(?:\s|\\[nrt])+".join(
+        f"(?:{re.escape(word)}|{re.escape(_escaped(word))})" for word in words
+    )
     match = re.search(pattern, text)
     return match.group(0) if match else None
 
