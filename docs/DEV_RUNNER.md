@@ -50,7 +50,7 @@ For changed history, save `history-v2.json` and pass that path. Keep multiple ve
 - `--mode replay`: require recorded provider responses; a missing request stops with `cache_miss`, without a paid fallback. It still needs the VM, PostgreSQL and Valkey.
 - `--mode fresh`: execute preparation and provider requests again. Existing cache baselines are preserved. Use a new `--cache-epoch experiment-v2` if you want a separate reusable baseline.
 
-Prepared keys include Retain/Reflect/shared/orchestration/SQL code, runner/harness code, history, provider project/locations, output limit and cache epoch. Recall-only edits can reuse prepared memory. Provider keys include the complete request and configuration. Different developers have separate OS-user caches; there is no shared response pool across users.
+Prepared keys include Retain/Reflect/shared/orchestration/SQL code, runner/harness code, history, provider project/locations, output limit and cache epoch. Recall-only edits can reuse prepared memory. Provider keys include the complete request and configuration. Developers on the VM share one cache at `/var/lib/tiered-dev/cache`: an unchanged question prepared by anyone, with the same code, history and options, is a cache hit for everyone. Without that folder, or from a checkout older than this feature, each developer keeps a private cache in `~/.tiered-dev/cache`. Every VM user can read and change shared entries, which contain team histories and prompts; they are trusted like the code that wrote them.
 
 Each preparation and **each question** uses a new random database schema and a copy of prepared memory, including lifecycle/access state. Query results are not retained into history. Valkey keys use a run prefix. Schemas and touched Valkey keys are removed on normal completion/failure. Hard termination can leave a schema; an administrator can inspect/drop the specifically recorded `dev_<UUID>` schema later. These namespaces prevent accidental experiment contamination; they are not security boundaries for arbitrary developer code.
 
@@ -74,7 +74,7 @@ At two active hours/day for 30 days, VM + DB + existing Valkey + VM disk are abo
 
 The root-owned controller checks every 30 seconds, stops AlloyDB then the VM after 30 idle minutes, and refuses manual shutdown while jobs are active. Its four-hour boot deadline can terminate a long-running job; the VM has a separate provider stop deadline ten minutes later. Idle time starts after the last process finishes, including dependency setup. A failed DB stop request keeps the VM watchdog alive to retry. A complete VM/controller failure can still leave AlloyDB running: use `dev stop` to reconcile it. A strict shutdown guarantee across VM failures would require an external watchdog, outside this small design.
 
-Caches/source/result files stay on each developer's VM home disk. Keep valuable result exports locally; delete old per-run work/results or unused cache epochs explicitly when no jobs are using them. There is no automatic deletion of experiment evidence.
+Source/result files, and private caches, stay on each developer's VM home disk; the team cache stays in `/var/lib/tiered-dev/cache`. Keep valuable result exports locally; delete old per-run work/results or unused cache epochs explicitly when no jobs are using them. There is no automatic deletion of experiment evidence.
 
 ## One-time administrator setup (review before applying)
 
