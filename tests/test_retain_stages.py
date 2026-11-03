@@ -63,6 +63,7 @@ def fact(
     occurred_at=None,
     entity_ids=(),
     valid_to=None,
+    episode="episode",
 ):
     return MemoryFact(
         fact_id=fact_id or stable_id("fact", name, scope.user_id, scope.project_id),
@@ -75,7 +76,7 @@ def fact(
         text=name,
         evidence=name,
         source_document_id=stable_id("document", name),
-        source_episode_id="episode",
+        source_episode_id=episode,
         recorded_at=AT,
         valid_from=AT,
         occurred_at=occurred_at,
@@ -237,8 +238,10 @@ def test_semantic_links_include_in_batch_pairs_once_and_skip_self_links():
 
 
 def test_temporal_links_use_event_time_and_order_edges_chronologically():
-    earlier = fact("Earlier event", fact_id="earlier", occurred_at=AT)
-    later = fact("Later event", fact_id="later", occurred_at=AT + timedelta(hours=3))
+    earlier = fact("Earlier event", fact_id="earlier", occurred_at=AT, episode="round-1")
+    later = fact(
+        "Later event", fact_id="later", occurred_at=AT + timedelta(hours=3), episode="round-2"
+    )
     store = LinkStore(near=[earlier])
     linker = StoreLinker(store, temporal_window=timedelta(days=1), temporal_tau=timedelta(days=1))
 
@@ -260,11 +263,28 @@ def test_temporal_links_skip_unknown_dates_and_deduplicate_repeated_pairs():
     links = StoreLinker(LinkStore(near=[first, second])).link([first, second])
     assert all(link.relation != Relation.NEAR_IN_TIME for link in links)
 
-    earlier = fact("Earlier", fact_id="a", occurred_at=AT)
-    later = fact("Later", fact_id="b", occurred_at=AT + timedelta(hours=1))
+    earlier = fact("Earlier", fact_id="a", occurred_at=AT, episode="round-1")
+    later = fact("Later", fact_id="b", occurred_at=AT + timedelta(hours=1), episode="round-2")
     links = StoreLinker(LinkStore(near=[earlier, later])).link([earlier, later])
     temporal = [link for link in links if link.relation == Relation.NEAR_IN_TIME]
     assert len(temporal) == 1
+
+
+def test_facts_from_one_round_get_no_temporal_link():
+    request = fact("The user asked for the report.", fact_id="a", occurred_at=AT)
+    reply = fact("The report was sent.", fact_id="b", occurred_at=AT, embedding=(0.0, 1.0))
+    links = StoreLinker(LinkStore(near=[request, reply])).link([request, reply])
+    assert all(link.relation != Relation.NEAR_IN_TIME for link in links)
+
+
+def test_two_code_built_facts_never_link_by_similarity():
+    call = fact('The assistant called the restart tool with id = "a-1".', fact_id="call")
+    other = fact('The assistant called the status tool with id = "b-2".', fact_id="other")
+    reply = fact("Server a-1 was restarted.", fact_id="reply")
+    links = StoreLinker(LinkStore(similar=[(other, 0.95)])).link([call, reply])
+    pairs = {(link.from_fact_id, link.to_fact_id) for link in links}
+    assert ("call", "other") not in pairs
+    assert ("call", "reply") in pairs or ("reply", "call") in pairs
 
 
 class ClassifierStore:

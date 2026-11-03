@@ -1,5 +1,6 @@
 """Chunk source documents and extract evidence-backed atomic facts."""
 
+import dataclasses
 import json
 import logging
 import re
@@ -236,6 +237,7 @@ class GeminiFactExtractor:
         keep_unrecorded_user_messages: bool = True,
         lean: bool = False,
         tool_result_facts: bool = False,
+        link_rounds: bool = False,
     ):
         if max_request_chars <= 0 or context_chars < 0:
             raise ValueError("Extraction character limits must be positive")
@@ -249,6 +251,7 @@ class GeminiFactExtractor:
         # Experimental cost settings; the defaults keep the full schema and model-only tool results.
         self.lean = lean
         self.tool_result_facts = tool_result_facts
+        self.link_rounds = link_rounds
 
     def extract(self, chunks: Sequence[Chunk]) -> list[ExtractedFact]:
         chunks = tuple(chunks)
@@ -316,11 +319,16 @@ class GeminiFactExtractor:
                         )
                     )
                 next_key += len(key_map)
-        output += _tool_call_facts(chunks, len(output), self.source_dates_known)
+        calls = _tool_call_facts(chunks, len(output), self.source_dates_known)
+        output += calls
+        results = []
         if self.tool_result_facts:
-            output += _tool_result_facts(chunks, len(output), self.source_dates_known)
+            results = _tool_result_facts(chunks, len(output), self.source_dates_known)
+            output += results
         if self.keep_unrecorded_user_messages:
             output += _unrecorded_user_messages(chunks, output, len(output))
+        if self.link_rounds:
+            output = _link_rounds(output, chunks, {f.key for f in calls}, {f.key for f in results})
         return output
 
     def _extract_request(self, chunks, contexts):
@@ -426,19 +434,14 @@ def _tool_call_facts(chunks, first_key, source_dates_known):
                 except ValueError:
                     pass
             if isinstance(arguments, dict):
-                values = [str(v) if isinstance(v, str) else None for v in arguments.values()]
                 shown = ", ".join(
                     f"{name} = {json.dumps(value, ensure_ascii=False)}"
                     for name, value in arguments.items()
                 )
             else:
-                values, shown = [], json.dumps(arguments, ensure_ascii=False)
+                shown = json.dumps(arguments, ensure_ascii=False)
             name = function["name"].strip()
-            identifiers = dict.fromkeys(
-                v.strip()
-                for v in values
-                if v and len(v) <= 80 and re.search(r"\d", v) and re.search(r"[^\W\d_]", v)
-            )
+            identifiers = _identifiers(arguments)
             facts.append(
                 ExtractedFact(
                     key=first_key + len(facts),
@@ -514,9 +517,11 @@ def _tool_result_facts(chunks, first_key, source_dates_known):
                 [f"{name} = {json.dumps(item, ensure_ascii=False)}" for name, item in fields]
                 + nested
             )
+            if not shown:
+                continue
             if len(shown) > 600:
                 shown = shown[:600] + "..."
-            identifiers = dict.fromkeys(v for v in _strings(value) if _looks_like_id(v))
+            identifiers = _identifiers(value)
             facts.append(
                 ExtractedFact(
                     key=first_key + len(facts),
@@ -538,15 +543,52 @@ def _tool_result_facts(chunks, first_key, source_dates_known):
     return facts
 
 
-def _strings(value):
-    if isinstance(value, str):
-        yield value.strip()
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _strings(item)
+# Fields whose values name something (a server, file, person, company), whatever they look like.
+_NAME_FIELD = re.compile(
+    r"(?:^|_)(?:id|ids|name|title|path|url|uri|host|hostname|domain|file|filename|subject|source|"
+    r"company|make|model|vehicle|driver|author|manager|city|address|symbol|ticker|server|device|"
+    r"robot)$"
+)
+_NOT_NAMES = frozenset(
+    {"success", "ok", "error", "failed", "true", "false", "none", "null", "yes", "no", "n/a"}
+)
+
+
+def _identifiers(value, field="", limit=8):
+    """Entity names in tool JSON: values of naming fields, plus ID-like tokens anywhere else.
+
+    Tool names are left out; they would be hub entities with little to match in a question.
+    """
+    return tuple(list(dict.fromkeys(_names(value, field)))[:limit])
+
+
+def _names(value, field):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _names(item, re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)).lower())
     elif isinstance(value, list):
         for item in value:
-            yield from _strings(item)
+            yield from _names(item, field)
+    elif isinstance(value, (str, int)) and not isinstance(value, bool):
+        text = " ".join(str(value).split())
+        if _NAME_FIELD.search(field) and _is_name(text):
+            yield text
+        elif isinstance(value, str):
+            yield from _id_tokens(text)
+
+
+def _is_name(text):
+    return (
+        0 < len(text) <= 80
+        and len(text.split()) <= 10
+        and text.casefold() not in _NOT_NAMES
+        and re.match(r"\d{4}-\d{2}-\d{2}", text) is None
+    )
+
+
+def _id_tokens(text):
+    tokens = (token.strip(".,;:!?()[]{}'\"") for token in text.split())
+    return [token for token in dict.fromkeys(tokens) if _looks_like_id(token)]
 
 
 def _looks_like_id(value):
@@ -592,9 +634,72 @@ def _unrecorded_user_messages(chunks, extracted, first_key):
                 category=Category.OTHER,
                 claim_type=ClaimType.ASSERTED,
                 visibility=Visibility.SESSION,
+                entities=tuple(
+                    EntityMention(token, EntityType.OTHER, EntityRole.OBJECT)
+                    for token in _id_tokens(text)[:8]
+                ),
             )
         )
     return facts
+
+
+def _link_rounds(facts, chunks, call_keys, result_keys, limit=3):
+    """evidenced_by links inside each round that only code can see.
+
+    A tool call cites the user's request, a tool result the call before it, and an assistant
+    fact the tool event whose names it repeats, else the request. Semantic links never join
+    these: requests, tool events and answers fall in different categories. evidenced_by keeps
+    Reflect from clustering every round into a macro.
+    """
+    by_chunk = {chunk.chunk_id: chunk for chunk in chunks}
+    rounds = defaultdict(list)
+    for fact in facts:
+        rounds[by_chunk[fact.chunk_id].document.episode_id].append(fact)
+    tool_keys = call_keys | result_keys
+    added = defaultdict(list)
+    for members in rounds.values():
+        requests = [
+            f.key for f in members if by_chunk[f.chunk_id].document.speaker == Speaker.USER
+        ][:2]
+
+        def position(fact):
+            chunk = by_chunk[fact.chunk_id]
+            return chunk.document.position, chunk.start + max(chunk.text.find(fact.evidence), 0)
+
+        events = sorted((f for f in members if f.key in tool_keys), key=position)
+        last_call = None
+        for fact in events:
+            if fact.key in call_keys:
+                added[fact.key] += requests
+                last_call = fact.key
+            elif last_call is not None:
+                added[fact.key].append(last_call)
+        names = {f.key: {e.name.casefold() for e in f.entities if len(e.name) >= 3} for f in events}
+        for fact in members:
+            chunk = by_chunk[fact.chunk_id]
+            if fact.key in tool_keys or chunk.document.speaker == Speaker.USER:
+                continue
+            text = fact.text.casefold()
+            # Results first: they hold what the reply reports.
+            cited = [
+                f.key
+                for f in sorted(events, key=lambda e: e.key not in result_keys)
+                if any(name in text for name in names[f.key])
+            ]
+            added[fact.key] += cited[:limit] or requests
+    return [
+        dataclasses.replace(
+            fact,
+            evidenced_by=tuple(
+                key
+                for key in dict.fromkeys((*fact.evidenced_by, *added[fact.key]))
+                if key != fact.key
+            ),
+        )
+        if added[fact.key]
+        else fact
+        for fact in facts
+    ]
 
 
 def _group_chunks(chunks):

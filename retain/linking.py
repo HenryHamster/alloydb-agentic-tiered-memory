@@ -18,6 +18,7 @@ from retain.models import (
     UpdateDecision,
     Visibility,
     is_broader,
+    is_code_built,
 )
 from shared.llm import is_rate_limited, thinking
 
@@ -34,9 +35,11 @@ class StoreLinker:
     """Edge rules (both endpoints same user; the target must be visible to the new fact's scope):
 
     - semantic: top `semantic_k` by cosine >= `min_similarity`, same category; weight = cosine.
+      Two code-built facts (tool calls, tool results) never link: their shared template wording
+      inflates cosine. They connect through shared entities and the extractor's round links.
     - temporal: top `temporal_k` facts whose occurred_at is within `temporal_window` of the new
-      fact's occurred_at; weight = exp(-|dt| / temporal_tau). Facts without occurred_at get none,
-      so statements made in the same conversation are not linked just for sharing a timestamp.
+      fact's occurred_at; weight = exp(-|dt| / temporal_tau). Facts without occurred_at, or from
+      the same round, get none, so statements made together are not linked for sharing a time.
     New facts in the same batch are also candidates for each other.
     """
 
@@ -92,6 +95,7 @@ class StoreLinker:
                     and candidate.is_current
                     and _candidate_visible(fact, candidate)
                     and score >= self.min_similarity
+                    and not _both_code_built(fact, candidate)
                 ]
                 eligible.sort(key=lambda row: (-row[0], row[1].fact_id))
                 for score, candidate in eligible[: self.semantic_k]:
@@ -113,6 +117,7 @@ class StoreLinker:
                     and candidate.occurred_at is not None
                     and abs(candidate.occurred_at - fact.occurred_at) <= self.temporal_window
                     and _candidate_visible(fact, candidate)
+                    and candidate.source_episode_id != fact.source_episode_id
                 ]
                 eligible.sort(
                     key=lambda candidate: (
@@ -127,12 +132,21 @@ class StoreLinker:
         for index, left in enumerate(current):
             for right in current[index + 1 :]:
                 if _candidate_visible(left, right) and _candidate_visible(right, left):
-                    if left.category == right.category and left.embedding and right.embedding:
+                    if (
+                        left.category == right.category
+                        and left.embedding
+                        and right.embedding
+                        and not _both_code_built(left, right)
+                    ):
                         score = _cosine(left.embedding, right.embedding)
                         if score >= self.min_similarity:
                             source, target = sorted((left.fact_id, right.fact_id))
                             _add_link(semantic, source, target, Relation.SIMILAR, score)
-                    if left.occurred_at is not None and right.occurred_at is not None:
+                    if (
+                        left.occurred_at is not None
+                        and right.occurred_at is not None
+                        and left.source_episode_id != right.source_episode_id
+                    ):
                         if abs(left.occurred_at - right.occurred_at) <= self.temporal_window:
                             _add_temporal(temporal, left, right, self.temporal_tau)
 
@@ -152,6 +166,10 @@ def _candidate_visible(new, candidate):
         and candidate.visible_to(new.scope)
         and not is_broader(new.visibility, candidate.visibility)
     )
+
+
+def _both_code_built(left, right):
+    return is_code_built(left.text) and is_code_built(right.text)
 
 
 def _reader_for(fact):

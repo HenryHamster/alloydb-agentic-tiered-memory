@@ -211,6 +211,14 @@ class RelationMention:
     object: str
 
 
+# Facts Retain builds from message structure rather than the model (retain/extraction.py).
+CODE_BUILT_PREFIXES = ("The assistant called the ", "A tool returned: ", "The user said: ")
+
+
+def is_code_built(text: str) -> bool:
+    return text.startswith(CODE_BUILT_PREFIXES)
+
+
 @dataclass(frozen=True)
 class ExtractedFact:
     """Validated extractor output. `key` is local to one extraction batch."""

@@ -80,7 +80,16 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
   Entity links live in `memory_entities`, not `memory_links`. Temporal links use `occurred_at`
-  only, so facts are not linked merely for being said in the same conversation.
+  only and never join two facts from the same round, so facts are not linked merely for being
+  said in the same conversation.
+- **Round links.** With `link_rounds` (on in `build_retainer`) code adds `evidenced_by` links that
+  similarity cannot find, because requests, tool events and answers fall in different
+  categories: a tool call cites the user's request, a tool result the call before it, and an
+  assistant fact the tool event whose names it repeats, else the request. `evidenced_by` is not
+  a Reflect clustering relation, so these links add no macro summaries.
+- **Code-built facts** (tool calls, tool results, `The user said: ...`) get `other` entities from
+  naming fields (`*_id`, `name`, `path`, `url`, `make`, ...) and ID-like tokens, never tool
+  names. Two code-built facts never get a `similar` link: their template wording inflates cosine.
 - **Graph.** Stored relationally (`memory_links`, `entity_relations`); traversals are SQL joins or
   recursive CTEs. Apache Spark can read these tables for offline graph analytics; it is not on
   the per-turn path.
