@@ -73,8 +73,9 @@ def gemini_returning(text):
 
 
 def extractor_for(rows):
+    """Row-validation tests see only model rows, without the verbatim user-message fallback."""
     client = gemini_returning(json.dumps(rows))
-    return GeminiFactExtractor(client), client
+    return GeminiFactExtractor(client, keep_unrecorded_user_messages=False), client
 
 
 def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date():
@@ -404,3 +405,275 @@ def test_embedder_propagates_non_retryable_provider_failure():
         GeminiEmbedder(client)(["fact"])
 
     client.models.embed_content.assert_called_once()
+
+
+def assistant_chunks(text):
+    document = Document(
+        document_id="document-b",
+        episode_id="episode-a",
+        position=1,
+        scope=Scope("user-a", "project-a", "session-a"),
+        speaker=Speaker.ASSISTANT,
+        text=text,
+        occurred_at=STAMP,
+        recorded_at=STAMP,
+    )
+    return chunk_documents([document], 700)
+
+
+def test_tool_calls_become_exact_facts_without_the_model():
+    call = {"name": "get_server_status", "arguments": json.dumps({"server_id": "psql-001"})}
+    events = [{"role": "assistant", "content": "Checking.", "tool_calls": [{"function": call}]}]
+    selected = assistant_chunks(json.dumps(events, ensure_ascii=False))
+    extractor, _ = extractor_for([])
+
+    (fact,) = extractor.extract(selected)
+
+    assert (
+        fact.text == 'The assistant called the get_server_status tool with server_id = "psql-001".'
+    )
+    assert fact.evidence in selected[0].text
+    assert fact.fact_type == FactType.EXPERIENCE
+    assert [(e.name, e.entity_type) for e in fact.entities] == [("psql-001", EntityType.OTHER)]
+    # Plain-text replies, as in production, have no tool calls to read.
+    assert extractor.extract(assistant_chunks("Checking the server now.")) == []
+
+
+def test_user_message_is_kept_verbatim_only_when_extraction_recorded_nothing():
+    request = "Can you check the status of the server with ID 'psql-001'?"
+    selected = chunks(request)
+    client = gemini_returning("[]")
+
+    (fact,) = GeminiFactExtractor(client).extract(selected)
+    assert fact.text == "The user said: " + request
+    assert fact.evidence == request
+
+    row = fact_row(selected[0], text="The user asked about psql-001.", evidence=request)
+    covered = GeminiFactExtractor(gemini_returning(json.dumps([row]))).extract(selected)
+    assert [f.text for f in covered] == ["The user asked about psql-001."]
+
+
+def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
+    client = gemini_returning("[]")
+    assert GeminiFactExtractor(client).extract(chunks("Thanks!")) == []
+    client.models.generate_content.assert_not_called()
+
+    people = [
+        {"name": "the user", "entity_type": "person", "role": "subject"},
+        {"name": "Assistant", "entity_type": "person", "role": "mentioned"},
+        {"name": "Python", "entity_type": "technology", "role": "object"},
+    ]
+    extractor, _ = extractor_for([fact_row(chunks()[0], entities=people)])
+    (fact,) = extractor.extract(chunks())
+    assert [e.name for e in fact.entities] == ["Python"]
+
+
+def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
+    extractor, client = extractor_for([fact_row(chunks()[0])])
+    extractor.extract(chunks())
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert config["thinking_config"] == {"thinking_level": "medium"}
+
+    client = gemini_returning("[]")
+    GeminiFactExtractor(client, thinking_level=None).extract(chunks())
+    assert "thinking_config" not in client.models.generate_content.call_args.kwargs["config"]
+
+
+def lean_row(chunk, **overrides):
+    row = fact_row(chunk)
+    row["when"] = row.pop("details")["when"]
+    row.update(overrides)
+    return row
+
+
+def test_lean_mode_asks_for_less_and_finds_requoted_or_repeated_evidence():
+    selected = chunks("I prefer Python   only for embedded tasks. More embedded tasks soon.")
+    respaced = lean_row(selected[0], when="2026-03")
+    repeated = lean_row(selected[0], key=8, evidence="embedded tasks")
+    client = gemini_returning(json.dumps([respaced, repeated]))
+    extractor = GeminiFactExtractor(client, lean=True, keep_unrecorded_user_messages=False)
+
+    first, second = extractor.extract(selected)
+
+    # Quotes are kept in the chunk's own wording, even when re-spaced or repeated.
+    assert first.evidence == "I prefer Python   only for embedded tasks."
+    assert first.details == {"when": "2026-03"}
+    assert second.evidence == "embedded tasks"
+    config = client.models.generate_content.call_args.kwargs["config"]
+    properties = config["response_json_schema"]["items"]["properties"]
+    assert "details" not in properties and "when" in properties
+    # The default keeps the strict single-occurrence rule.
+    strict, _ = extractor_for(
+        [fact_row(selected[0]), fact_row(selected[0], key=8, **{"evidence": "embedded tasks"})]
+    )
+    assert strict.extract(selected) == []
+
+
+def test_tool_results_become_exact_facts_only_when_enabled():
+    result = {"server_id": "psql-002", "message": "Restart initiated.", "at": "2024-06-15T10:30Z"}
+    events = [
+        {"role": "assistant", "content": "Restarting it now..."},
+        {"role": "tool", "content": json.dumps(result)},
+    ]
+    selected = assistant_chunks(json.dumps(events, ensure_ascii=False))
+
+    (fact,) = GeminiFactExtractor(gemini_returning("[]"), tool_result_facts=True).extract(selected)
+
+    assert fact.text == (
+        'A tool returned: server_id = "psql-002"; message = "Restart initiated."; '
+        'at = "2024-06-15T10:30Z".'
+    )
+    assert fact.evidence in selected[0].text
+    assert [e.name for e in fact.entities] == ["psql-002"]
+    assert GeminiFactExtractor(gemini_returning("[]")).extract(selected) == []
+
+
+def test_lean_mode_matches_quotes_of_serialized_multiline_replies():
+    reply = 'Here\'s the summary for store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
+    selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
+    quoted = 'store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
+    respaced = "store ID 157: - Last week: $54,841.75"
+    rows = [
+        lean_row(selected[0], evidence=quoted),
+        lean_row(selected[0], key=8, evidence=respaced),
+        lean_row(selected[0], key=9, evidence="Last week: $99"),
+    ]
+    extractor = GeminiFactExtractor(
+        gemini_returning(json.dumps(rows)), lean=True, keep_unrecorded_user_messages=False
+    )
+
+    first, second = extractor.extract(selected)
+
+    assert first.evidence == r"store ID 157:\n\n- Last week: $54,841.75 total \"net\" sales"
+    assert second.evidence == r"store ID 157:\n\n- Last week: $54,841.75"
+    assert all(fact.evidence in selected[0].text for fact in (first, second))
+
+
+def test_strict_mode_accepts_a_unique_quote_of_a_serialized_reply():
+    reply = "Summary:\n- Last week: $54,841.75\n- Previous week: $48,001.50"
+    selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
+    extractor, _ = extractor_for([fact_row(selected[0], evidence="- Last week: $54,841.75\n")])
+
+    (fact,) = extractor.extract(selected)
+
+    assert fact.evidence == r"- Last week: $54,841.75\n"
+    assert fact.evidence in selected[0].text
+    repeated, _ = extractor_for([fact_row(selected[0], evidence="week: $")])
+    assert repeated.extract(selected) == []
+
+
+def round_chunks(user_text, events):
+    scope = Scope("user-a", "project-a", "session-a")
+    documents = [
+        Document(
+            document_id=f"document-{position}",
+            episode_id="episode-a",
+            position=position,
+            scope=scope,
+            speaker=speaker,
+            text=text,
+            occurred_at=STAMP,
+            recorded_at=STAMP,
+        )
+        for position, (speaker, text) in enumerate(
+            [(Speaker.USER, user_text), (Speaker.ASSISTANT, json.dumps(events))]
+        )
+    ]
+    return chunk_documents(documents, 700)
+
+
+def test_round_links_join_request_tool_call_result_and_answer():
+    call = {"name": "get_server_status", "arguments": json.dumps({"server_id": "psql-001"})}
+    events = [
+        {"role": "assistant", "content": "Checking.", "tool_calls": [{"function": call}]},
+        {"role": "tool", "content": json.dumps({"server_id": "psql-001", "status": "running"})},
+        {"role": "assistant", "content": "Server psql-001 is running."},
+    ]
+    selected = round_chunks("Check the status of server psql-001.", events)
+    user, assistant = selected
+    rows = [
+        fact_row(
+            user,
+            key=0,
+            text="The user asked to check server psql-001.",
+            evidence="Check the status of server psql-001.",
+            category="goal",
+        ),
+        fact_row(
+            assistant,
+            key=1,
+            text="Server psql-001 is running.",
+            evidence="Server psql-001 is running.",
+            fact_type="experience",
+            category="attribute",
+        ),
+    ]
+    extractor = GeminiFactExtractor(
+        gemini_returning(json.dumps(rows)), tool_result_facts=True, link_rounds=True
+    )
+
+    facts = {f.text[:22]: f for f in extractor.extract(selected)}
+
+    request, reply = facts["The user asked to chec"], facts["Server psql-001 is run"]
+    call_fact, result = facts["The assistant called t"], facts["A tool returned: serve"]
+    assert call_fact.evidenced_by == (request.key,)
+    assert result.evidenced_by == (call_fact.key,)
+    assert reply.evidenced_by[0] == result.key
+    assert request.evidenced_by == ()
+    # Without the setting, nothing is added.
+    plain = GeminiFactExtractor(gemini_returning(json.dumps(rows)), tool_result_facts=True)
+    assert all(not f.evidenced_by for f in plain.extract(selected))
+
+
+def test_round_links_tie_an_answer_without_tools_to_the_request():
+    selected = round_chunks(
+        "How can AI job losses be reduced?",
+        [{"role": "assistant", "content": "Retraining programs reduce AI job losses."}],
+    )
+    rows = [
+        fact_row(
+            selected[0],
+            key=0,
+            text="The user asked how to reduce AI job losses.",
+            evidence="How can AI job losses be reduced?",
+            category="goal",
+        ),
+        fact_row(
+            selected[1],
+            key=1,
+            text="Retraining programs reduce AI job losses.",
+            evidence="Retraining programs reduce AI job losses.",
+            category="attribute",
+        ),
+    ]
+    extractor = GeminiFactExtractor(gemini_returning(json.dumps(rows)), link_rounds=True)
+
+    request, answer = extractor.extract(selected)
+
+    assert answer.evidenced_by == (request.key,)
+
+
+def test_code_built_facts_name_entities_by_field_and_skip_empty_results():
+    result = {
+        "status": "success",
+        "device_id": "1213",
+        "bike_make": "Harley-Davidson",
+        "logFile": "/var/logs/sync_log.txt",
+        "message": "Your policy HD2020-98367 has been cancelled.",
+        "measured_at": "2024-06-15T10:30Z",
+    }
+    events = [
+        {"role": "tool", "content": json.dumps(result)},
+        {"role": "tool", "content": json.dumps({"ok": True})},
+    ]
+    selected = assistant_chunks(json.dumps(events))
+
+    (fact,) = GeminiFactExtractor(gemini_returning("[]"), tool_result_facts=True).extract(selected)
+
+    assert [e.name for e in fact.entities] == [
+        "1213",
+        "Harley-Davidson",
+        "/var/logs/sync_log.txt",
+        "HD2020-98367",
+    ]
+    assert {e.entity_type for e in fact.entities} == {EntityType.OTHER}

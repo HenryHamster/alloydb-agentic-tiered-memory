@@ -39,6 +39,13 @@ class GeminiStructuredGenerator(GeminiGenerator):
         return value
 
 
+def thinking(level: str | None) -> dict:
+    """Request config for a Gemini thinking level (minimal/low/medium/high); None keeps the
+    model default. Thinking tokens are most of Retain's cost, and these calls are short
+    structured tasks."""
+    return {"thinking_config": {"thinking_level": level}} if level else {}
+
+
 def is_rate_limited(error: Exception) -> bool:
     return "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
 

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from retain.models import ClaimType, Observation, Scope, Visibility, stable_id
-from shared.llm import is_rate_limited
+from shared.llm import is_rate_limited, thinking
 
 
 class ObservationBuilder(Protocol):
@@ -19,7 +19,16 @@ class ObservationBuilder(Protocol):
 class GeminiObservationBuilder:
     """Summarize current asserted facts that share an entity and visibility domain."""
 
-    def __init__(self, client, store, embedder, *, model="gemini-3.5-flash", min_facts=3):
+    def __init__(
+        self,
+        client,
+        store,
+        embedder,
+        *,
+        model="gemini-3.5-flash",
+        min_facts=3,
+        thinking_level="low",
+    ):
         if min_facts < 2:
             raise ValueError("Observations require at least two supporting facts")
         self.client = client
@@ -27,6 +36,7 @@ class GeminiObservationBuilder:
         self.embedder = embedder
         self.model = model
         self.min_facts = min_facts
+        self.thinking_level = thinking_level
 
     def consolidate(self, reader: Scope) -> list[Observation]:
         fact_reader = getattr(self.store, "facts_for_observations", None)
@@ -214,6 +224,7 @@ class GeminiObservationBuilder:
                     config={
                         "response_mime_type": "application/json",
                         "response_json_schema": _summary_schema(),
+                        **thinking(self.thinking_level),
                     },
                 )
             except Exception as error:

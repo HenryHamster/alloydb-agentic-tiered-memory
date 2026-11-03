@@ -12,8 +12,8 @@ AsyncMemoryWorker (retainer=...)          one queued turn, trusted Scope(user, p
 └─ Retainer.retain_turn
    1 documents        store both messages; episode = one round; skip if already retained
    2 chunk_documents  700-char lossless spans (shared/chunking.py)
-   3 FactExtractor    ~8-15 word facts + evidence quote, who/what/when/where/why, entities,
-                      relations, causal refs, proposed visibility
+   3 FactExtractor    ~8-15 word facts + evidence quote, when, entities, relations,
+                      causal refs, proposed visibility; tool calls/results built by code
    4 EntityResolver   mentions -> canonical per-user entities (exact, alias, fuzzy)
    5 Embedder         768-dim text-embedding-005 vectors
    6 SupersedeClassifier  add / duplicate (reinforce) / supersede (close valid_to)
@@ -68,11 +68,28 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   that row; an invalid or missing classifier decision keeps the fact as new; an ambiguous entity
   name gets its own entity. A response that is not valid JSON still fails the round, which then
   stays unretained so it can be retried.
+- **Extraction cost.** `build_retainer` runs extraction at `low` thinking with the lean schema
+  (no who/what/where/why details, which Recall never reads) and builds tool-call and tool-result
+  facts from their JSON, since low thinking tends to skip tool output. The class defaults keep the
+  full schema at `medium`. On three Mem2Act histories this cut extraction from $2.63 to $0.35 and
+  kept every key fact. Code locates the evidence quote, including quotes of serialized assistant
+  turns whose line breaks are stored as `\n`; the words must still appear in order.
+- **Requests are facts.** The prompt records what the user asked for, and a short user message
+  that no extracted fact cites is kept verbatim (`The user said: ...`).
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
   Entity links live in `memory_entities`, not `memory_links`. Temporal links use `occurred_at`
-  only, so facts are not linked merely for being said in the same conversation.
+  only and never join two facts from the same round, so facts are not linked merely for being
+  said in the same conversation.
+- **Round links.** With `link_rounds` (on in `build_retainer`) code adds `evidenced_by` links that
+  similarity cannot find, because requests, tool events and answers fall in different
+  categories: a tool call cites the user's request, a tool result the call before it, and an
+  assistant fact the tool event whose names it repeats, else the request. `evidenced_by` is not
+  a Reflect clustering relation, so these links add no macro summaries.
+- **Code-built facts** (tool calls, tool results, `The user said: ...`) get `other` entities from
+  naming fields (`*_id`, `name`, `path`, `url`, `make`, ...) and ID-like tokens, never tool
+  names. Two code-built facts never get a `similar` link: their template wording inflates cosine.
 - **Graph.** Stored relationally (`memory_links`, `entity_relations`); traversals are SQL joins or
   recursive CTEs. Apache Spark can read these tables for offline graph analytics; it is not on
   the per-turn path.
