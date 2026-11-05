@@ -55,13 +55,21 @@ round IDs excluded) and the agent tool `search_memory` (`depth=mid`, 4,096 token
   (`episode_visible`, `EPISODE_SQL`). An expired episode returns nothing; facts keep `evidence`.
 - **Superseded memories** are excluded inside the store query (so they never take pool slots)
   and checked again before packing. `include_invalid=True` returns them flagged `stale`.
-- **Score floor** applies to the raw reranker score, before boosts, so a recency boost cannot
-  rescue an irrelevant memory. With no reranker there is no floor: fused ranks are not
-  calibrated relevance.
-- **Recency boost** is skipped when the question has a window ("what did I do in 2023?").
+- **What the answer sees** is the best `max_items` (10) whose raw reranker score, before boosts,
+  is at least `min_relevance` (0.1), so a boost cannot rescue an irrelevant memory. The earlier
+  fixed 0.3 floor cut the deciding facts in the Mem2Act runs while contexts sat mostly empty.
+  With no reranker there is no minimum: fused ranks are not calibrated relevance. The
+  `filter_and_abstain` trace lists the best dropped candidates with their scores and channels.
+- **Recency boost** is skipped when the question has a window ("what did I do in 2023?"). The
+  query step never turns "now", "currently" or "latest" into a window for today.
+- **Back-references.** When the query step reports `refers_back` ("that server"), the user's own
+  facts get `user_request_boost`; those earlier requests are what name the thing.
 - **Rerank the fused head only.** 1,000 cross-encoder scores per call at `depth=high` is too slow.
-- **Graph expansion** follows `memory_links` in both directions by weight, then facts sharing an
-  entity with a seed.
+- **Graph expansion** follows `memory_links` in both directions, explaining links
+  (`evidenced_by`, `caused_by`, `supersedes`) before the rest, then by weight, then facts sharing
+  an entity with a seed. After filtering, `graph_followup` follows the round links
+  (`evidenced_by`, `caused_by`) of the top 3 kept facts, so a request, its tool call and the
+  result arrive together; those neighbours are reranked and filtered like everything else.
 - **Query entities** are matched by name or alias appearing in the query (`find_entities`-style
   lookup), not by running Retain's `EntityResolver`, which would create entities on read. In
   AlloyDB the query's word n-grams (1-4 words, no stopword at either end) are compared with

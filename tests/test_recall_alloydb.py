@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import pytest
 
 from recall.alloydb_store import AlloyDBRecallStore, _query_grams
-from recall.config import MemoryType
+from recall.config import EXPLAINING_RELATIONS, ROUND_RELATIONS, MemoryType
 from recall.models import TimeWindow
 from retain.models import Scope
 
@@ -191,6 +191,19 @@ def test_graph_expansion_only_queries_fact_seeds():
     )
     assert [m.text for m in neighbors] == ["Linked"]
     assert queries(conn)[0][1]["seeds"] == [FACT_ID]
+
+
+@pytest.mark.parametrize("relations", [None, ROUND_RELATIONS])
+def test_graph_expansion_binds_relation_order_and_filter(relations):
+    conn = FakeConnection(rows=[(fact_row(text="Linked"),)])
+    store = AlloyDBRecallStore(lambda: conn)
+    store.expand_neighbors(SCOPE, [FACT_ID], [MemoryType.FACT], NOW, False, 5, relations=relations)
+
+    sql, params = queries(conn)[0]
+    assert set(re.findall(r"%\((\w+)\)s", sql)) <= set(params)
+    assert params["explaining_relations"] == list(EXPLAINING_RELATIONS)
+    assert params["relations"] == (list(relations) if relations else None)
+    assert "explains DESC, weight DESC" in sql
 
 
 def test_get_episode_and_supporting():

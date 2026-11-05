@@ -25,6 +25,7 @@ from test_retain_extraction import chunks, fact_row, gemini_returning
 
 from bench.mem2act import verify_retained_history
 from bench.metering import BudgetStop, Ledger, Models
+from devtools.worker import RETRIEVAL_QUERY_CHARS, retrieval_query
 from recall import InMemoryRecallStore, Recaller
 from recall.alloydb_store import AlloyDBRecallStore
 from recall.config import MemoryType
@@ -33,7 +34,7 @@ from reflect.models import FactState, Tier
 from reflect.store import InMemoryReflectStore
 from retain import Scope
 from retain.extraction import GeminiFactExtractor
-from tiered_memory import TieredMemory
+from tiered_memory import EXACT_VALUES_RULE, TieredMemory
 from valkey_buffer import SessionBuffer
 
 
@@ -92,6 +93,55 @@ def test_archived_fallback_promotes_only_returned_facts_and_keeps_conflict_warni
     assert "other-fact" in result.context
     assert lifecycle.states[row.fact_id].tier == Tier.WARM
     assert lifecycle.states[row.fact_id].access_count == 1
+
+
+def answering_system(**kwargs):
+    """A TieredMemory whose Recall is a mock, so tests can see what it was asked."""
+    recaller = Mock(count_tokens=len)
+    recaller.recall.return_value.context = "[fact-1] (fact) The server is psql-001"
+    prompts = []
+    system = TieredMemory(
+        retainer=Mock(),
+        recaller=recaller,
+        reflector=Mock(),
+        buffer=SessionBuffer(MemoryValkey(), lambda p: "summary", strict=True),
+        generate=lambda prompt: prompts.append(prompt) or "answer",
+        **kwargs,
+    )
+    return system, recaller, prompts
+
+
+def test_recall_searches_with_the_retrieval_query_and_the_prompt_keeps_the_full_query():
+    system, recaller, prompts = answering_system()
+    full = 'Check the server.\n\nAvailable tool schemas:\n[{"name": "Get Status"}]'
+
+    system.answer(SCOPE, full, record=False, retrieval_query="Check the server.")
+    assert recaller.recall.call_args.args[1] == "Check the server."
+    assert full in prompts[0]
+
+    system.answer(SCOPE, full, record=False)
+    assert recaller.recall.call_args.args[1] == full
+
+
+def test_the_runner_searches_with_the_question_and_tool_names_not_the_schemas():
+    tool = {
+        "name": "Get Server Status",
+        "description": "Checks a server.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}},
+    }
+    question = {"question": "How is that database server doing?", "tools": [tool]}
+
+    text = retrieval_query(question)
+    assert text == "How is that database server doing?\nTools: Get Server Status: Checks a server."
+    assert "parameters" not in text and len(text) <= RETRIEVAL_QUERY_CHARS
+    assert retrieval_query({"question": "Which movie did we pick?"}) is None
+
+
+@pytest.mark.parametrize("exact_values", [True, False])
+def test_exact_values_rule_is_in_the_answer_prompt_only_when_enabled(exact_values):
+    system, _, prompts = answering_system(exact_values=exact_values)
+    system.answer(SCOPE, "Get the server status", record=False)
+    assert (EXACT_VALUES_RULE in prompts[0]) == exact_values
 
 
 def test_candidate_writes_share_round_id_and_retention_failure_is_visible():

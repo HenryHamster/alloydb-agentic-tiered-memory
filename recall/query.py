@@ -112,14 +112,27 @@ def _strip_fences(text: str) -> str:
 
 
 def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int) -> str:
-    return f"""You prepare questions for an AI agent's memory search.
+    return f"""You prepare questions for an AI agent's memory search. Return at most {max_sub_queries} search queries in total.
 
-1. If the question asks about more than one distinct thing, split it into at most {max_sub_queries} self-contained search queries; otherwise return it as the only query.
-2. If it refers to a time ("last week", "in March", "before the launch"), resolve it to a date window. The current time is {query_time.isoformat()}. The end date is exclusive.
-3. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null}}
+1. If the question asks about more than one distinct thing, split it into self-contained search queries; otherwise return it as the only query.
+2. If the question refers back to something discussed earlier without naming it ("that database server", "those issues we talked about"), add one query naming it in general terms as what the user asked about before, e.g. "database server the user asked to check" or "problems the user asked about". Set refers_back to true.
+3. If the question uses an abbreviation, add one query with it spelled out, e.g. "AI" -> "artificial intelligence".
+4. Only return a time_window for an explicit period such as "last week", "in March" or "before the launch". Words like now, currently, right now, latest and recent are not windows; return null. The current time is {query_time.isoformat()}. The end date is exclusive.
+5. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false}}
 
 Question: {query}
 JSON:"""
+
+
+def _starts_today_or_later(window: TimeWindow, query_time: datetime) -> bool:
+    """True for a window that begins on the query day or after it.
+
+    The model sometimes turns "right now" into a window for today. That window switches off
+    the recency boost and penalises every older memory, so it is discarded. An explicit
+    "today" is still resolved by the rule parser before the model runs.
+    """
+    start_of_day = query_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    return window.start >= start_of_day
 
 
 def analyze_query(
@@ -134,7 +147,8 @@ def analyze_query(
 ) -> QueryPlan:
     """Turns time phrases into a date window and splits multi-part questions.
 
-    Window precedence: explicit argument, then the rule parser, then the LLM. The original
+    Window precedence: explicit argument, then the rule parser, then the LLM. The LLM also
+    adds queries for back-references and abbreviations and reports refers_back. The original
     query is always the first sub-query. decompose=False (used by Reflect) skips the LLM.
     """
     plan = QueryPlan(sub_queries=[query], window=temporal_window)
@@ -156,15 +170,18 @@ def analyze_query(
             if sub_query and sub_query.lower() not in seen:
                 seen.add(sub_query.lower())
                 plan.sub_queries.append(sub_query)
+        plan.refers_back = data.get("refers_back") is True
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")
         if plan.window is None and has_window:
             tz = query_time.tzinfo
-            plan.window = TimeWindow(
+            llm_window = TimeWindow(
                 as_aware(datetime.fromisoformat(window["start"].strip()), tz),
                 as_aware(datetime.fromisoformat(window["end"].strip()), tz),
             )
-            plan.window_source = "llm"
+            if not _starts_today_or_later(llm_window, query_time):
+                plan.window = llm_window
+                plan.window_source = "llm"
     except Exception as e:
         if strict:
             raise
