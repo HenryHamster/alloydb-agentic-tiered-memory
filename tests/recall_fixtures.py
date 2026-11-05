@@ -108,8 +108,14 @@ class Memories:
         )
         return fact
 
-    def link(self, source: MemoryFact, target: MemoryFact, weight: float = 1.0) -> None:
-        link = MemoryLink(source.fact_id, target.fact_id, Relation.CAUSED_BY, weight)
+    def link(
+        self,
+        source: MemoryFact,
+        target: MemoryFact,
+        weight: float = 1.0,
+        relation: Relation = Relation.CAUSED_BY,
+    ) -> None:
+        link = MemoryLink(source.fact_id, target.fact_id, relation, weight)
         self.retain_store.write(WriteBatch(documents=(), links=(link,)))
 
     def entity(self, name: str, *aliases: str, user_id: str = SCOPE.user_id) -> str:

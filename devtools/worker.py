@@ -41,6 +41,21 @@ def serial(value):
     return str(value)
 
 
+RETRIEVAL_QUERY_CHARS = 300
+
+
+def retrieval_query(question):
+    """What Recall searches with: the question plus a short hint naming each tool.
+
+    The answer prompt gets the full tool schemas and output rules; in a search they would
+    outweigh the question itself. Returns None for questions without tools.
+    """
+    if not question.get("tools"):
+        return None
+    hints = "; ".join(f"{t['name']}: {t.get('description', '')}" for t in question["tools"])
+    return (question["question"] + "\nTools: " + hints)[:RETRIEVAL_QUERY_CHARS]
+
+
 def preparation_source(source):
     """Conservative invalidation; Recall-only files do not invalidate prepared memory."""
     paths = [
@@ -229,6 +244,7 @@ def run_job(
                     prompt,
                     record=False,
                     query_time=clock,
+                    retrieval_query=retrieval_query(question),
                 )
                 result = {
                     "id": question["id"],

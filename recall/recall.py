@@ -1,14 +1,16 @@
 """Recall pipeline: find stored evidence and return it ranked, dated, typed and token-fitted.
 
-    analyze_query    time phrases -> date window; multi-part questions -> sub-queries
+    analyze_query    time phrases -> date window; multi-part questions, back-references and
+                     abbreviations -> sub-queries
     embed            one vector per sub-query (a failure skips the vector channel)
     search           vector, keyword, query-entity and temporal channels in one store call
     graph_expand     one hop over memory_links and shared entities from the fused top hits
     fuse_rrf         reciprocal rank fusion; drops memories from rounds the caller already shows
     rerank           cross-encode the fused head against every sub-query
-    apply_boosts     small capped recency / window-fit / evidence boosts
-    filter_and_abstain  relevance floor (reranked only; best few kept if all fall below)
-                        and superseded memories
+    apply_boosts     small capped recency / window-fit / evidence / user-request boosts
+    filter_and_abstain  the best max_items at or above min_relevance (min_relevance applies
+                        to reranked scores only); hides superseded memories
+    graph_followup   adds the round links (request, tool call, result) of the top kept facts
     pack             best-first into the token budget as dated, typed lines
 
 Every stage is injected or pure, so the pipeline runs offline with InMemoryRecallStore.
@@ -19,8 +21,15 @@ import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
-from recall.config import DEFAULT_TYPES, MemoryType, RecallConfig, RecallDepth, parse_types
-from recall.models import QueryPlan, RecallResult, TimeWindow, Tracer, as_aware
+from recall.config import (
+    DEFAULT_TYPES,
+    ROUND_RELATIONS,
+    MemoryType,
+    RecallConfig,
+    RecallDepth,
+    parse_types,
+)
+from recall.models import QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
 from recall.query import analyze_query
 from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
@@ -79,7 +88,7 @@ class Recaller:
     ) -> RecallResult:
         """Finds stored evidence for `query` that `scope` may read.
 
-        The score floor applies to reranker scores only; fused ranks are not calibrated
+        min_relevance applies to reranker scores only; fused ranks are not calibrated
         relevance, so unreranked results are never abstained on score.
 
         exclude_episode_ids are rounds the caller already shows verbatim (the Valkey sliding
@@ -113,7 +122,11 @@ class Recaller:
                 strict=self.strict,
             )
             stage.count = len(plan.sub_queries)
-            stage.detail = {"window_source": plan.window_source, "llm_used": plan.llm_used}
+            stage.detail = {
+                "window_source": plan.window_source,
+                "llm_used": plan.llm_used,
+                "refers_back": plan.refers_back,
+            }
 
         # Embed each sub-query for the vector channel.
         with tracer.stage("embed") as stage:
@@ -189,19 +202,27 @@ class Recaller:
                 stage.detail = {"reranked": reranked}
 
             with tracer.stage("apply_boosts") as stage:
-                boosted = apply_boosts(ranked, as_of, plan.window, config)
+                boosted = apply_boosts(
+                    ranked, as_of, plan.window, config, refers_back=plan.refers_back
+                )
                 stage.count = len(boosted)
 
             with tracer.stage("filter_and_abstain") as stage:
-                floor = config.score_floor if reranked else 0.0
-                kept, dropped = filter_and_abstain(
-                    boosted, as_of, include_invalid, floor, config.floor_fallback_top
+                min_relevance = config.min_relevance if reranked else 0.0
+                kept, stage.detail = filter_and_abstain(
+                    boosted, as_of, include_invalid, min_relevance, config.max_items
                 )
                 stage.count = len(kept)
-                stage.detail = {"score_floor": floor, **dropped}
-            # Fallback hits are below the floor, so they never end the tier search early.
-            if reranked and not dropped["fallback"] and len(kept) >= config.tier_min_hits:
+            if reranked and len(kept) >= config.tier_min_hits:
                 break
+
+        with tracer.stage("graph_followup") as stage:
+            added = self._follow_round_links(
+                scope, plan, kept, types, as_of, include_invalid, visited, exclude_episode_ids
+            )
+            kept = sorted([*kept, *added], key=lambda item: item.score, reverse=True)
+            stage.count = len(added)
+            stage.detail = {"added": [item.summary() for item in added]}
 
         # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
@@ -230,6 +251,51 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _follow_round_links(
+        self,
+        scope: Scope,
+        plan: QueryPlan,
+        kept: Sequence[Scored],
+        types: Sequence[MemoryType],
+        as_of: datetime,
+        include_invalid: bool,
+        visited_tiers: Sequence[str],
+        exclude_episode_ids: Sequence[str],
+    ) -> list[Scored]:
+        """Relevant facts linked to the top kept facts by Retain's round links.
+
+        Search often finds one end of a request -> tool call -> result chain but not the other
+        (the request that names the server). Neighbours are reranked and filtered like every
+        other candidate; without a reranker their scores would not compare, so none are added.
+        """
+        config = self.config
+        seeds = [item.memory.id for item in kept if item.memory.type == MemoryType.FACT]
+        seeds = seeds[: config.followup_seeds]
+        if self.reranker is None or not seeds:
+            return []
+
+        neighbors = self.store.expand_neighbors(
+            scope, seeds, types, as_of, include_invalid, config.followup_limit,
+            tiers=visited_tiers or None, relations=ROUND_RELATIONS,
+        )  # fmt: skip
+        known = {item.memory.id for item in kept}
+        candidates = [
+            Scored(memory, 0.0, channels=("graph_followup",))
+            for memory in neighbors
+            if memory.id not in known and memory.source_episode_id not in exclude_episode_ids
+        ]
+        n = len(candidates)
+        ranked, reranked = rerank(
+            plan.sub_queries, candidates, self.reranker, n, n, strict=self.strict
+        )
+        if not reranked:
+            return []
+        boosted = apply_boosts(ranked, as_of, plan.window, config, refers_back=plan.refers_back)
+        added, _ = filter_and_abstain(
+            boosted, as_of, include_invalid, config.min_relevance, config.followup_limit
+        )
+        return added
 
 
 def build_recaller(
