@@ -99,3 +99,11 @@ Reruns and haystack sessions shared between questions are embedded once.
   versions at wall-clock time, which a replayed 2023 haystack would read as still open.
 - Benchmark embeddings set a retrieval task type; Retain's `GeminiEmbedder` does not.
 - LongMemEval dates have no time zone and are read as UTC.
+
+## Reflect and Dream diagnostics
+
+For paired baseline / Reflect / Reflect+Dream runs with frozen inputs and
+immutable reports, see [Dream diagnostics](DREAM.md#reproducible-diagnostics).
+The separate `bench.reflect_dream` runner supports the 14 selected development
+questions and local cached LongMemEval-s data. Its default offline/hash mode is
+a plumbing smoke test and does not establish model answer quality.

@@ -1,0 +1,39 @@
+{
+  "experiment_id": "RF-DREAM-001",
+  "date": "2026-11-07",
+  "hypothesis": "Selected LongMemEval histories can run through staged recovery, explicit apply, and Recall without losing original fact IDs or leaking evaluation questions to Dream.",
+  "base_commit": "e79f4249129f10ab47aaf95783f3670eb05c362c",
+  "code_sha256": "b382883a9986a72de9301ea3e6e78ee3d9775267b03139fa38830fc04763b1b8",
+  "dataset_sha256": "9362417730c02e56def3a909534c820f9e2fa4f9778aa28dadc5e2d96aec2c77",
+  "run_directory": "bench_results/dream-20261107-final",
+  "existing_harness_results": "bench_results/dream-20261107-existing-harness.jsonl",
+  "evaluation_kind": "offline_plumbing_smoke",
+  "question_ids": [
+    "031748ae", "07741c44", "07741c45", "f685340e", "6071bd76",
+    "gpt4_ab202e7f", "gpt4_7fce9456", "gpt4_d9af6064", "1da05512",
+    "195a1a1b", "505af2f5", "031748ae_abs", "f685340e_abs", "e47becba"
+  ],
+  "configuration": {
+    "retain": "verbatim",
+    "embeddings": "HashingEmbedder",
+    "generation": "SmokeGenerator (extractive fixtures; no synthesized insights)",
+    "drop_every": 5,
+    "arms": ["baseline", "reflect", "reflect_dream"],
+    "clock": "question timestamp",
+    "recall_max_tokens": 4096,
+    "paid_calls": 0,
+    "estimated_api_cost_usd": 0
+  },
+  "results": {
+    "completed_questions": 14,
+    "completed_arms": 42,
+    "failed_questions": 0,
+    "original_fact_ids_preserved_in_every_arm": true,
+    "existing_harness_completed_questions": 14,
+    "local_tests_passed": 442,
+    "local_tests_skipped": 9,
+    "new_postgresql_tests_skipped_without_DEV_TEST_DSN": 4
+  },
+  "conclusion": "The offline pipeline and paired experiment workflow complete. This does not establish improved answer accuracy, semantic recovery quality, or production PostgreSQL behavior. No model-backed QA evaluation was run.",
+  "next_validation": "Run the four disposable PostgreSQL tests, then repeat with production Retain/model/embedding adapters and fixed-budget QA judging against saved snapshots. Review inference support and reserve separate validation histories."
+}

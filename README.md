@@ -69,11 +69,11 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `turn_context.py` | Per-turn context: the sliding window plus Recall under one token budget |
 | `async_worker.py` | Background fact extraction and upserts |
 | `retain/` | Retain pipeline: facts, entities, links, observations; see [Retain notes](docs/RETAIN_NOTES.md) |
-| `reflect/` | Reflect: tiers, redundancy/conflicts, macro memories; see [Reflect notes](docs/REFLECT_NOTES.md) |
+| `reflect/` | Reflect: tiers, redundancy/conflicts, macro memories; optional [background Dream](docs/DREAM.md) with staged review/apply |
 | `shared/chunking.py` | Lossless length-bounded text chunking |
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
-| `bench/` | LongMemEval harness for Recall; see [benchmarks](docs/BENCHMARKS.md) |
+| `bench/` | LongMemEval harness for Recall and paired [Reflect/Dream diagnostics](docs/DREAM.md#reproducible-diagnostics); see [benchmarks](docs/BENCHMARKS.md) |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |

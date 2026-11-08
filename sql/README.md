@@ -11,6 +11,8 @@ database user described in the setup guide.
 4. Run `004_retain_schema.sql` for the Retain tables. It is additive and needs `pg_trgm`.
 5. Run `005_reflect_schema.sql` for Reflect: tier/access columns on `memory_facts`,
    `memory_conflict_reviews` and `macro_memories`. It is additive.
+6. Optionally run `006_dream_schema.sql` for the durable Dream queue and separate
+   insight versions. See [Dream setup and review flow](../docs/DREAM.md).
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine
