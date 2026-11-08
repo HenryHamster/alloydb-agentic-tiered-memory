@@ -8,9 +8,12 @@
     fuse_rrf         reciprocal rank fusion; drops memories from rounds the caller already shows
     rerank           cross-encode the fused head against every sub-query
     apply_boosts     small capped recency / window-fit / evidence / user-request boosts
-    filter_and_abstain  the best max_items at or above min_relevance (min_relevance applies
-                        to reranked scores only); hides superseded memories
+    filter_and_abstain  the best max_items at or above min_relevance, never fewer than
+                        min_items positive ones (both apply to reranked scores only); hides
+                        superseded memories
     graph_followup   adds the round links (request, tool call, result) of the top kept facts
+    source_rounds    for back-references or weak results, adds the verbatim rounds behind
+                     the top kept facts
     pack             best-first into the token budget as dated, typed lines
 
 Every stage is injected or pure, so the pipeline runs offline with InMemoryRecallStore.
@@ -29,7 +32,7 @@ from recall.config import (
     RecallDepth,
     parse_types,
 )
-from recall.models import QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
+from recall.models import Memory, QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
 from recall.query import analyze_query
 from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
@@ -210,8 +213,9 @@ class Recaller:
             with tracer.stage("filter_and_abstain") as stage:
                 min_relevance = config.min_relevance if reranked else 0.0
                 kept, stage.detail = filter_and_abstain(
-                    boosted, as_of, include_invalid, min_relevance, config.max_items
-                )
+                    boosted, as_of, include_invalid, min_relevance, config.max_items,
+                    config.min_items if reranked else 0,
+                )  # fmt: skip
                 stage.count = len(kept)
             if reranked and len(kept) >= config.tier_min_hits:
                 break
@@ -223,6 +227,12 @@ class Recaller:
             kept = sorted([*kept, *added], key=lambda item: item.score, reverse=True)
             stage.count = len(added)
             stage.detail = {"added": [item.summary() for item in added]}
+
+        with tracer.stage("source_rounds") as stage:
+            rounds = self._source_rounds(scope, plan, kept, exclude_episode_ids)
+            kept = [*kept, *rounds]
+            stage.count = len(rounds)
+            stage.detail = {"episodes": [item.memory.id for item in rounds]}
 
         # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
@@ -251,6 +261,57 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _source_rounds(
+        self,
+        scope: Scope,
+        plan: QueryPlan,
+        kept: Sequence[Scored],
+        exclude_episode_ids: Sequence[str],
+    ) -> list[Scored]:
+        """The verbatim rounds behind the top kept facts, for weak or back-referring questions.
+
+        Placed after the ranked memories with the score of the fact that led to them, so the
+        answer sees exact values (IDs, codes) and the order of the original turns.
+        """
+        config = self.config
+        best = max((item.relevance for item in kept), default=0.0)
+        if not kept or config.source_rounds <= 0:
+            return []
+        if not (plan.refers_back or best < config.source_round_below):
+            return []
+        excluded, episode_ids = set(exclude_episode_ids), {}
+        for item in kept:
+            episode_id = item.memory.source_episode_id
+            if item.memory.type != MemoryType.FACT or not episode_id or episode_id in excluded:
+                continue
+            episode_ids.setdefault(episode_id, item)
+            if len(episode_ids) >= config.source_rounds:
+                break
+        rounds = []
+        for episode_id, origin in episode_ids.items():
+            try:
+                episode = self.store.get_episode(scope, episode_id)
+            except Exception as e:
+                if self.strict:
+                    raise
+                logger.warning("Source round lookup failed; skipping it: %s", e)
+                continue
+            if not episode or not episode["messages"]:
+                continue
+            text = "\n".join(f"{m['speaker']}: {m['text']}" for m in episode["messages"])
+            first = episode["messages"][0].get("occurred_at")
+            memory = Memory(
+                id=episode_id,
+                type=MemoryType.EPISODE,
+                text=text[: config.source_round_chars],
+                occurred_at=datetime.fromisoformat(first) if first else None,
+                source_episode_id=episode_id,
+            )
+            rounds.append(
+                Scored(memory, origin.relevance, score=origin.score, channels=("source_round",))
+            )
+        return rounds
 
     def _follow_round_links(
         self,

@@ -42,13 +42,17 @@ class TieredMemory:
     Scheduled maintenance can call maintain explicitly; this class creates no scheduler.
     """
 
-    def __init__(self, *, retainer, recaller, reflector, buffer, generate, strict=True):
+    def __init__(
+        self, *, retainer, recaller, reflector, buffer, generate, strict=True, reflect=False
+    ):
         self.retainer = retainer
         self.recaller = recaller
         self.reflector = reflector
         self.buffer = buffer
         self.generate = generate
         self.strict = strict
+        # Reflect (fact merging and macro induction) is off for now; Retain observations still run.
+        self.reflect_enabled = reflect
 
     def record_turn(self, scope, user_text, assistant_text, *, timestamp=None, episode_id=None):
         if not scope.session_id:
@@ -123,7 +127,7 @@ class TieredMemory:
 
     def maintain(self, scope, trigger=ReflectTrigger.SCHEDULED):
         observations = self.retainer.consolidate(scope)
-        reflected = self.reflector.reflect(scope.user_id, trigger)
+        reflected = self.reflector.reflect(scope.user_id, trigger) if self.reflect_enabled else None
         return observations, reflected
 
     def finish_session(self, scope):
@@ -158,6 +162,7 @@ def build_memory_system(
     strict=True,
     retain_config=RetainConfig(maintenance_every=0),
     recall_config=RecallConfig(),
+    reflect=False,
 ):
     """Uses migrations 004/005, separate generation/embedding endpoints and ai.rank.
 
@@ -192,6 +197,7 @@ def build_memory_system(
         buffer=SessionBuffer(valkey_client, generate, strict=strict),
         generate=generate,
         strict=strict,
+        reflect=reflect,
     )
 
 
