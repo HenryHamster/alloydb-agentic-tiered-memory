@@ -95,7 +95,7 @@ def test_archived_fallback_promotes_only_returned_facts_and_keeps_conflict_warni
     assert lifecycle.states[row.fact_id].access_count == 1
 
 
-def answering_system(**kwargs):
+def answering_system():
     """A TieredMemory whose Recall is a mock, so tests can see what it was asked."""
     recaller = Mock(count_tokens=len)
     recaller.recall.return_value.context = "[fact-1] (fact) The server is psql-001"
@@ -106,7 +106,6 @@ def answering_system(**kwargs):
         reflector=Mock(),
         buffer=SessionBuffer(MemoryValkey(), lambda p: "summary", strict=True),
         generate=lambda prompt: prompts.append(prompt) or "answer",
-        **kwargs,
     )
     return system, recaller, prompts
 
@@ -137,11 +136,10 @@ def test_the_runner_searches_with_the_question_and_tool_names_not_the_schemas():
     assert retrieval_query({"question": "Which movie did we pick?"}) is None
 
 
-@pytest.mark.parametrize("exact_values", [True, False])
-def test_exact_values_rule_is_in_the_answer_prompt_only_when_enabled(exact_values):
-    system, _, prompts = answering_system(exact_values=exact_values)
+def test_the_answer_prompt_tells_the_model_to_copy_stored_values_exactly():
+    system, _, prompts = answering_system()
     system.answer(SCOPE, "Get the server status", record=False)
-    assert (EXACT_VALUES_RULE in prompts[0]) == exact_values
+    assert EXACT_VALUES_RULE in prompts[0]
 
 
 def test_candidate_writes_share_round_id_and_retention_failure_is_visible():

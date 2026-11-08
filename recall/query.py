@@ -124,17 +124,6 @@ Question: {query}
 JSON:"""
 
 
-def _starts_today_or_later(window: TimeWindow, query_time: datetime) -> bool:
-    """True for a window that begins on the query day or after it.
-
-    The model sometimes turns "right now" into a window for today. That window switches off
-    the recency boost and penalises every older memory, so it is discarded. An explicit
-    "today" is still resolved by the rule parser before the model runs.
-    """
-    start_of_day = query_time.replace(hour=0, minute=0, second=0, microsecond=0)
-    return window.start >= start_of_day
-
-
 def analyze_query(
     query: str,
     query_time: datetime,
@@ -179,7 +168,10 @@ def analyze_query(
                 as_aware(datetime.fromisoformat(window["start"].strip()), tz),
                 as_aware(datetime.fromisoformat(window["end"].strip()), tz),
             )
-            if not _starts_today_or_later(llm_window, query_time):
+            # "Right now" can come back as today's window, which would penalise every older
+            # memory; drop windows starting today or later (rules already handle "today").
+            today = query_time.replace(hour=0, minute=0, second=0, microsecond=0)
+            if llm_window.start < today:
                 plan.window = llm_window
                 plan.window_source = "llm"
     except Exception as e:

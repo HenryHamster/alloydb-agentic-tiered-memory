@@ -62,13 +62,8 @@ def build_turn_context(
     *,
     strict: bool = False,
     depth: RecallDepth = TURN_DEPTH,
-    retrieval_query: Optional[str] = None,
 ) -> TurnContext:
-    """Reads the session window, then recalls long-term memory into the remaining budget.
-
-    Recall searches with `retrieval_query` when given, else `query`. Callers pass it when the
-    turn carries text that should not drive search, such as tool schemas and output rules.
-    """
+    """Reads the session window, then recalls long-term memory into the remaining budget."""
     if not scope.session_id:
         raise ValueError("build_turn_context needs a session_id in scope")
     window = buffer.read(scope.session_id)
@@ -88,7 +83,7 @@ def build_turn_context(
     try:
         result: Optional[RecallResult] = recaller.recall(
             scope,
-            retrieval_query or query,
+            query,
             query_time=query_time,
             max_tokens=recall_budget,
             depth=depth,
