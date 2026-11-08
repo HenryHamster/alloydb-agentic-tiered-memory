@@ -262,9 +262,34 @@ def test_low_but_positive_reranker_scores_are_kept_up_to_max_items(memories):
         return [0.15] * len(texts)  # under the old 0.3 floor, over min_relevance
 
     result = memories.recaller(reranker=low).recall(SCOPE, "favourite movie")
-    assert len(result.items) == RecallConfig().max_items and not result.abstained
+    facts = [i for i in result.items if i.memory.type == MemoryType.FACT]
+    assert len(facts) == RecallConfig().max_items and not result.abstained
+    # Under min_relevance only the min_items floor survives; min_items=0 abstains.
     stricter = memories.recaller(reranker=low, config=RecallConfig(min_relevance=0.2))
-    assert stricter.recall(SCOPE, "favourite movie").abstained
+    floor = [i for i in stricter.recall(SCOPE, "favourite movie").items if i.memory.type == "fact"]
+    assert len(floor) == RecallConfig().min_items
+    strict = RecallConfig(min_relevance=0.2, min_items=0)
+    assert memories.recaller(reranker=low, config=strict).recall(SCOPE, "favourite movie").abstained
+
+
+def test_weak_results_bring_their_verbatim_source_round(memories):
+    fact = memories.fact("The user is organizing a film club event", episode_id="round-film")
+    memories.fact("The user booked a dentist visit", episode_id="round-dentist")
+
+    def weak(query, texts):
+        return [0.07 if "film" in text else 0.01 for text in texts]
+
+    result = memories.recaller(reranker=weak).recall(SCOPE, "the film we picked")
+    rounds = [i for i in result.items if i.memory.type == MemoryType.EPISODE]
+    assert fact.fact_id in ids(result)
+    assert [r.memory.id for r in rounds][0] == "round-film"
+    assert "film club event" in rounds[0].memory.text and "source_round" in rounds[0].channels
+
+    def strong(query, texts):
+        return [0.9 if "film" in text else 0.0 for text in texts]
+
+    clear = memories.recaller(reranker=strong).recall(SCOPE, "film club event")
+    assert all(i.memory.type != MemoryType.EPISODE for i in clear.items)
 
 
 def test_items_record_the_search_lists_that_found_them(memories):
@@ -283,7 +308,8 @@ def test_the_trace_lists_dropped_candidates_with_scores(memories):
     def scores(query, texts):
         return [0.05 if "Berlin" in text else 0.9 for text in texts]
 
-    result = memories.recaller(reranker=scores).recall(SCOPE, "orders database")
+    one = RecallConfig(min_items=1)
+    result = memories.recaller(reranker=scores, config=one).recall(SCOPE, "orders database")
     stage = next(s for s in result.trace if s.stage == "filter_and_abstain").to_dict()
     assert stage["below_min"] == 1
     assert stage["dropped"][0]["id"] == dropped.fact_id

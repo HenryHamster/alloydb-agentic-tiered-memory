@@ -67,10 +67,20 @@ class RecallConfig:
     # still abstain. TODO(recall): confirm both on the full 10-question set.
     max_items: int = 10
     min_relevance: float = 0.1
+    # Reranker scores are not calibrated across questions: a vague back-reference ("the film
+    # we picked") scores its own evidence 0.06-0.08. Keep this many best positive results even
+    # under min_relevance; 0 restores strict abstention.
+    min_items: int = 5
     # After filtering, follow the round links of the top kept facts so a request, its tool
     # call and the result arrive together.
     followup_seeds: int = 3
     followup_limit: int = 6
+    # When the question points back at earlier talk or the best result is weak, add the
+    # verbatim source rounds of the top kept facts: they keep exact IDs and turn order that
+    # extracted facts can paraphrase away.
+    source_rounds: int = 2
+    source_round_below: float = 0.3
+    source_round_chars: int = 2400
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
     recency_boost: float = 0.10
