@@ -131,11 +131,13 @@ def filter_and_abstain(
     include_invalid: bool,
     min_relevance: float,
     max_items: int,
+    min_items: int = 0,
 ) -> tuple[list[Scored], dict[str, Any]]:
     """Keeps the best `max_items` with relevance >= `min_relevance`; hides superseded memories.
 
-    `scored` is best-first. A result with no positive relevance is never kept, so a query
-    with nothing relevant still abstains. Stores already exclude superseded rows; this check
+    `scored` is best-first. The best `min_items` positive results are kept even under
+    `min_relevance`. A result with no positive relevance is never kept, so a query with
+    nothing relevant still abstains. Stores already exclude superseded rows; this check
     also covers stores that do not. The returned detail counts each kind of drop and lists
     the best dropped candidates, so a missing memory can be traced.
     """
@@ -143,7 +145,7 @@ def filter_and_abstain(
     for item in scored:
         if item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
             stale += 1
-        elif item.relevance <= 0 or item.relevance < min_relevance:
+        elif item.relevance <= 0 or (item.relevance < min_relevance and len(kept) >= min_items):
             below_min.append(item)
         elif len(kept) >= max_items:
             over_max.append(item)
@@ -153,6 +155,7 @@ def filter_and_abstain(
     return kept, {
         "min_relevance": min_relevance,
         "max_items": max_items,
+        "min_items": min_items,
         "below_min": len(below_min),
         "over_max": len(over_max),
         "stale_hidden": stale,

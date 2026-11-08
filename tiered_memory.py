@@ -43,7 +43,16 @@ class TieredMemory:
     """
 
     def __init__(
-        self, *, retainer, recaller, reflector, buffer, generate, strict=True, exact_values=True
+        self,
+        *,
+        retainer,
+        recaller,
+        reflector,
+        buffer,
+        generate,
+        strict=True,
+        exact_values=True,
+        reflect=False,
     ):
         self.retainer = retainer
         self.recaller = recaller
@@ -53,6 +62,8 @@ class TieredMemory:
         self.strict = strict
         # Adds EXACT_VALUES_RULE to the answer prompt; False reproduces the original protocol.
         self.exact_values = exact_values
+        # Reflect (fact merging and macro induction) is off for now; Retain observations still run.
+        self.reflect_enabled = reflect
 
     def record_turn(self, scope, user_text, assistant_text, *, timestamp=None, episode_id=None):
         if not scope.session_id:
@@ -133,7 +144,7 @@ class TieredMemory:
 
     def maintain(self, scope, trigger=ReflectTrigger.SCHEDULED):
         observations = self.retainer.consolidate(scope)
-        reflected = self.reflector.reflect(scope.user_id, trigger)
+        reflected = self.reflector.reflect(scope.user_id, trigger) if self.reflect_enabled else None
         return observations, reflected
 
     def finish_session(self, scope):
@@ -169,6 +180,7 @@ def build_memory_system(
     retain_config=RetainConfig(maintenance_every=0),
     recall_config=RecallConfig(),
     exact_values=True,
+    reflect=False,
 ):
     """Uses migrations 004/005, separate generation/embedding endpoints and ai.rank.
 
@@ -204,6 +216,7 @@ def build_memory_system(
         generate=generate,
         strict=strict,
         exact_values=exact_values,
+        reflect=reflect,
     )
 
 
