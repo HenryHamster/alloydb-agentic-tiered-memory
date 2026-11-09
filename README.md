@@ -4,6 +4,14 @@ Python and SQL source extracted from Google's [How to build long-term AI agent m
 
 The agent combines recent turns and rolling summaries in Memorystore for Valkey with durable entities and episodic memories in AlloyDB. It extracts facts in a background thread, retrieves them with hybrid search, and optionally integrates with Google ADK.
 
+## Results
+
+On a long LoCoMo conversation (`conv-26`: 19 sessions, 419 turns, 152 questions in categories 1-4), the tiered memory answers **103/152 (67.8%)** correctly and the original codelab answers **37/152 (24.3%)**. That is a gap of +43 points (95% CI +34 to +53), and the tiered memory is ahead in every category. It also costs less than half as much per question ($0.017 vs $0.039) and has a lower median answer time (9.4 s vs 15.4 s).
+
+![LoCoMo correct answers by category](experiments/locomo-001/figures/accuracy_by_category.png)
+
+The original keeps one description per named entity and overwrites it on each mention. After 419 turns that leaves 30 entities, about 4.9 KB in total, so most events never reach its memory. These results come from one conversation, scored with Mem0's judge prompt on Gemini 3.5 Flash, and can't be compared with published LoCoMo scores. Setup, all numbers, failure causes and limits: [experiments/locomo-001](experiments/locomo-001/README.md).
+
 ## Install
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). Cloud execution also requires the Google Cloud CLI, AlloyDB, Memorystore for Valkey, Vertex AI access, and connectivity to both private database endpoints.
@@ -74,6 +82,7 @@ The two `test_*.py` files are **live integration demonstrations** that call clou
 | `hybrid_retriever.py` | Query decomposition and hybrid retrieval |
 | `recall/` | Recall read path and its agent tools; see [Recall notes](docs/RECALL_NOTES.md) |
 | `bench/` | LongMemEval harness for Recall; see [benchmarks](docs/BENCHMARKS.md) |
+| `experiments/` | Recorded benchmark runs: setup, results, figures and the scripts used |
 | `agent_orchestrator.py` | Prompt construction and agent turn loop |
 | `enterprise_engine.py` | Tool permission evaluation and memory compaction |
 | `adk_*.py` | ADK ambient context, archive search tool, and guardrail callback |
@@ -91,7 +100,7 @@ uv run --extra dev ruff format --check .
 uv run --extra adk --extra dev pytest
 ```
 
-The code is an educational sample. Read [validation and inherited limitations](docs/VALIDATION.md) for what local checks cover and what still requires a real cloud run. No published benchmark result is claimed by this repository.
+The code is an educational sample. Read [validation and inherited limitations](docs/VALIDATION.md) for what local checks cover and what still requires a real cloud run. Benchmark results are in [Results](#results) and [`experiments/`](experiments/).
 
 For optional memory reset and cloud teardown, see [setup and cleanup](docs/SETUP.md#cleanup).
 

@@ -1,0 +1,96 @@
+{
+ "note": "Accounting from recorded usage at USD1.50/M input, USD9/M output+thinking; infrastructure USD0.6/h of session time. Not an invoice.",
+ "pr13_reports": [
+  "attempts/pr13/locomo-pilot-65ea0ce7bffa43a280e300f5d11043dd/report.json",
+  "attempts/pr13/locomo-pr13-4f0636ef11594dabb456b068e1204dc9/report.json"
+ ],
+ "original_ledgers": [
+  "attempts/original/locomo001_orig/ledger/budget.json"
+ ],
+ "judge_results": [
+  "judge/judge-results.json"
+ ],
+ "cloud_sessions": [
+  {
+   "start": "2026-11-08T00:24:26Z",
+   "end": "2026-11-08T01:53:06Z",
+   "hours": 1.4778,
+   "end_basis": "AlloyDB STOPPED updateTime in logs/shutdown-receipt.json (VM TERMINATED 01:50:20Z)"
+  }
+ ],
+ "rows": [
+  {
+   "system": "pr13",
+   "path": "attempts/pr13/locomo-pilot-65ea0ce7bffa43a280e300f5d11043dd/report.json",
+   "tokens": {
+    "prompt": 1240048,
+    "output": 239150,
+    "thinking": 41463
+   },
+   "calls_by_kind": {
+    "generate": 511,
+    "embedding": 235,
+    "ranking": 3
+   },
+   "failed_generate": 10,
+   "generation_usd": 4.485589,
+   "usd_by_stage": {
+    "retain": 2.534782,
+    "reflect": 1.838084,
+    "question": 0.012723
+   },
+   "cache_hits": 41,
+   "status": "completed",
+   "preparation_seconds": 1675.6044163830002,
+   "prepared_cache_hit": false
+  },
+  {
+   "system": "pr13",
+   "path": "attempts/pr13/locomo-pr13-4f0636ef11594dabb456b068e1204dc9/report.json",
+   "tokens": {
+    "prompt": 210637,
+    "output": 7681,
+    "thinking": 250105
+   },
+   "calls_by_kind": {
+    "generate": 304,
+    "embedding": 151,
+    "ranking": 595
+   },
+   "failed_generate": 2,
+   "generation_usd": 2.6560295,
+   "usd_by_stage": {
+    "question": 2.636029
+   },
+   "cache_hits": 6,
+   "status": "completed",
+   "preparation_seconds": 0.16248807000010856,
+   "prepared_cache_hit": true
+  },
+  {
+   "system": "original",
+   "path": "attempts/original/locomo001_orig/ledger/budget.json",
+   "tokens": {
+    "prompt": 438500,
+    "output": 55769,
+    "thinking": 906026
+   },
+   "phases": {
+    "null": 734,
+    "reserved": 1416,
+    "settled": 682,
+    "completed_reservation_retained": 734
+   },
+   "calls": 1416,
+   "generation_usd": 9.348010000000006
+  }
+ ],
+ "totals": {
+  "pr13_generation_usd": 7.1416185,
+  "original_generation_usd": 9.348010000000006,
+  "judge_usd": 2.049063,
+  "infrastructure_hours": 1.4778,
+  "infrastructure_usd": 0.88668,
+  "total_usd": 19.425371500000004
+ }
+}
