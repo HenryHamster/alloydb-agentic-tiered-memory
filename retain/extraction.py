@@ -39,6 +39,34 @@ _ACKNOWLEDGEMENTS = frozenset(
         "no problem", "sounds good",
     }
 )  # fmt: skip
+# Only used after extraction: a whole message must consist of courtesy/reaction phrases.
+# Unknown wording stays eligible, including decisions such as "yes, use that one".
+_FALLBACK_COURTESY_PHRASES = (
+    _ACKNOWLEDGEMENTS
+    | {
+        "thank you very much",
+        "thanks so much",
+        "many thanks",
+        "thanks for sharing",
+        "thank you for sharing",
+        "thanks for your help",
+        "thank you for your help",
+        "thanks for the help",
+        "thank you for the help",
+        "i appreciate it",
+        "i really appreciate it",
+        "i appreciate your help",
+        "i really appreciate your help",
+    }
+    | {
+        f"{subject} {modifier}{reaction}"
+        for subject in ("that was", "that is", "that's", "this is", "it's")
+        for modifier in ("", "really ", "very ", "so ")
+        for reaction in ("helpful", "kind", "nice", "great", "awesome", "cool", "amazing")
+    }
+)
+_FALLBACK_COURTESY_WORDS = frozenset(tuple(phrase.split()) for phrase in _FALLBACK_COURTESY_PHRASES)
+_MAX_COURTESY_WORDS = max(map(len, _FALLBACK_COURTESY_WORDS))
 # The conversation's own participants are not entities: every fact already records its speaker.
 _SPEAKER_NAMES = frozenset(
     {"user", "the user", "assistant", "the assistant", "ai assistant", "the ai assistant"}
@@ -391,6 +419,27 @@ def _is_acknowledgement(text):
     return not words or " ".join(words) in _ACKNOWLEDGEMENTS
 
 
+def _is_low_value_fallback(text):
+    """Reject only known filler, never a courtesy prefix followed by other content.
+
+    This is not an importance classifier. Ambiguous messages keep the existing fallback;
+    extraction still gets a chance to capture contextual meaning before this check runs.
+    """
+    normalized = " ".join(text.casefold().replace("\u2019", "'").split())
+    if _is_acknowledgement(text):
+        return True
+    words = tuple(re.split(r"[\s,.!?;:]+", normalized.strip(" ,.!?;:")))
+    # Bounded word segmentation avoids backtracking on repeated, overlapping phrases.
+    covered = {0}
+    for end in range(1, len(words) + 1):
+        if any(
+            start in covered and words[start:end] in _FALLBACK_COURTESY_WORDS
+            for start in range(max(0, end - _MAX_COURTESY_WORDS), end)
+        ):
+            covered.add(end)
+    return len(words) in covered
+
+
 def _tool_calls(text):
     """Function calls in a serialized message list ([{"tool_calls": [...]}, ...]), else none."""
     try:
@@ -603,7 +652,7 @@ def _looks_like_id(value):
 
 
 def _unrecorded_user_messages(chunks, extracted, first_key):
-    """Keep a short user message verbatim when extraction recorded nothing from it.
+    """Keep an uncited short user message unless it is clearly content-free.
 
     Requests ("check the status of server psql-001") are what later questions refer back to,
     and the model tends to keep only the reply.
@@ -621,7 +670,7 @@ def _unrecorded_user_messages(chunks, extracted, first_key):
             or len(parts) != 1
             or chunk.chunk_id in cited
             or len(text.split()) < 3
-            or _is_acknowledgement(text)
+            or _is_low_value_fallback(text)
         ):
             continue
         facts.append(

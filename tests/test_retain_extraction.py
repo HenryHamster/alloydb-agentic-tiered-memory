@@ -468,6 +468,112 @@ def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
     assert [e.name for e in fact.entities] == ["Python"]
 
 
+@pytest.mark.parametrize("lean", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Okay, thank you very much!",
+        "THANKS SO MUCH!!!",
+        "That was really helpful!",
+        "Thanks for sharing.",
+        "I really appreciate your help.",
+        "That\u2019s so cool! Thanks for sharing!",
+        "Hello! Thank you for your help. Goodbye!",
+        "  Okay,\n thanks for sharing!  ",
+    ],
+)
+def test_courtesy_only_messages_do_not_become_fallbacks(text, lean):
+    client = gemini_returning("[]")
+
+    assert GeminiFactExtractor(client, lean=lean, link_rounds=True).extract(chunks(text)) == []
+    # Filtering adds no classification call and does not bypass structured extraction.
+    client.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize("lean", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Thanks, but use server psql-001.",
+        "Okay, thank you very much! The deadline is Friday.",
+        "I prefer Python.",
+        "Don't delete that file.",
+        "Yes, use that one.",
+        "No, that is wrong.",
+        "Please use RBT-1234.",
+        "Thanks for sharing the psql-001 URL.",
+        "That was really helpful for my pottery class.",
+        "I moved to Berkeley.",
+        "My budget is $500.",
+        "Thank you +1",
+        "Okay thanks " * 40 + "but use server psql-001.",
+        "Gracias por tu ayuda.",  # Unknown wording is not classified as junk.
+    ],
+)
+def test_useful_or_uncertain_uncited_messages_keep_their_fallback(text, lean):
+    selected = chunks(text)
+    client = gemini_returning("[]")
+
+    (fact,) = GeminiFactExtractor(client, lean=lean).extract(selected)
+
+    assert fact.text == "The user said: " + text
+    assert fact.evidence == text
+    assert fact.chunk_id == selected[0].chunk_id
+    assert fact.visibility == Visibility.SESSION
+    client.models.generate_content.assert_called_once()
+
+
+def test_fallback_filter_does_not_remove_a_valid_model_fact():
+    selected = chunks("That was really helpful!")
+    row = fact_row(
+        selected[0], text="The user found that helpful.", evidence=selected[0].text, entities=[]
+    )
+
+    (fact,) = GeminiFactExtractor(gemini_returning(json.dumps([row]))).extract(selected)
+
+    assert fact.text == row["text"]
+
+
+def test_filtered_fallback_keeps_source_and_replay_ledger_without_embedding():
+    text = "Okay, thank you very much!"
+    scope = Scope("user-a", "project-a", "session-a")
+    messages = [Message(Speaker.USER, text, STAMP)]
+    client = gemini_returning("[]")
+    store = InMemoryRetainStore()
+    embedder, linker = Mock(), Mock()
+    retainer = Retainer(
+        store=store,
+        extractor=GeminiFactExtractor(client, link_rounds=True),
+        entity_resolver=None,
+        embedder=embedder,
+        linker=linker,
+        clock=lambda: STAMP,
+    )
+
+    result = retainer.retain(scope, messages, episode_id="courtesy-round")
+
+    assert not result.batch.facts and not result.batch.links
+    (document,) = store.documents.values()
+    assert document.text == text and document.scope == scope
+    assert document.document_id in store.retained
+    assert retainer.retain(scope, messages, episode_id="courtesy-round").batch is None
+    client.models.generate_content.assert_called_once()
+    embedder.assert_not_called()
+    linker.link.assert_not_called()
+
+
+def test_filter_keeps_tool_round_links_valid_when_user_fallback_is_removed():
+    function = {"name": "get_server_status", "arguments": {"server_id": "psql-001"}}
+    events = [{"role": "assistant", "tool_calls": [{"function": function}]}]
+    selected = chunks("Okay, thank you very much!") + assistant_chunks(json.dumps(events))
+
+    (fact,) = GeminiFactExtractor(gemini_returning("[]"), link_rounds=True).extract(selected)
+
+    assert "psql-001" in fact.text
+    assert fact.evidenced_by == ()
+    assert fact.evidence in selected[1].text
+
+
 def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
     extractor, client = extractor_for([fact_row(chunks()[0])])
     extractor.extract(chunks())

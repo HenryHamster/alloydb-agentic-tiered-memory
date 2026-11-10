@@ -75,7 +75,13 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   kept every key fact. Code locates the evidence quote, including quotes of serialized assistant
   turns whose line breaks are stored as `\n`; the words must still appear in order.
 - **Requests are facts.** The prompt records what the user asked for, and a short user message
-  that no extracted fact cites is kept verbatim (`The user said: ...`).
+  that no extracted fact cites is kept verbatim (`The user said: ...`), unless the entire message
+  is known courtesy/reaction wording (e.g. "Okay, thank you very much!"). The fallback-only
+  filter accepts combinations of known phrases, case/whitespace/punctuation variations and
+  curly apostrophes. Additional content ("Thanks, but use server psql-001") and ambiguous
+  decisions ("Yes, use that one") remain eligible. This conservative rule adds no model calls;
+  it does not remove validated extracted facts or source documents. The existing single-chunk,
+  user-only, at-least-three-word fallback bounds remain. Unknown wording can still produce noise.
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
@@ -109,6 +115,23 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
 6. Weight: semantic = cosine, temporal = time proximity (1 for supersedes), causal = 1.
 
 ## Validation and integration
+
+### Fallback-filter evaluation
+
+Offline regression checks: `uv run pytest tests/test_retain_extraction.py`. These use synthetic
+examples, not the missing raw LoCoMo traces. They cover courtesy-only fallbacks, mixed-content
+and uncertain messages, existing extraction coverage, source retention/replay, and tool links.
+
+The follow-up cloud comparison should use `conv-26-q037`, `q138`, `q140`, `q144`, and `q147`.
+Junk fallbacks were reported in their recall slots, not as the primary failure cause. The
+recorded experiment had 34 whole-turn fallbacks among 329 facts; not all are necessarily junk.
+Using the raw exports referenced in `experiments/locomo-001/README.md`, label each candidate
+fallback as junk, useful, or uncertain before comparing the base and changed code. Re-ingest
+identical history into separate fresh memory snapshots: existing facts and prepared memory
+caches do not get cleaned by this change. Hold extraction responses, Recall settings, answer
+model and scoring fixed where possible; provider-response replay can isolate the filter.
+Report junk fallbacks stored/retrieved, useful evidence preserved/retrieved and answer
+correctness for each question. Fewer fallbacks alone do not establish better answer accuracy.
 
 See [Retain cloud test handoff](RETAIN_HANDOFF.md) for configuration, schema setup, the live
 test (`tests/test_retain_live.py`), and read-only inspection queries. The codelab continues to use its legacy
