@@ -1,4 +1,4 @@
-"""AlloyDB implementation of RetainStore over sql/004_retain_schema.sql."""
+"""AlloyDB implementation of RetainStore over sql/004_retain_schema.sql and 006 (speaker names)."""
 
 import json
 import math
@@ -35,7 +35,7 @@ _FACT_COLUMNS = """
     f.category, f.speaker, f.claim_type, f.text, f.evidence,
     f.source_document_id::text, f.source_episode_id, f.recorded_at, f.valid_from,
     f.details, f.occurred_at, f.valid_to, f.superseded_by::text, f.evidence_count,
-    f.embedding::text,
+    f.embedding::text, f.speaker_name,
     COALESCE(array_agg(DISTINCT me.entity_id::text) FILTER (WHERE me.entity_id IS NOT NULL), '{}')
         AS entity_ids
 """
@@ -72,8 +72,8 @@ class AlloyDBRetainStore:
             for document in documents:
                 cur.execute(
                     "SELECT document_id::text, episode_id, position, user_id, project_id, "
-                    "session_id, speaker, text, occurred_at, recorded_at, expires_at "
-                    "FROM documents WHERE document_id = %s::uuid FOR KEY SHARE",
+                    "session_id, speaker, speaker_name, text, occurred_at, recorded_at, "
+                    "expires_at FROM documents WHERE document_id = %s::uuid FOR KEY SHARE",
                     (document.document_id,),
                 )
                 row = cur.fetchone()
@@ -186,7 +186,8 @@ class AlloyDBRetainStore:
         params = _reader_params(reader)
         query = """
             SELECT observation_id::text, user_id, project_id, session_id, visibility,
-                   entity_id::text, text, fact_ids, valid_from, valid_to, embedding::text
+                   entity_id::text, text, fact_ids, valid_from, valid_to, embedding::text,
+                   speaker_name
             FROM observations o
             WHERE o.user_id = %(user_id)s
               AND (o.visibility = 'global'
@@ -363,6 +364,7 @@ def _fact(row):
         evidence_count=row["evidence_count"],
         embedding=embedding,
         entity_ids=tuple(sorted(row["entity_ids"] or ())),
+        speaker_name=row.get("speaker_name"),
     )
 
 
@@ -391,6 +393,7 @@ def _observation(row):
         entity_id=row["entity_id"],
         valid_to=row["valid_to"],
         embedding=embedding,
+        speaker_name=row.get("speaker_name"),
     )
 
 
@@ -398,8 +401,8 @@ def _insert_document(cur, document):
     cur.execute(
         "INSERT INTO documents "
         "(document_id, episode_id, position, user_id, project_id, session_id, speaker, text, "
-        "occurred_at, recorded_at, expires_at) "
-        "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "occurred_at, recorded_at, expires_at, speaker_name) "
+        "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (document_id) DO NOTHING RETURNING document_id::text",
         (
             document.document_id,
@@ -413,13 +416,14 @@ def _insert_document(cur, document):
             document.occurred_at,
             document.recorded_at,
             document.expires_at,
+            document.speaker_name,
         ),
     )
     if cur.fetchone() is not None:
         return "new"
     cur.execute(
         "SELECT document_id::text, episode_id, position, user_id, project_id, session_id, "
-        "speaker, text, occurred_at, recorded_at, expires_at, retained_at "
+        "speaker, speaker_name, text, occurred_at, recorded_at, expires_at, retained_at "
         "FROM documents WHERE document_id = %s::uuid FOR UPDATE",
         (document.document_id,),
     )
@@ -438,6 +442,7 @@ def _same_document(row, doc):
         and row["project_id"] == doc.scope.project_id
         and row["session_id"] == doc.scope.session_id
         and row["speaker"] == doc.speaker.value
+        and row.get("speaker_name") == doc.speaker_name
         and row["text"] == doc.text
         and row["occurred_at"] == doc.occurred_at
     )
@@ -472,9 +477,10 @@ def _insert_fact(cur, fact):
         "INSERT INTO memory_facts "
         "(fact_id, user_id, project_id, session_id, visibility, fact_type, category, speaker, "
         "claim_type, text, evidence, details, source_document_id, source_episode_id, embedding, "
-        "occurred_at, recorded_at, valid_from, valid_to, superseded_by, evidence_count) "
+        "occurred_at, recorded_at, valid_from, valid_to, superseded_by, evidence_count, "
+        "speaker_name) "
         "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::uuid, %s, "
-        "%s::vector, %s, %s, %s, %s, %s::uuid, %s) "
+        "%s::vector, %s, %s, %s, %s, %s::uuid, %s, %s) "
         "ON CONFLICT (fact_id) DO NOTHING RETURNING fact_id",
         (
             fact.fact_id,
@@ -498,6 +504,7 @@ def _insert_fact(cur, fact):
             fact.valid_to,
             fact.superseded_by,
             fact.evidence_count,
+            fact.speaker_name,
         ),
     )
     if cur.fetchone() is None:
@@ -541,8 +548,8 @@ def _validate_fact_sources(facts, cur):
         return
     document_ids = {fact.source_document_id for fact in facts}
     cur.execute(
-        "SELECT document_id::text, episode_id, user_id, project_id, session_id, speaker "
-        "FROM documents WHERE document_id = ANY(%s::uuid[])",
+        "SELECT document_id::text, episode_id, user_id, project_id, session_id, speaker, "
+        "speaker_name FROM documents WHERE document_id = ANY(%s::uuid[])",
         (list(document_ids),),
     )
     documents = {row["document_id"]: row for row in cur.fetchall()}
@@ -555,6 +562,7 @@ def _validate_fact_sources(facts, cur):
             or document["project_id"] != fact.scope.project_id
             or document["session_id"] != fact.scope.session_id
             or document["speaker"] != fact.speaker.value
+            or document.get("speaker_name") != fact.speaker_name
         ):
             raise ValueError(f"Fact source does not match document {fact.source_document_id}")
 
@@ -726,7 +734,7 @@ def _validate_observation_references(cur, observation):
 
 _OBSERVATION_COLUMNS = (
     "observation_id::text, user_id, project_id, session_id, visibility, entity_id::text, "
-    "text, fact_ids, valid_from, valid_to, embedding::text"
+    "text, fact_ids, valid_from, valid_to, embedding::text, speaker_name"
 )
 
 
@@ -748,6 +756,7 @@ def _observation_group_lock_key(observation):
             observation.scope.session_id,
             observation.visibility.value,
             observation.entity_id,
+            observation.speaker_name,
         ],
         separators=(",", ":"),
     )
@@ -759,13 +768,15 @@ def _insert_observation_version(cur, observation):
         "SELECT observation_id::text FROM observations "
         "WHERE user_id = %s AND project_id IS NOT DISTINCT FROM %s "
         "AND session_id IS NOT DISTINCT FROM %s AND visibility = %s "
-        "AND entity_id IS NOT DISTINCT FROM %s::uuid AND valid_to IS NULL FOR UPDATE",
+        "AND entity_id IS NOT DISTINCT FROM %s::uuid AND speaker_name IS NOT DISTINCT FROM %s "
+        "AND valid_to IS NULL FOR UPDATE",
         (
             observation.scope.user_id,
             observation.scope.project_id,
             observation.scope.session_id,
             observation.visibility.value,
             observation.entity_id,
+            observation.speaker_name,
         ),
     )
     current_ids = {row["observation_id"] for row in cur.fetchall()}
@@ -775,8 +786,8 @@ def _insert_observation_version(cur, observation):
     cur.execute(
         "INSERT INTO observations "
         "(observation_id, user_id, project_id, session_id, visibility, entity_id, text, embedding, "
-        "fact_ids, valid_from, valid_to) "
-        "VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s::uuid[], %s, %s) "
+        "fact_ids, valid_from, valid_to, speaker_name) "
+        "VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s::uuid[], %s, %s, %s) "
         "ON CONFLICT (observation_id) DO NOTHING",
         (
             observation.observation_id,
@@ -790,6 +801,7 @@ def _insert_observation_version(cur, observation):
             list(observation.fact_ids),
             observation.valid_from,
             observation.valid_to,
+            observation.speaker_name,
         ),
     )
     if cur.rowcount == 0:

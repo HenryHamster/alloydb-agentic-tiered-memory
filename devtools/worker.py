@@ -73,8 +73,50 @@ def preparation_source(source):
     }
 
 
+def is_conversation(messages):
+    """Two or more people talking (LoCoMo): every message is a named user or assistant text."""
+    return all(
+        m.get("role") in {"user", "assistant"}
+        and isinstance(m.get("name"), str)
+        and isinstance(m.get("content"), str)
+        for m in messages
+    )
+
+
+def conversation_rounds(messages):
+    """(first, second or None, indices) for each pair of consecutive turns.
+
+    Each person is a user with their own name, so a reply is never an agent's proposal or a
+    JSON event list, and a turn whose text repeats its speaker ("Melanie: ...") loses the prefix.
+    """
+
+    def turn(message):
+        name, text = message["name"].strip(), message["content"]
+        prefix = f"{name}: "
+        return name, text[len(prefix) :] if text.startswith(prefix) else text
+
+    for start in range(0, len(messages), 2):
+        pair = messages[start : start + 2]
+        second = turn(pair[1]) if len(pair) == 2 else None
+        yield turn(pair[0]), second, list(range(start, start + len(pair)))
+
+
+def exchange_rounds(messages):
+    """record_turn arguments for one session: named people pairwise, else user/agent rounds."""
+    from bench.mem2act import exchanges
+
+    if is_conversation(messages):
+        for (name, text), second, indices in conversation_rounds(messages):
+            reply_name, reply = second or (None, "")
+            names = {"user_name": name, "ai_name": reply_name, "ai_is_human": True}
+            yield text, reply, indices, names
+    else:
+        for user, events, indices in exchanges(messages):
+            yield user, events, indices, {}
+
+
 def ingest(system, history, logical, clock, usage, output):
-    from bench.mem2act import HistoryVisibility, exchanges
+    from bench.mem2act import HistoryVisibility
     from retain import Scope
 
     # A fixture is one user's cross-session history, exactly as in the Mem2Act harness.
@@ -85,7 +127,8 @@ def ingest(system, history, logical, clock, usage, output):
     ordinal = 0
     for session in history["sessions"]:
         scope = Scope(logical, logical, f"{logical}:{session['id']}")
-        for index, (user, events, indices) in enumerate(exchanges(session["messages"])):
+        rounds = exchange_rounds(session["messages"])
+        for index, (user, events, indices, names) in enumerate(rounds):
             selected = [session["messages"][i] for i in indices]
             known = all(m.get("timestamp") for m in selected)
             extractor.source_dates_known = known
@@ -97,7 +140,12 @@ def ingest(system, history, logical, clock, usage, output):
             )
             usage.context = {"stage": "retain", "session": session["id"], "round": index}
             receipt = system.record_turn(
-                scope, user, events, timestamp=at, episode_id=f"{logical}:{session['id']}:{index}"
+                scope,
+                user,
+                events,
+                timestamp=at,
+                episode_id=f"{logical}:{session['id']}:{index}",
+                **names,
             )
             save_json(output / "retention" / f"{ordinal:05d}.json", serial(receipt))
             mapping.append({"session": session["id"], "round": index, "messages": indices})

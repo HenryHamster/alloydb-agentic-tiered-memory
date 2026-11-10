@@ -66,6 +66,7 @@ class Memory:
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     speaker: Speaker | None = None
+    speaker_name: str | None = None  # the named person behind `speaker`, when known
     claim_type: ClaimType | None = None
     fact_type: FactType | None = None
     category: Category | None = None
@@ -89,6 +90,7 @@ class Memory:
             valid_from=fact.valid_from,
             valid_to=fact.valid_to,
             speaker=fact.speaker,
+            speaker_name=fact.speaker_name,
             claim_type=fact.claim_type,
             fact_type=fact.fact_type,
             category=fact.category,
@@ -127,6 +129,7 @@ class Memory:
             supporting_ids=observation.fact_ids,
             entity_ids=(observation.entity_id,) if observation.entity_id else (),
             evidence_count=len(observation.fact_ids),
+            speaker_name=observation.speaker_name,
         )
 
     @classmethod
@@ -137,7 +140,7 @@ class Memory:
         return cls(
             id=first.episode_id,
             type=MemoryType.EPISODE,
-            text="\n".join(f"{d.speaker}: {d.text}" for d in ordered),
+            text="\n".join(f"{d.speaker_name or d.speaker}: {d.text}" for d in ordered),
             recorded_at=first.recorded_at,
             occurred_at=first.occurred_at,
             source_episode_id=first.episode_id,
@@ -170,6 +173,7 @@ class Memory:
                 "valid_to": _iso(self.valid_to),
             },
             "speaker": self.speaker and str(self.speaker),
+            "speaker_name": self.speaker_name,
             "claim_type": self.claim_type and str(self.claim_type),
             "fact_type": self.fact_type and str(self.fact_type),
             "category": self.category and str(self.category),

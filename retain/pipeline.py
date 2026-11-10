@@ -86,9 +86,23 @@ class Retainer:
         *,
         timestamp: datetime | None = None,
         episode_id: str | None = None,
+        user_name: str | None = None,
+        ai_name: str | None = None,
+        ai_is_human: bool = False,
     ) -> RetainResult:
+        """Retain one round: the user's message and the reply.
+
+        For a conversation between two people (LoCoMo's Caroline and Melanie), pass both names
+        and ai_is_human=True. The reply is then stored as a second user: its claims are
+        asserted, not proposed, and it is never linked to the first message as an agent's
+        answer to a request.
+        """
         at = timestamp or self.clock()
-        messages = [Message(Speaker.USER, user_msg, at), Message(Speaker.ASSISTANT, ai_msg, at)]
+        reply_role = Speaker.USER if ai_is_human else Speaker.ASSISTANT
+        messages = [
+            Message(Speaker.USER, user_msg, at, user_name),
+            Message(reply_role, ai_msg, at, ai_name),
+        ]
         return self.retain(scope, messages, episode_id=episode_id)
 
     def retain(
@@ -194,6 +208,7 @@ class Retainer:
                 occurred_at=message.timestamp,
                 recorded_at=now,
                 expires_at=now + ttl if ttl else None,
+                speaker_name=message.name,
             )
             for position, message in enumerate(messages)
         ]
@@ -236,8 +251,8 @@ class Retainer:
 def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | None:
     """Why `decision` cannot be applied, or None.
 
-    Targets must be stored, current, same speaker, visible from the new fact's scope (so same
-    user) and not narrower than it; a supersede target must also be no broader than it.
+    Targets must be stored, current, same speaker (role and name), visible from the new fact's
+    scope (so same user) and not narrower than it; a supersede target must also be no broader.
     """
     for target_id in decision.target_ids:
         old = stored.get(target_id)
@@ -246,6 +261,7 @@ def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | 
             or not old.is_current
             or not old.visible_to(new.scope)
             or old.speaker != new.speaker
+            or old.speaker_name != new.speaker_name
         ):
             return f"invalid {decision.action} target {target_id}"
         if is_broader(new.visibility, old.visibility):
@@ -256,7 +272,11 @@ def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | 
 
 
 def _episode_id(scope: Scope, messages: Sequence[Message]) -> str:
-    parts = [(m.speaker, m.timestamp.isoformat(), m.text) for m in messages]
+    # A name joins the key only when present, so unnamed rounds keep their existing IDs.
+    parts = [
+        (m.speaker, m.timestamp.isoformat(), m.text, *((m.name,) if m.name else ()))
+        for m in messages
+    ]
     return stable_id(scope.user_id, scope.project_id, scope.session_id, *parts)
 
 
@@ -298,6 +318,7 @@ def _build_fact(
         occurred_at=fact.occurred_at,
         valid_from=fact.valid_from or fact.occurred_at or document.occurred_at,
         entity_ids=tuple(sorted(set(by_name.values()))),
+        speaker_name=document.speaker_name,
     )
     return memory, entity_rows, relation_rows
 

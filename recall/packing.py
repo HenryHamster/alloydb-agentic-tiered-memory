@@ -8,13 +8,16 @@ from shared.tokens import TokenCounter, estimate_tokens
 
 
 def format_line(memory: Memory, stale: bool) -> str:
-    """`[id] (type | date | speaker | claim_type | superseded date) text`, omitting unknowns."""
+    """`[id] (type | date | speaker | claim_type | superseded date) text`, omitting unknowns.
+
+    The speaker is the person's name when known ("Melanie"), else the role ("user").
+    """
     labels = [str(memory.type)]
     date = memory.primary_date()
     if date:
         labels.append(date.date().isoformat())
-    if memory.speaker:
-        labels.append(str(memory.speaker))
+    if memory.speaker_name or memory.speaker:
+        labels.append(memory.speaker_name or str(memory.speaker))
     if memory.claim_type:
         labels.append(str(memory.claim_type))
     if stale and memory.valid_to:

@@ -172,6 +172,7 @@ class InMemoryRecallStore:
             "messages": [
                 {
                     "speaker": str(document.speaker),
+                    "speaker_name": document.speaker_name,
                     "text": document.text,
                     "occurred_at": document.occurred_at.isoformat(),
                 }

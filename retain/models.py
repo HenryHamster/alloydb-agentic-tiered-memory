@@ -1,4 +1,4 @@
-"""Retain records. Field names mirror sql/004_retain_schema.sql."""
+"""Retain records. Field names mirror sql/004_retain_schema.sql (speaker_name: 006)."""
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -15,6 +15,12 @@ class Visibility(StrEnum):
 
 
 class Speaker(StrEnum):
+    """A message's role. Every human participant is USER; ASSISTANT is the agent.
+
+    When a conversation has several named people (two friends talking), each is a USER with
+    their own speaker_name, so none of them is treated as an agent.
+    """
+
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
@@ -106,6 +112,11 @@ def stable_id(*parts: object) -> str:
     return str(uuid5(NAMESPACE_URL, "\x1f".join(str(part) for part in parts)))
 
 
+def check_speaker_name(name: str | None) -> None:
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValueError("speaker_name must be nonempty text or None")
+
+
 def _require_aware(*values: datetime | None) -> None:
     if any(value is not None and value.utcoffset() is None for value in values):
         raise ValueError("Timestamps must be timezone-aware")
@@ -158,9 +169,12 @@ class Message:
     speaker: Speaker
     text: str
     timestamp: datetime
+    # Who said it ("Melanie"). Facts are then written about that person instead of "the user".
+    name: str | None = None
 
     def __post_init__(self):
         _require_aware(self.timestamp)
+        check_speaker_name(self.name)
 
 
 @dataclass(frozen=True)
@@ -176,9 +190,11 @@ class Document:
     occurred_at: datetime
     recorded_at: datetime
     expires_at: datetime | None = None
+    speaker_name: str | None = None
 
     def __post_init__(self):
         _require_aware(self.occurred_at, self.recorded_at, self.expires_at)
+        check_speaker_name(self.speaker_name)
 
 
 @dataclass(frozen=True)
@@ -215,8 +231,12 @@ class RelationMention:
 CODE_BUILT_PREFIXES = ("The assistant called the ", "A tool returned: ", "The user said: ")
 
 
-def is_code_built(text: str) -> bool:
-    return text.startswith(CODE_BUILT_PREFIXES)
+def is_code_built(text: str, speaker_name: str | None = None) -> bool:
+    """A named speaker's verbatim message is "<their name> said: ...", so only the fact's own
+    speaker_name marks it; "The doctor said: rest" from the model is not code-built."""
+    if text.startswith(CODE_BUILT_PREFIXES):
+        return True
+    return speaker_name is not None and text.startswith(f"{speaker_name} said: ")
 
 
 @dataclass(frozen=True)
@@ -287,9 +307,11 @@ class MemoryFact:
     evidence_count: int = 1
     embedding: tuple[float, ...] | None = field(default=None, compare=False)
     entity_ids: tuple[str, ...] = ()
+    speaker_name: str | None = None  # copied from the source document
 
     def __post_init__(self):
         _require_aware(self.recorded_at, self.valid_from, self.occurred_at, self.valid_to)
+        check_speaker_name(self.speaker_name)
         if self.valid_to is not None and self.valid_to < self.valid_from:
             raise ValueError("valid_to precedes valid_from")
         if resolve_visibility(self.visibility, self.scope) != self.visibility:
@@ -360,7 +382,11 @@ class Supersession:
 
 @dataclass(frozen=True)
 class Observation:
-    """Consolidated summary of facts sharing an entity in one visibility domain."""
+    """Consolidated summary of facts sharing an entity in one visibility domain.
+
+    With named speakers, one observation covers one speaker's facts (speaker_name), so two
+    people's claims about the same thing are never merged into one sentence.
+    """
 
     observation_id: str
     scope: Scope
@@ -371,6 +397,7 @@ class Observation:
     entity_id: str | None = None
     valid_to: datetime | None = None
     embedding: tuple[float, ...] | None = field(default=None, compare=False)
+    speaker_name: str | None = None
 
     def same_version(self, other: "Observation") -> bool:
         """Same version apart from valid_to, the only field closing it may change.

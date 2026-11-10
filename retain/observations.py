@@ -17,7 +17,11 @@ class ObservationBuilder(Protocol):
 
 
 class GeminiObservationBuilder:
-    """Summarize current asserted facts that share an entity and visibility domain."""
+    """Summarize current asserted facts that share an entity, visibility domain and speaker.
+
+    Facts are grouped per speaker_name, so with two named people an observation never merges
+    their claims; unnamed facts (None) group together as before.
+    """
 
     def __init__(
         self,
@@ -53,28 +57,33 @@ class GeminiObservationBuilder:
                 and fact.entity_ids
             ):
                 for entity_id in set(fact.entity_ids):
-                    groups[_group_key(fact.scope, fact.visibility, entity_id)].append(fact)
+                    key = _group_key(fact.scope, fact.visibility, entity_id, fact.speaker_name)
+                    groups[key].append(fact)
 
         now = datetime.now(timezone.utc)
         history = defaultdict(list)
         for observation in observation_reader(reader):
             if observation.entity_id:
-                history[
-                    _group_key(observation.scope, observation.visibility, observation.entity_id)
-                ].append(observation)
+                key = _group_key(
+                    observation.scope,
+                    observation.visibility,
+                    observation.entity_id,
+                    observation.speaker_name,
+                )
+                history[key].append(observation)
 
         pending = []
         closing = {}
         active_ids = set()
-        for (scope, visibility, entity_id), group in sorted(
-            groups.items(), key=lambda row: row[0][2]
+        for (scope, visibility, entity_id, speaker_name), group in sorted(
+            groups.items(), key=lambda row: (row[0][2], row[0][3] or "")
         ):
             facts = list({fact.fact_id: fact for fact in group}.values())
             if len(facts) < self.min_facts:
                 continue
             facts.sort(key=lambda fact: fact.fact_id)
             fact_ids = tuple(fact.fact_id for fact in facts)
-            group_key = (scope, visibility, entity_id)
+            group_key = (scope, visibility, entity_id, speaker_name)
             versions = history.get(group_key, [])
             current = [observation for observation in versions if observation.valid_to is None]
             if len(current) > 1:
@@ -91,7 +100,7 @@ class GeminiObservationBuilder:
 
             valid_from = _version_start(facts, previous, now)
             observation_id = _next_observation_id(
-                scope, visibility, entity_id, versions, previous, fact_ids
+                scope, visibility, entity_id, versions, previous, fact_ids, speaker_name
             )
             if previous is not None:
                 closing[previous.observation_id] = _close_version(previous, valid_from)
@@ -106,6 +115,7 @@ class GeminiObservationBuilder:
                     fact_ids,
                     summary,
                     valid_from,
+                    speaker_name,
                 )
             )
 
@@ -116,7 +126,7 @@ class GeminiObservationBuilder:
                 if observation.valid_to is None:
                     closing[observation.observation_id] = _close_version(observation, now)
 
-        vectors = self.embedder([row[-2] for row in pending]) if pending else []
+        vectors = self.embedder([row[6] for row in pending]) if pending else []
         if len(vectors) != len(pending):
             raise ValueError("Embedder must return one vector per observation")
         written = []
@@ -130,6 +140,7 @@ class GeminiObservationBuilder:
                 fact_ids,
                 summary,
                 valid_from,
+                speaker_name,
             ) = row
             written.append(
                 Observation(
@@ -141,6 +152,7 @@ class GeminiObservationBuilder:
                     valid_from=valid_from,
                     entity_id=entity_id,
                     embedding=tuple(vector),
+                    speaker_name=speaker_name,
                 )
             )
 
@@ -158,14 +170,27 @@ class GeminiObservationBuilder:
                 "evidence": fact.evidence,
                 "category": fact.category.value,
                 "speaker": fact.speaker.value,
+                **({"speaker_name": fact.speaker_name} if fact.speaker_name else {}),
                 "occurred_at": fact.occurred_at.isoformat() if fact.occurred_at else None,
                 "valid_from": fact.valid_from.isoformat(),
             }
             for fact in facts
         ]
+        names = sorted({fact.speaker_name for fact in facts if fact.speaker_name})
+        # speaker_name is who said a fact, not who it is about: Melanie praising Caroline's
+        # painting is Caroline's painting, so the observation names the subject, not the speaker.
+        speaker_rule = (
+            f"Every fact was said by {' and '.join(names)}, but a fact may be about someone "
+            "else. Name the person each claim is about, as the fact text does, which is not "
+            "always the speaker; never write 'the user' or 'the assistant'. "
+            if names
+            else ""
+        )
         prompt = (
-            "Write a concise observation supported only by these asserted facts. Preserve "
-            "qualifiers, dates, and contradictions; do not infer unstated causes or attributes. "
+            "Write a concise observation supported only by these asserted facts. "
+            + speaker_rule
+            + "Preserve qualifiers, dates, and contradictions; do not infer unstated causes or "
+            "attributes. "
             "Cover ALL provided facts, including separate topics; do not select a subset. "
             "If a useful complete synthesis is impossible, return an empty summary and an "
             "empty fact_ids array. Otherwise fact_ids MUST contain EVERY input fact_id "
@@ -233,26 +258,30 @@ class GeminiObservationBuilder:
                 time.sleep(3 * (2**attempt))
 
 
-def _group_key(scope, visibility, entity_id):
+def _group_key(scope, visibility, entity_id, speaker_name=None):
     if visibility == Visibility.GLOBAL:
         scope = Scope(scope.user_id)
     elif visibility == Visibility.PROJECT:
         scope = Scope(scope.user_id, project_id=scope.project_id)
     else:
         scope = Scope(scope.user_id, session_id=scope.session_id)
-    return scope, visibility, entity_id
+    return scope, visibility, entity_id, speaker_name
 
 
-def _observation_id(scope, visibility, entity_id):
+def _observation_id(scope, visibility, entity_id, speaker_name=None):
     domain = (
         scope.project_id if visibility == Visibility.PROJECT else None,
         scope.session_id if visibility == Visibility.SESSION else None,
     )
-    return stable_id(scope.user_id, visibility.value, *domain, entity_id)
+    # The name joins the key only when present, so unnamed observations keep their IDs.
+    named = (speaker_name,) if speaker_name else ()
+    return stable_id(scope.user_id, visibility.value, *domain, entity_id, *named)
 
 
-def _next_observation_id(scope, visibility, entity_id, history, previous, fact_ids):
-    base_id = _observation_id(scope, visibility, entity_id)
+def _next_observation_id(
+    scope, visibility, entity_id, history, previous, fact_ids, speaker_name=None
+):
+    base_id = _observation_id(scope, visibility, entity_id, speaker_name)
     if not history:
         return base_id
     predecessor = (
@@ -281,6 +310,7 @@ def _close_version(observation, at):
         entity_id=observation.entity_id,
         valid_to=max(at, observation.valid_from),
         embedding=observation.embedding,
+        speaker_name=observation.speaker_name,
     )
 
 

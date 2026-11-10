@@ -299,7 +299,9 @@ class Recaller:
                 continue
             if not episode or not episode["messages"]:
                 continue
-            text = "\n".join(f"{m['speaker']}: {m['text']}" for m in episode["messages"])
+            text = "\n".join(
+                f"{m.get('speaker_name') or m['speaker']}: {m['text']}" for m in episode["messages"]
+            )
             first = episode["messages"][0].get("occurred_at")
             memory = Memory(
                 id=episode_id,

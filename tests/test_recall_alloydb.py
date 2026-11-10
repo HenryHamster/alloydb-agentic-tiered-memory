@@ -208,10 +208,13 @@ def test_graph_expansion_binds_relation_order_and_filter(relations):
 
 def test_get_episode_and_supporting():
     at = datetime(2026, 10, 2, 10, tzinfo=timezone.utc)
-    conn = FakeConnection(rows=[("user", "Nightly backups", at), ("assistant", "Noted.", at)])
+    conn = FakeConnection(
+        rows=[("user", "Nightly backups", at, None), ("assistant", "Noted.", at, "Aria")]
+    )
     store = AlloyDBRecallStore(lambda: conn)
     episode = store.get_episode(SCOPE, "round-7")
     assert [m["speaker"] for m in episode["messages"]] == ["user", "assistant"]
+    assert [m["speaker_name"] for m in episode["messages"]] == [None, "Aria"]
 
     conn.rows = []
     assert store.get_episode(SCOPE, "unknown") is None
