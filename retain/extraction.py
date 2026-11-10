@@ -103,6 +103,11 @@ conversation. Write each fact with the person's name as its subject ("Melanie ad
 "Caroline asked Melanie about her pottery"), never "the user" or "the assistant". In a chunk,
 I, me, my and we refer to its speaker and "you" to another participant; attribute each claim to
 the person it is about. Do not emit participants as entities.
+Keep the specific details a later question could ask about: names of people, pets and places,
+counts, ages, durations ("for ten years", "four years"), what an object says or stands for, what
+someone made, and how they felt. When a turn holds several such details, write one fact per
+detail rather than dropping any. Text in [shares a photo: ...] describes a photo the speaker
+shared: record what it shows as a fact about the speaker ("Melanie shared a photo of ...").
 """
 _ROLE_WORDS = {Speaker.USER: re.compile(r"\bthe user\b", re.I), Speaker.ASSISTANT: re.compile(
     r"\bthe (?:ai )?assistant\b", re.I
@@ -627,22 +632,28 @@ def _unrecorded_user_messages(chunks, extracted, first_key):
 
     Requests ("check the status of server psql-001") are what later questions refer back to,
     and the model tends to keep only the reply.
+
+    A named speaker's turn (two people talking) is kept chunk by chunk, so a long turn the
+    model skipped, or whose facts were rejected for naming a role, is not lost entirely.
+    An unnamed user's message is kept only when it fits in one chunk.
     """
     cited = {fact.chunk_id for fact in extracted}
     by_document = defaultdict(list)
     for chunk in chunks:
         by_document[chunk.document.document_id].append(chunk)
-    facts = []
+    kept = []
     for parts in by_document.values():
-        chunk = parts[0]
+        document = parts[0].document
+        if document.speaker != Speaker.USER:
+            continue
+        if document.speaker_name:
+            kept += [chunk for chunk in parts if chunk.chunk_id not in cited]
+        elif len(parts) == 1 and parts[0].chunk_id not in cited:
+            kept.append(parts[0])
+    facts = []
+    for chunk in kept:
         text = " ".join(chunk.text.split())
-        if (
-            chunk.document.speaker != Speaker.USER
-            or len(parts) != 1
-            or chunk.chunk_id in cited
-            or len(text.split()) < 3
-            or _is_acknowledgement(text)
-        ):
+        if len(text.split()) < 3 or _is_acknowledgement(text):
             continue
         speaker = chunk.document.speaker_name or "The user"
         facts.append(
@@ -783,9 +794,32 @@ def _check_named_speakers(fact, chunks, participants):
     for role, pattern in _ROLE_WORDS.items():
         if role not in unnamed_roles and pattern.search(fact.text):
             raise ValueError(f"Fact names a role instead of a participant: {fact.text!r}")
+    speaker = next((c.document.speaker_name for c in chunks if c.chunk_id == fact.chunk_id), None)
+    if speaker and _gives_own_claim_to_another(fact, speaker, participants):
+        raise ValueError(f"Fact gives the speaker's own claim to someone else: {fact.text!r}")
     names = {" ".join(name.casefold().split()) for name in participants}
     entities = tuple(e for e in fact.entities if " ".join(e.name.casefold().split()) not in names)
     return dataclasses.replace(fact, entities=entities) if entities != fact.entities else fact
+
+
+_FIRST_PERSON = re.compile(r"\b(?:I|I'm|I've|I'd|I'll|me|my|mine|myself)\b")
+_SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|you're|you've)\b", re.I)
+
+
+def _gives_own_claim_to_another(fact, speaker, participants):
+    """Melanie's "I painted a sunset" written as "Caroline painted a sunset".
+
+    True when the quote speaks only in the first person (so it is about its speaker), the fact
+    opens with another participant's name and never names the speaker. A quote that says "you"
+    may be about the other person, so it is left alone.
+    """
+    if not _FIRST_PERSON.search(fact.evidence) or _SECOND_PERSON.search(fact.evidence):
+        return False
+    text = fact.text.casefold()
+    if speaker.casefold() in text:
+        return False
+    others = (name for name in participants if name.casefold() != speaker.casefold())
+    return any(re.match(rf"{re.escape(name.casefold())}\b", text) for name in others)
 
 
 def _pack_chunks(chunks, contexts, limit, prefix=_PROMPT_PREFIX, participants=()):

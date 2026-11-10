@@ -1,6 +1,5 @@
 """Retain records. Field names mirror sql/004_retain_schema.sql (speaker_name: 006)."""
 
-import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
@@ -230,12 +229,14 @@ class RelationMention:
 
 # Facts Retain builds from message structure rather than the model (retain/extraction.py).
 CODE_BUILT_PREFIXES = ("The assistant called the ", "A tool returned: ", "The user said: ")
-# A named speaker's verbatim message: "Melanie said: ...".
-_NAMED_SAID = re.compile(r"[^\s:][^:\n]{0,79} said: ")
 
 
-def is_code_built(text: str) -> bool:
-    return text.startswith(CODE_BUILT_PREFIXES) or _NAMED_SAID.match(text) is not None
+def is_code_built(text: str, speaker_name: str | None = None) -> bool:
+    """A named speaker's verbatim message is "<their name> said: ...", so only the fact's own
+    speaker_name marks it; "The doctor said: rest" from the model is not code-built."""
+    if text.startswith(CODE_BUILT_PREFIXES):
+        return True
+    return speaker_name is not None and text.startswith(f"{speaker_name} said: ")
 
 
 @dataclass(frozen=True)

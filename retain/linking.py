@@ -169,7 +169,9 @@ def _candidate_visible(new, candidate):
 
 
 def _both_code_built(left, right):
-    return is_code_built(left.text) and is_code_built(right.text)
+    return is_code_built(left.text, left.speaker_name) and is_code_built(
+        right.text, right.speaker_name
+    )
 
 
 def _reader_for(fact):

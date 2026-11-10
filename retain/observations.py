@@ -177,10 +177,12 @@ class GeminiObservationBuilder:
             for fact in facts
         ]
         names = sorted({fact.speaker_name for fact in facts if fact.speaker_name})
+        # speaker_name is who said a fact, not who it is about: Melanie praising Caroline's
+        # painting is Caroline's painting, so the observation names the subject, not the speaker.
         speaker_rule = (
-            f"Every fact was said by {' and '.join(names)}. Name the speaker in the observation "
-            "and never write 'the user' or 'the assistant'; keep each claim with the person it "
-            "is about. "
+            f"Every fact was said by {' and '.join(names)}, but a fact may be about someone "
+            "else. Name the person each claim is about, as the fact text does, which is not "
+            "always the speaker; never write 'the user' or 'the assistant'. "
             if names
             else ""
         )

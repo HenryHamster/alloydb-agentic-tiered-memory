@@ -39,6 +39,11 @@ def validate_history(history):
                 raise ValueError("Message role must be user, assistant, tool or system")
             if "content" not in message and "tool_calls" not in message:
                 raise ValueError("Messages need content or tool_calls")
+            # Who said it ("Melanie"). A session where every turn is named is a conversation
+            # between people, ingested with each person as a user (devtools/worker.py).
+            name = message.get("name")
+            if name is not None and (not isinstance(name, str) or not name.strip()):
+                raise ValueError("Message name must be nonempty text")
             if message.get("timestamp") is not None:
                 timestamp(message["timestamp"])
     return history

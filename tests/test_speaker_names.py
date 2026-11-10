@@ -174,7 +174,40 @@ def test_uncited_named_turn_is_kept_verbatim_under_the_speakers_name():
 
     kept = next(f for f in result.batch.facts if f.speaker_name == "Melanie")
     assert kept.text == "Melanie said: " + MELANIE
-    assert is_code_built(kept.text)
+    assert is_code_built(kept.text, kept.speaker_name)
+    # Only the fact's own speaker marks it; a model fact quoting someone else is not code-built.
+    assert not is_code_built("The doctor said: rest for a week.", "Melanie")
+    assert not is_code_built(kept.text)
+
+
+def test_long_named_turn_keeps_each_uncited_chunk():
+    """A turn split across chunks is not lost when the model cites only part of it."""
+    long_turn = " ".join(f"Sentence {i} about my pottery class and the kiln." for i in range(40))
+
+    def rows(chunks):  # the long turn may span several requests; only one holds Caroline
+        if "Caroline" not in chunks:
+            return []
+        caroline = chunks["Caroline"]["chunk_id"]
+        return [lean_row(caroline, 0, "Caroline adopted a guinea pig.", "I adopted a guinea pig")]
+
+    client, _ = scripted_client(rows)
+    stage = retainer(production_extractor(client))
+    result = stage.retain_turn(
+        SCOPE,
+        CAROLINE,
+        long_turn,
+        timestamp=T0,
+        user_name="Caroline",
+        ai_name="Melanie",
+        ai_is_human=True,
+    )
+
+    melanie = [f for f in result.batch.facts if f.speaker_name == "Melanie"]
+    chunks = [c for c in chunk_documents(result.batch.documents) if c.document.speaker_name]
+    melanie_chunks = [c for c in chunks if c.document.speaker_name == "Melanie"]
+    assert len(melanie_chunks) > 1
+    assert len(melanie) == len(melanie_chunks)
+    assert all(f.text.startswith("Melanie said: Sentence") for f in melanie)
 
 
 def test_role_words_stay_allowed_for_an_unnamed_agent():
@@ -270,8 +303,11 @@ def test_observations_summarize_one_speakers_facts_about_an_entity():
         assert speakers == {observation.speaker_name}
     assert written[0].observation_id != written[1].observation_id
     prompts = [call.kwargs["contents"] for call in client.models.generate_content.call_args_list]
-    assert any("Every fact was said by Caroline." in prompt for prompt in prompts)
-    assert any("Every fact was said by Melanie." in prompt for prompt in prompts)
+    assert any("Every fact was said by Caroline," in prompt for prompt in prompts)
+    assert any("Every fact was said by Melanie," in prompt for prompt in prompts)
+    # The speaker is not assumed to be the subject (Melanie praising Caroline's painting).
+    assert all("Name the person each claim is about" in prompt for prompt in prompts)
+    assert not any("Name the speaker" in prompt for prompt in prompts)
     # Each speaker's group finds its own current version, so a rerun writes nothing.
     assert stage.consolidate(reader) == []
 

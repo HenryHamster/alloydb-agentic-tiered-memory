@@ -132,8 +132,7 @@ class Recaller:
             }
 
         # Embed each sub-query for the vector channel.
-        with tracer.stage("embed" \
-        "") as stage:
+        with tracer.stage("embed") as stage:
             try:
                 embeddings = self.embedder(plan.sub_queries)
                 stage.count = len(embeddings)

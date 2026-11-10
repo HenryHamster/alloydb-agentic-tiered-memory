@@ -70,7 +70,14 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   preceding context is prefixed with names. Facts must name people: a fact saying "the user" or
   "the assistant" is dropped unless the round has an unnamed speaker in that role, and
   participants are not entities. A fact never reinforces or supersedes another person's, and an
-  observation summarizes one speaker's facts. Unnamed rounds keep their prompts and IDs.
+  observation summarizes one speaker's facts. `speaker_name` is who said a fact, not who it is
+  about, so the observation prompt names each claim's subject (Melanie praising Caroline's
+  painting stays Caroline's). A fact that quotes its speaker only in the first person ("I
+  painted") but opens with the other person's name is dropped as misattributed. The named
+  prompt also asks for one fact per specific detail and for `[shares a photo: ...]` captions.
+  Unnamed rounds keep their prompts and IDs. In the dev runner, a history session whose
+  messages are all user/assistant text with a `name` is ingested this way, two turns per round,
+  each turn as plain text with any leading `Name: ` removed.
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
   same user and speaker, and visible from the new fact; a fact never supersedes a broader one.
 - **Fail-soft on model output.** A bad extraction row, repeated key or bad reference drops only
@@ -84,7 +91,8 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   kept every key fact. Code locates the evidence quote, including quotes of serialized assistant
   turns whose line breaks are stored as `\n`; the words must still appear in order.
 - **Requests are facts.** The prompt records what the user asked for, and a short user message
-  that no extracted fact cites is kept verbatim (`The user said: ...`).
+  that no extracted fact cites is kept verbatim (`The user said: ...`). A named speaker's turn
+  is kept chunk by chunk, so every uncited chunk of a long turn survives (`Melanie said: ...`).
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
