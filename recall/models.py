@@ -189,6 +189,8 @@ class QueryPlan:
     window: TimeWindow | None
     window_source: str | None = None  # "explicit", "rules" or "llm"
     llm_used: bool = False
+    # The question points back at earlier talk without naming it ("that server").
+    refers_back: bool = False
 
 
 @dataclass
@@ -197,6 +199,17 @@ class Scored:
     relevance: float
     boost: float = 0.0
     score: float = 0.0
+    # The search lists that found this memory ("vector:0", "keyword:1", "graph", ...).
+    channels: tuple[str, ...] = ()
+
+    def summary(self) -> dict[str, Any]:
+        """A short trace line for a candidate, kept or dropped."""
+        return {
+            "id": self.memory.id,
+            "text": self.memory.text[:80],
+            "relevance": round(self.relevance, 4),
+            "channels": list(self.channels),
+        }
 
 
 @dataclass
@@ -235,6 +248,7 @@ class RecallItem:
     rank: int
     stale: bool
     tokens: int
+    channels: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +257,7 @@ class RecallItem:
             "relevance": round(self.relevance, 6),
             "rank": self.rank,
             "stale": self.stale,
+            "channels": list(self.channels),
         }
 
 

@@ -8,13 +8,16 @@ from unittest.mock import MagicMock
 import pytest
 from recall_fixtures import NOW, SCOPE, Memories, embed, overlap_reranker
 from test_retain import ExactResolver, NoLinks, ScriptedExtractor
+from test_retain_extraction import gemini_returning
 
 from recall import MemoryType, RecallConfig, RecallDepth, TimeWindow, make_recall_tool_functions
+from recall.config import ROUND_RELATIONS
 from recall.models import Memory, Scored
 from recall.query import analyze_query, parse_time_phrase
 from recall.ranking import apply_boosts, fuse_rrf
 from retain import Retainer, Scope
-from retain.models import Visibility
+from retain.extraction import GeminiFactExtractor
+from retain.models import Relation, Speaker, Visibility
 
 
 def ids(result):
@@ -118,6 +121,43 @@ def test_linked_memories_are_reachable_through_the_graph(memories):
     assert cause.fact_id in ids(memories.recaller().recall(SCOPE, query))
 
 
+def test_explaining_links_are_followed_before_stronger_similar_links(memories):
+    seed = memories.fact("The assistant restarted server psql-002")
+    similar = memories.fact("Server psql-003 was restarted last month")
+    request = memories.fact("The user asked to restart psql-002")
+    memories.link(seed, similar, weight=0.9, relation=Relation.SIMILAR)
+    memories.link(seed, request, weight=0.5, relation=Relation.EVIDENCED_BY)
+
+    neighbors = memories.store.expand_neighbors(
+        SCOPE, [seed.fact_id], [MemoryType.FACT], NOW, False, 5
+    )
+    assert [m.id for m in neighbors][:2] == [request.fact_id, similar.fact_id]
+    only_round = memories.store.expand_neighbors(
+        SCOPE, [seed.fact_id], [MemoryType.FACT], NOW, False, 5, relations=ROUND_RELATIONS
+    )
+    assert [m.id for m in only_round] == [request.fact_id]
+
+
+def test_follow_up_adds_the_request_linked_to_a_kept_tool_call(memories):
+    call = memories.fact('The assistant called the get_server_status tool with server = "psql-001"')
+    request = memories.fact("The user requested to check the status of psql-001")
+    memories.link(call, request, relation=Relation.EVIDENCED_BY)
+
+    def names_psql(query, texts):
+        return [0.8 if "server" in text else 0.4 if "psql-001" in text else 0.0 for text in texts]
+
+    question = "how is that server doing?"  # shares no word with the request fact
+    # graph_seeds=0 turns off the expansion before reranking, so only the follow-up can link.
+    no_followup = RecallConfig(graph_seeds=0, followup_seeds=0)
+    without = memories.recaller(reranker=names_psql, config=no_followup)
+    assert request.fact_id not in ids(without.recall(SCOPE, question))
+    with_followup = memories.recaller(reranker=names_psql, config=RecallConfig(graph_seeds=0))
+    result = with_followup.recall(SCOPE, question)
+    assert request.fact_id in ids(result)
+    added = next(s for s in result.trace if s.stage == "graph_followup").to_dict()["added"]
+    assert [entry["id"] for entry in added] == [request.fact_id]
+
+
 def test_memories_from_rounds_the_caller_already_shows_are_skipped(memories):
     shown = memories.fact("We picked Postgres for orders", episode_id="round-shown")
     older = memories.fact("Postgres replaced MySQL for orders", episode_id="round-older")
@@ -158,6 +198,50 @@ def test_end_to_end_a_retained_turn_can_be_recalled(memories):
     assert [item.memory.source_episode_id for item in result.items] == ["round-1"]
 
 
+def test_recall_reads_retains_tool_facts_ids_and_round_links(memories):
+    # Retain's production extractor settings; the model returns no facts of its own, so every
+    # fact below is built by Retain's code from the round itself.
+    extractor = GeminiFactExtractor(
+        gemini_returning("[]"), lean=True, tool_result_facts=True, link_rounds=True
+    )
+    retainer = Retainer(
+        store=memories.retain_store,
+        extractor=extractor,
+        entity_resolver=ExactResolver(),
+        embedder=embed,
+        linker=NoLinks(),
+        clock=lambda: NOW,
+    )
+    call = {"name": "get_server_status", "arguments": json.dumps({"server_id": "psql-001"})}
+    events = [
+        {"role": "assistant", "content": "Checking.", "tool_calls": [{"function": call}]},
+        {"role": "tool", "content": json.dumps({"server_id": "psql-001", "status": "running"})},
+    ]
+    retainer.retain_turn(
+        SCOPE, "Check the status of server psql-001.", json.dumps(events), episode_id="round-1"
+    )
+    facts = list(memories.retain_store.facts.values())
+    request = next(f for f in facts if f.text.startswith("The user said:"))
+    call_fact = next(f for f in facts if f.text.startswith("The assistant called"))
+    result = next(f for f in facts if f.text.startswith("A tool returned:"))
+
+    # Naming the ID finds all three facts through Retain's entity for psql-001.
+    named = memories.recaller().recall(SCOPE, "psql-001")
+    assert {request.fact_id, call_fact.fact_id, result.fact_id} <= set(ids(named))
+    assert any("entity:0" in item.channels for item in named.items)
+
+    # A question that only matches the result still brings in its tool call, one round
+    # link away, through the follow-up step.
+    def result_only(query, texts):
+        return [0.9 if "returned" in t else 0.3 if "psql-001" in t else 0.0 for t in texts]
+
+    vague = memories.recaller(reranker=result_only, config=RecallConfig(graph_seeds=0))
+    found = vague.recall(SCOPE, "is it running?")
+    assert {call_fact.fact_id, result.fact_id} <= set(ids(found))
+    followup = next(s for s in found.trace if s.stage == "graph_followup").to_dict()
+    assert [entry["id"] for entry in followup["added"]] == [call_fact.fact_id]
+
+
 # Ranking, abstention and packing -----------------------------------------------------------
 
 
@@ -170,17 +254,66 @@ def test_abstains_when_nothing_stored_is_relevant(memories):
     assert not recaller.recall(SCOPE, "orders database").abstained
 
 
-def test_low_reranker_scores_keep_the_best_few_instead_of_abstaining(memories):
-    for n in range(5):
+def test_low_but_positive_reranker_scores_are_kept_up_to_max_items(memories):
+    for n in range(12):
         memories.fact(f"Movie note {n}: the user rated a film")
 
     def low(query, texts):
-        return [0.1] * len(texts)
+        return [0.15] * len(texts)  # under the old 0.3 floor, over min_relevance
 
     result = memories.recaller(reranker=low).recall(SCOPE, "favourite movie")
-    assert len(result.items) == RecallConfig().floor_fallback_top and not result.abstained
-    strict = memories.recaller(reranker=low, config=RecallConfig(floor_fallback_top=0))
-    assert strict.recall(SCOPE, "favourite movie").abstained
+    facts = [i for i in result.items if i.memory.type == MemoryType.FACT]
+    assert len(facts) == RecallConfig().max_items and not result.abstained
+    # Under min_relevance only the min_items floor survives; min_items=0 abstains.
+    stricter = memories.recaller(reranker=low, config=RecallConfig(min_relevance=0.2))
+    floor = [i for i in stricter.recall(SCOPE, "favourite movie").items if i.memory.type == "fact"]
+    assert len(floor) == RecallConfig().min_items
+    strict = RecallConfig(min_relevance=0.2, min_items=0)
+    assert memories.recaller(reranker=low, config=strict).recall(SCOPE, "favourite movie").abstained
+
+
+def test_weak_results_bring_their_verbatim_source_round(memories):
+    fact = memories.fact("The user is organizing a film club event", episode_id="round-film")
+    memories.fact("The user booked a dentist visit", episode_id="round-dentist")
+
+    def weak(query, texts):
+        return [0.07 if "film" in text else 0.01 for text in texts]
+
+    result = memories.recaller(reranker=weak).recall(SCOPE, "the film we picked")
+    rounds = [i for i in result.items if i.memory.type == MemoryType.EPISODE]
+    assert fact.fact_id in ids(result)
+    assert [r.memory.id for r in rounds][0] == "round-film"
+    assert "film club event" in rounds[0].memory.text and "source_round" in rounds[0].channels
+
+    def strong(query, texts):
+        return [0.9 if "film" in text else 0.0 for text in texts]
+
+    clear = memories.recaller(reranker=strong).recall(SCOPE, "film club event")
+    assert all(i.memory.type != MemoryType.EPISODE for i in clear.items)
+
+
+def test_items_record_the_search_lists_that_found_them(memories):
+    fact = memories.fact("The team stores orders in a Postgres database")
+
+    result = memories.recaller(reranker=overlap_reranker).recall(SCOPE, "orders database")
+    item = next(item for item in result.items if item.memory.id == fact.fact_id)
+    assert {"vector:0", "keyword:0"} <= set(item.channels)
+    assert item.to_dict()["channels"] == list(item.channels)
+
+
+def test_the_trace_lists_dropped_candidates_with_scores(memories):
+    memories.fact("The team stores orders in a Postgres database")
+    dropped = memories.fact("Orders ship from the Berlin warehouse")
+
+    def scores(query, texts):
+        return [0.05 if "Berlin" in text else 0.9 for text in texts]
+
+    one = RecallConfig(min_items=1)
+    result = memories.recaller(reranker=scores, config=one).recall(SCOPE, "orders database")
+    stage = next(s for s in result.trace if s.stage == "filter_and_abstain").to_dict()
+    assert stage["below_min"] == 1
+    assert stage["dropped"][0]["id"] == dropped.fact_id
+    assert stage["dropped"][0]["relevance"] == 0.05 and stage["dropped"][0]["channels"]
 
 
 @pytest.mark.parametrize("budget", [1, 15, 60, 10_000])
@@ -317,6 +450,50 @@ def test_an_explicit_window_wins_over_phrases_and_the_llm():
 def test_unusable_llm_output_falls_back_to_the_original_question():
     plan = analyze_query("anything", NOW, generate=lambda prompt: "not json")
     assert plan.sub_queries == ["anything"] and plan.window is None
+    assert plan.refers_back is False
+
+
+@pytest.mark.parametrize(
+    "question", ["how is the server doing right now?", "what's the latest on X?"]
+)
+def test_now_and_latest_never_become_a_date_window(question):
+    today = '{"sub_queries": [], "time_window": {"start": "2026-10-18", "end": "2026-10-19"}}'
+    plan = analyze_query(question, NOW, generate=lambda prompt: today)
+    assert plan.window is None and plan.window_source is None
+
+
+def test_a_past_llm_window_is_still_used():
+    past = '{"sub_queries": [], "time_window": {"start": "2026-09-01", "end": "2026-09-08"}}'
+    plan = analyze_query("what did we decide before the launch?", NOW, generate=lambda p: past)
+    assert plan.window_source == "llm" and plan.window.start.day == 1
+
+
+def test_back_references_and_abbreviations_add_queries():
+    reply = (
+        '{"sub_queries": ["problems the user asked about", "artificial intelligence issues"],'
+        ' "time_window": null, "refers_back": true}'
+    )
+    plan = analyze_query("how are those AI issues being tackled?", NOW, generate=lambda p: reply)
+    assert plan.refers_back is True
+    assert "artificial intelligence issues" in plan.sub_queries
+
+
+@pytest.mark.parametrize("value", ["false", '"yes"', "null"])
+def test_refers_back_is_false_unless_the_llm_says_true(value):
+    reply = f'{{"sub_queries": [], "time_window": null, "refers_back": {value}}}'
+    assert analyze_query("anything", NOW, generate=lambda p: reply).refers_back is False
+
+
+def test_user_facts_get_the_request_boost_only_for_back_references():
+    config = RecallConfig()
+    user = Memory("user", MemoryType.FACT, "asked", occurred_at=NOW, speaker=Speaker.USER)
+    other = Memory("other", MemoryType.FACT, "said", occurred_at=NOW, speaker=Speaker.ASSISTANT)
+    scored = [Scored(user, 0.5), Scored(other, 0.5)]
+
+    plain = {s.memory.id: s.boost for s in apply_boosts(scored, NOW, None, config)}
+    back = {s.memory.id: s.boost for s in apply_boosts(scored, NOW, None, config, refers_back=True)}
+    assert back["user"] == pytest.approx(plain["user"] + config.user_request_boost)
+    assert back["other"] == plain["other"]
 
 
 # Agent tools -------------------------------------------------------------------------------

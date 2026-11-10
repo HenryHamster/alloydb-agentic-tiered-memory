@@ -1,4 +1,4 @@
-# Benchmarks: LongMemEval for Recall
+# Benchmarks: LongMemEval and LoCoMo
 
 `bench/longmemeval.py` runs [LongMemEval](https://github.com/xiaowu0162/LongMemEval) against
 Recall. For each question it ingests that question's chat history, runs Recall on the
@@ -99,3 +99,25 @@ Reruns and haystack sessions shared between questions are embedded once.
   versions at wall-clock time, which a replayed 2023 haystack would read as still open.
 - Benchmark embeddings set a retrieval task type; Retain's `GeminiEmbedder` does not.
 - LongMemEval dates have no time zone and are read as UTC.
+
+## LoCoMo
+
+[LoCoMo](https://github.com/snap-research/locomo) has 10 long two-person conversations, about 600
+turns each, with questions about them. A question needs one or a few facts from anywhere in its
+conversation, so LoCoMo tests whether a memory keeps event-level detail across many sessions.
+
+The recorded run is [experiments/locomo-001](../experiments/locomo-001/README.md): the tiered
+memory against the original codelab on conversation `conv-26`, categories 1-4 (152 questions).
+
+**How it is scored.** The usual LoCoMo "J score" is the share of answers an LLM judge marks
+correct under Mem0's `ACCURACY_PROMPT`. Category 5 (adversarial) is left out, as Mem0 and Zep do.
+We use that prompt unchanged with Gemini 3.5 Flash as the judge, and token F1 as the secondary
+metric.
+
+**Comparing with published numbers.** Published LoCoMo scores (for example Mem0 66.9,
+full-context 72.9, Letta 74.0) depend on the answer model, the answer prompt, the judge model and
+which questions are scored. These differ between papers and from this harness, so our numbers
+can't be set beside theirs. For a fair comparison, run the other system, or a full-context
+baseline, through this harness with the same judge. About 6% of LoCoMo's gold answers are wrong,
+so no system can score above roughly 94%.
+

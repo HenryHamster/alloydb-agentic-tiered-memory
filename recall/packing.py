@@ -44,6 +44,14 @@ def pack(
         used += tokens
         lines.append(line)
         items.append(
-            RecallItem(item.memory, item.score, item.relevance, len(items) + 1, stale, tokens)
+            RecallItem(
+                item.memory,
+                item.score,
+                item.relevance,
+                len(items) + 1,
+                stale,
+                tokens,
+                item.channels,
+            )
         )
     return items, "\n".join(lines), used, truncated

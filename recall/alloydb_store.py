@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import UUID
 
-from recall.config import MemoryType
+from recall.config import EXPLAINING_RELATIONS, MemoryType
 from recall.models import Memory
 from recall.store import _STOPWORDS
 from retain.entities import normalize_name
@@ -213,7 +213,7 @@ class AlloyDBRecallStore:
         return lists
 
     def expand_neighbors(
-        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None
+        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None, relations=None
     ):
         seeds = [i for i in dict.fromkeys(seed_ids) if _is_uuid(i)]  # episode ids are not facts
         if MemoryType.FACT not in types or not seeds:
@@ -221,6 +221,8 @@ class AlloyDBRecallStore:
         params = self._params(scope, as_of, include_invalid)
         params.update(seeds=seeds, limit=limit)
         params["tiers"] = list(tiers) if tiers is not None else None
+        params["relations"] = list(relations) if relations is not None else None
+        params["explaining_relations"] = list(EXPLAINING_RELATIONS)
         sql = _NEIGHBORS_SQL.replace(CANDIDATE_SQL, _predicate("fact", self.reflect_enabled))
         return [_fact(row) for (row,) in self._fetch(sql, params)]
 
@@ -449,29 +451,37 @@ WITH seed AS (
     WHERE f.fact_id = ANY(%(seeds)s::uuid[]) AND {CANDIDATE_SQL}
 ),
 edge AS (
-    SELECT l.to_fact_id AS fact_id, l.weight FROM memory_links l
+    SELECT l.to_fact_id AS fact_id, l.relation, l.weight FROM memory_links l
     WHERE l.from_fact_id IN (SELECT fact_id FROM seed)
     UNION ALL
-    SELECT l.from_fact_id, l.weight FROM memory_links l
+    SELECT l.from_fact_id, l.relation, l.weight FROM memory_links l
     WHERE l.to_fact_id IN (SELECT fact_id FROM seed)
 ),
 linked AS (
-    SELECT f.fact_id, max(e.weight) AS weight
+    -- Same order as InMemoryRecallStore: explaining links first, then the strongest weight.
+    SELECT f.fact_id,
+           bool_or(e.relation = ANY(%(explaining_relations)s::text[])) AS explains,
+           max(e.weight) AS weight
     FROM edge e JOIN memory_facts f ON f.fact_id = e.fact_id
     WHERE {CANDIDATE_SQL} AND f.fact_id <> ALL(%(seeds)s::uuid[])
+      AND (%(relations)s::text[] IS NULL OR e.relation = ANY(%(relations)s::text[]))
     GROUP BY f.fact_id
 ),
 shared AS (
+    -- Facts sharing an entity with a seed; skipped when only given relations are followed.
     SELECT DISTINCT f.fact_id, COALESCE(f.occurred_at, f.valid_from) AS at
     FROM memory_entities se
     JOIN memory_entities me ON me.entity_id = se.entity_id
     JOIN memory_facts f ON f.fact_id = me.fact_id
     WHERE se.fact_id IN (SELECT fact_id FROM seed) AND {CANDIDATE_SQL}
+      AND %(relations)s::text[] IS NULL
       AND f.fact_id <> ALL(%(seeds)s::uuid[])
       AND f.fact_id NOT IN (SELECT fact_id FROM linked)
 ),
 picked AS (
-    SELECT fact_id, 0 AS grp, row_number() OVER (ORDER BY weight DESC, fact_id) AS pos FROM linked
+    SELECT fact_id, 0 AS grp,
+           row_number() OVER (ORDER BY explains DESC, weight DESC, fact_id) AS pos
+    FROM linked
     UNION ALL
     SELECT fact_id, 1, row_number() OVER (ORDER BY at DESC, fact_id) FROM shared
 )

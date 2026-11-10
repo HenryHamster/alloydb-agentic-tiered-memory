@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from recall.config import MemoryType
+from recall.config import EXPLAINING_RELATIONS, MemoryType
 from recall.models import Memory, TimeWindow
 from retain.entities import normalize_name
 from retain.models import Document, Scope, Visibility, is_visible, resolve_visibility
@@ -49,8 +49,14 @@ class RecallStore(Protocol):
         limit: int,
         *,
         tiers: Sequence[str] | None = None,
+        relations: Sequence[str] | None = None,
     ) -> list[Memory]:
-        """One hop from the seeds over memory_links (by weight) and shared entities."""
+        """One hop from the seeds over memory_links, then facts sharing an entity with a seed.
+
+        Linked facts come first: those reached by an EXPLAINING_RELATIONS link before the
+        rest, then by weight. With `relations`, only links of those relations are followed
+        and shared-entity facts are skipped.
+        """
         ...
 
     def get_episode(self, scope: Scope, episode_id: str) -> dict[str, Any] | None:
@@ -120,7 +126,7 @@ class InMemoryRecallStore:
         return {name: results for name, results in lists.items() if results}
 
     def expand_neighbors(
-        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None
+        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None, relations=None
     ):
         if MemoryType.FACT not in types:
             return []
@@ -131,19 +137,27 @@ class InMemoryRecallStore:
                 scope, [MemoryType.FACT], as_of, include_invalid, tiers
             )
         }
-        by_link: dict[str, float] = {}
+        # Per neighbour: whether any link to it explains a seed, and its strongest weight.
+        explains: dict[str, bool] = {}
+        weight: dict[str, float] = {}
         for link in list(self.retain_store.links.values()):
+            if relations is not None and link.relation not in relations:
+                continue
             ends = ((link.from_fact_id, link.to_fact_id), (link.to_fact_id, link.from_fact_id))
             for here, there in ends:  # links are followed in both directions
                 if here in seeds and there in readable and there not in seeds:
-                    by_link[there] = max(by_link.get(there, 0.0), link.weight)
-        linked = sorted(by_link, key=lambda fact_id: -by_link[fact_id])
+                    explaining = link.relation in EXPLAINING_RELATIONS
+                    explains[there] = explains.get(there, False) or explaining
+                    weight[there] = max(weight.get(there, 0.0), link.weight)
+        linked = sorted(weight, key=lambda fact_id: (not explains[fact_id], -weight[fact_id]))
+        if relations is not None:
+            return [readable[fact_id] for fact_id in linked][:limit]
         seed_entities = {e for i in seeds if i in readable for e in readable[i].entity_ids}
         shared = sorted(
             (
                 m
                 for m in readable.values()
-                if m.id not in seeds and m.id not in by_link and seed_entities & set(m.entity_ids)
+                if m.id not in seeds and m.id not in weight and seed_entities & set(m.entity_ids)
             ),
             key=_newest_first,
         )
