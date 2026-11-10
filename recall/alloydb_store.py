@@ -1,4 +1,8 @@
-"""AlloyDB implementation of RecallStore over sql/004_retain_schema.sql."""
+"""AlloyDB implementation of RecallStore over sql/004_retain_schema.sql.
+
+speaker_name (sql/006_speaker_names.sql) is read through to_jsonb, so the store still reads a
+database without that migration; Retain needs it to write.
+"""
 
 import logging
 import re
@@ -52,6 +56,7 @@ FACT_JSON = """jsonb_build_object(
     'fact_id', f.fact_id::text, 'user_id', f.user_id, 'project_id', f.project_id,
     'session_id', f.session_id, 'visibility', f.visibility, 'fact_type', f.fact_type,
     'category', f.category, 'speaker', f.speaker, 'claim_type', f.claim_type, 'text', f.text,
+    'speaker_name', to_jsonb(f)->'speaker_name',
     'source_document_id', f.source_document_id::text, 'source_episode_id', f.source_episode_id,
     'occurred_at', f.occurred_at, 'recorded_at', f.recorded_at, 'valid_from', f.valid_from,
     'valid_to', f.valid_to, 'superseded_by', f.superseded_by::text,
@@ -67,14 +72,15 @@ OBSERVATION_JSON = """jsonb_build_object(
     'observation_id', f.observation_id::text, 'user_id', f.user_id, 'project_id', f.project_id,
     'session_id', f.session_id, 'visibility', f.visibility, 'entity_id', f.entity_id::text,
     'text', f.text, 'fact_ids', f.fact_ids::text[], 'valid_from', f.valid_from,
-    'valid_to', f.valid_to
+    'valid_to', f.valid_to, 'speaker_name', to_jsonb(f)->'speaker_name'
 )"""
 
 DOCUMENT_JSON = """jsonb_build_object(
     'document_id', d.document_id::text, 'episode_id', d.episode_id, 'position', d.position,
     'user_id', d.user_id, 'project_id', d.project_id, 'session_id', d.session_id,
     'speaker', d.speaker, 'text', d.text, 'occurred_at', d.occurred_at,
-    'recorded_at', d.recorded_at, 'expires_at', d.expires_at
+    'recorded_at', d.recorded_at, 'expires_at', d.expires_at,
+    'speaker_name', to_jsonb(d)->'speaker_name'
 )"""
 
 # websearch_to_tsquery ANDs every word, so a natural question rarely matches anything. OR the
@@ -235,8 +241,13 @@ class AlloyDBRecallStore:
         return {
             "episode_id": episode_id,
             "messages": [
-                {"speaker": speaker, "text": text, "occurred_at": occurred_at.isoformat()}
-                for speaker, text, occurred_at in rows
+                {
+                    "speaker": speaker,
+                    "speaker_name": speaker_name,
+                    "text": text,
+                    "occurred_at": occurred_at.isoformat(),
+                }
+                for speaker, text, occurred_at, speaker_name in rows
             ],
         }
 
@@ -492,7 +503,7 @@ ORDER BY p.grp, p.pos
 """
 
 _EPISODE_GET_SQL = f"""
-SELECT d.speaker, d.text, d.occurred_at FROM documents d
+SELECT d.speaker, d.text, d.occurred_at, to_jsonb(d)->>'speaker_name' FROM documents d
 WHERE d.episode_id = %(episode_id)s AND {EPISODE_SQL}
 ORDER BY d.position
 """
@@ -579,6 +590,7 @@ def _fact(row: dict) -> Memory:
             superseded_by=row["superseded_by"],
             evidence_count=row["evidence_count"],
             entity_ids=tuple(row["entity_ids"] or ()),
+            speaker_name=row.get("speaker_name"),
         )
     )
     return replace(
@@ -601,6 +613,7 @@ def _observation(row: dict) -> Memory:
             valid_from=_ts(row["valid_from"]),
             entity_id=row["entity_id"],
             valid_to=_ts(row["valid_to"]),
+            speaker_name=row.get("speaker_name"),
         )
     )
 
@@ -618,6 +631,7 @@ def _episode(rows: list[dict]) -> Memory:
                 occurred_at=_ts(row["occurred_at"]),
                 recorded_at=_ts(row["recorded_at"]),
                 expires_at=_ts(row["expires_at"]),
+                speaker_name=row.get("speaker_name"),
             )
             for row in rows
         ]

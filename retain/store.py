@@ -103,6 +103,7 @@ class InMemoryRetainStore:
                     or existing.position != document.position
                     or existing.scope != document.scope
                     or existing.speaker != document.speaker
+                    or existing.speaker_name != document.speaker_name
                     or existing.text != document.text
                     or existing.occurred_at != document.occurred_at
                 ):

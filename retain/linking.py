@@ -306,6 +306,7 @@ class GeminiSupersedeClassifier:
                 "category": fact.category.value,
                 "claim_type": fact.claim_type.value,
                 "speaker": fact.speaker.value,
+                **({"speaker_name": fact.speaker_name} if fact.speaker_name else {}),
                 "visibility": fact.visibility.value,
                 "occurred_at": fact.occurred_at.isoformat() if fact.occurred_at else None,
                 "valid_from": fact.valid_from.isoformat(),
@@ -317,6 +318,11 @@ class GeminiSupersedeClassifier:
                         "category": candidate.category.value,
                         "claim_type": candidate.claim_type.value,
                         "speaker": candidate.speaker.value,
+                        **(
+                            {"speaker_name": candidate.speaker_name}
+                            if candidate.speaker_name
+                            else {}
+                        ),
                         "visibility": candidate.visibility.value,
                         "occurred_at": candidate.occurred_at.isoformat()
                         if candidate.occurred_at
@@ -390,6 +396,8 @@ class GeminiSupersedeClassifier:
             and candidate.claim_type == fact.claim_type
             and candidate.category == fact.category
             and candidate.speaker == fact.speaker
+            # One person's claim never reinforces or replaces another person's.
+            and candidate.speaker_name == fact.speaker_name
             and _candidate_visible(fact, candidate)
         )
 

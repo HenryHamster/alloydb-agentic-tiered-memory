@@ -47,7 +47,11 @@ class RunSchema:
                 cur.execute(
                     sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.name))
                 )
-                for name in ("004_retain_schema.sql", "005_reflect_schema.sql"):
+                for name in (
+                    "004_retain_schema.sql",
+                    "005_reflect_schema.sql",
+                    "006_speaker_names.sql",
+                ):
                     ddl = (self.source / "sql" / name).read_text(encoding="utf8")
                     # Extensions are an admin prerequisite, not something a developer worker installs.
                     ddl = re.sub(r"CREATE EXTENSION IF NOT EXISTS [A-Za-z0-9_]+;", "", ddl)

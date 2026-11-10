@@ -96,6 +96,17 @@ SOURCE JSON:\n"""
 _TOOL_RESULT_NOTE = """
 Tool results are recorded separately by the caller; extract from them only what the
 surrounding conversation adds, such as which request a result answers."""
+# Added only when a chunk has a speaker_name, so prompts for unnamed conversations are unchanged.
+_NAMED_SPEAKERS_NOTE = """
+Chunks with a speaker_name were written by that person; `participants` lists everyone in the
+conversation. Write each fact with the person's name as its subject ("Melanie adopted a dog",
+"Caroline asked Melanie about her pottery"), never "the user" or "the assistant". In a chunk,
+I, me, my and we refer to its speaker and "you" to another participant; attribute each claim to
+the person it is about. Do not emit participants as entities.
+"""
+_ROLE_WORDS = {Speaker.USER: re.compile(r"\bthe user\b", re.I), Speaker.ASSISTANT: re.compile(
+    r"\bthe (?:ai )?assistant\b", re.I
+)}  # fmt: skip
 
 
 def chunk_documents(documents: Sequence[Document], max_chars: int = 700) -> list[Chunk]:
@@ -266,9 +277,11 @@ class GeminiFactExtractor:
         next_key = 0
         for group in _group_chunks([c for c in chunks if not _is_acknowledgement(c.text)]):
             contexts = _preceding_contexts(group, self.context_chars)
-            prefix = self._prompt_prefix()
-            for request_chunks in _pack_chunks(group, contexts, self.max_request_chars, prefix):
-                rows = self._extract_request(request_chunks, contexts)
+            participants = _participants(group)
+            prefix = self._prompt_prefix(named=bool(participants))
+            batches = _pack_chunks(group, contexts, self.max_request_chars, prefix, participants)
+            for request_chunks in batches:
+                rows = self._extract_request(request_chunks, contexts, prefix, participants)
                 parsed, key_map = [], {}
                 for row in rows:
                     try:
@@ -278,6 +291,8 @@ class GeminiFactExtractor:
                             source_dates_known=self.source_dates_known,
                             exact_evidence=not self.lean,
                         )
+                        if participants:
+                            fact = _check_named_speakers(fact, group, participants)
                     except (KeyError, TypeError, ValueError) as error:
                         logger.warning("Discarding invalid Gemini fact row: %s", error)
                         continue
@@ -331,8 +346,9 @@ class GeminiFactExtractor:
             output = _link_rounds(output, chunks, {f.key for f in calls}, {f.key for f in results})
         return output
 
-    def _extract_request(self, chunks, contexts):
-        payload = {"chunks": [_chunk_payload(chunk, contexts[chunk.chunk_id]) for chunk in chunks]}
+    def _extract_request(self, chunks, contexts, prefix=None, participants=()):
+        payload = _payload_base(participants)
+        payload["chunks"] = [_chunk_payload(chunk, contexts[chunk.chunk_id]) for chunk in chunks]
         if not self.source_dates_known:
             for entry in payload["chunks"]:
                 entry["timestamp"] = None
@@ -340,7 +356,7 @@ class GeminiFactExtractor:
                 "Source dates are unknown. Do not infer calendar dates from relative phrases; "
                 "leave their occurred_at and valid_from null. Explicit source dates are allowed."
             )
-        prompt = self._prompt_prefix() + json.dumps(payload, ensure_ascii=False)
+        prompt = (prefix or self._prompt_prefix()) + json.dumps(payload, ensure_ascii=False)
         response = None
         for attempt in range(4):
             try:
@@ -370,10 +386,14 @@ class GeminiFactExtractor:
             logger.warning("Discarding non-object Gemini fact rows")
         return [row for row in rows if isinstance(row, dict)]
 
-    def _prompt_prefix(self):
+    def _prompt_prefix(self, named=False):
         if not self.lean:
-            return _PROMPT_PREFIX
-        return _LEAN_PROMPT_PREFIX % (_TOOL_RESULT_NOTE if self.tool_result_facts else "")
+            prefix = _PROMPT_PREFIX
+        else:
+            prefix = _LEAN_PROMPT_PREFIX % (_TOOL_RESULT_NOTE if self.tool_result_facts else "")
+        if named:
+            prefix = prefix.replace("SOURCE JSON:\n", _NAMED_SPEAKERS_NOTE + "SOURCE JSON:\n")
+        return prefix
 
 
 def _expand_lean_row(row):
@@ -624,11 +644,12 @@ def _unrecorded_user_messages(chunks, extracted, first_key):
             or _is_acknowledgement(text)
         ):
             continue
+        speaker = chunk.document.speaker_name or "The user"
         facts.append(
             ExtractedFact(
                 key=first_key + len(facts),
                 chunk_id=chunk.chunk_id,
-                text=f"The user said: {text}",
+                text=f"{speaker} said: {text}",
                 evidence=chunk.text.strip(),
                 fact_type=FactType.WORLD,
                 category=Category.OTHER,
@@ -650,6 +671,10 @@ def _link_rounds(facts, chunks, call_keys, result_keys, limit=3):
     fact the tool event whose names it repeats, else the request. Semantic links never join
     these: requests, tool events and answers fall in different categories. evidenced_by keeps
     Reflect from clustering every round into a macro.
+
+    Only ASSISTANT facts are tied to the request. In a conversation between people every
+    speaker is a USER (Retainer.retain_turn(ai_is_human=True)), so one person's facts are never
+    linked as evidence for another's.
     """
     by_chunk = {chunk.chunk_id: chunk for chunk in chunks}
     rounds = defaultdict(list)
@@ -727,16 +752,44 @@ def _preceding_contexts(chunks, limit):
     documents = {chunk.document.document_id: chunk.document for chunk in chunks}
     ordered = sorted(documents.values(), key=lambda document: document.position)
     for chunk in chunks:
+        # Named turns carry their speaker, so the model can tell who said the earlier text.
         prefix = [
-            document.text for document in ordered if document.position < chunk.document.position
+            f"{document.speaker_name}: {document.text}" if document.speaker_name else document.text
+            for document in ordered
+            if document.position < chunk.document.position
         ]
         prefix.append(chunk.document.text[: chunk.start])
         contexts[chunk.chunk_id] = "\n".join(prefix)[-limit:]
     return contexts
 
 
-def _pack_chunks(chunks, contexts, limit, prefix=_PROMPT_PREFIX):
-    base_size = len(prefix) + len(json.dumps({"chunks": []}))
+def _participants(chunks):
+    """The named speakers of one round, in order of first appearance; () when none are named."""
+    names = (chunk.document.speaker_name for chunk in chunks)
+    return tuple(dict.fromkeys(name.strip() for name in names if name))
+
+
+def _payload_base(participants):
+    return {"participants": list(participants)} if participants else {}
+
+
+def _check_named_speakers(fact, chunks, participants):
+    """Drops participant entities and rejects role words that would hide who a fact is about.
+
+    "the user" is allowed only when the round has an unnamed user turn, and "the assistant"
+    only when it has an unnamed assistant turn; otherwise the phrase cannot name anyone.
+    """
+    unnamed_roles = {c.document.speaker for c in chunks if not c.document.speaker_name}
+    for role, pattern in _ROLE_WORDS.items():
+        if role not in unnamed_roles and pattern.search(fact.text):
+            raise ValueError(f"Fact names a role instead of a participant: {fact.text!r}")
+    names = {" ".join(name.casefold().split()) for name in participants}
+    entities = tuple(e for e in fact.entities if " ".join(e.name.casefold().split()) not in names)
+    return dataclasses.replace(fact, entities=entities) if entities != fact.entities else fact
+
+
+def _pack_chunks(chunks, contexts, limit, prefix=_PROMPT_PREFIX, participants=()):
+    base_size = len(prefix) + len(json.dumps({**_payload_base(participants), "chunks": []}))
     if base_size >= limit:
         raise ValueError("Gemini request character limit is too small for the extraction prompt")
     batches, current, size = [], [], base_size
@@ -763,6 +816,7 @@ def _chunk_payload(chunk, preceding_context):
     return {
         "chunk_id": chunk.chunk_id,
         "speaker": str(document.speaker),
+        **({"speaker_name": document.speaker_name} if document.speaker_name else {}),
         "timestamp": document.occurred_at.isoformat(),
         "visibility_context": {
             "project_available": document.scope.project_id is not None,

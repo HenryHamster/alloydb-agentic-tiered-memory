@@ -62,8 +62,17 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   a cited relative phrase can supply an exact date only when the source timestamp is known.
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
+- **Named speakers** (`sql/006_speaker_names.sql`). `Message.name` becomes the document's,
+  fact's and observation's `speaker_name`. Every human is a `user`: for two people talking
+  (LoCoMo), call `retain_turn(..., user_name=, ai_name=, ai_is_human=True)`, so both assert
+  their claims, both get the verbatim fallback (`Melanie said: ...`) and no reply-to-request
+  round links join them. Extraction then receives `speaker_name` and `participants`, and its
+  preceding context is prefixed with names. Facts must name people: a fact saying "the user" or
+  "the assistant" is dropped unless the round has an unnamed speaker in that role, and
+  participants are not entities. A fact never reinforces or supersedes another person's, and an
+  observation summarizes one speaker's facts. Unnamed rounds keep their prompts and IDs.
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
-  same user and visible from the new fact; a fact never supersedes a broader one.
+  same user and speaker, and visible from the new fact; a fact never supersedes a broader one.
 - **Fail-soft on model output.** A bad extraction row, repeated key or bad reference drops only
   that row; an invalid or missing classifier decision keeps the fact as new; an ambiguous entity
   name gets its own entity. A response that is not valid JSON still fails the round, which then

@@ -25,7 +25,7 @@ Use the [developer runner](docs/DEV_RUNNER.md) to start the shared VM/AlloyDB, r
 The integrated candidate uses Retain, Recall, Reflect and a Valkey session window:
 
 ```bash
-# Apply sql/004_retain_schema.sql and sql/005_reflect_schema.sql first.
+# Apply sql/004_retain_schema.sql, 005_reflect_schema.sql and 006_speaker_names.sql first.
 uv run python -m tiered_memory --user alice --project demo --session session-1
 ```
 

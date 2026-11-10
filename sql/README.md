@@ -11,6 +11,9 @@ database user described in the setup guide.
 4. Run `004_retain_schema.sql` for the Retain tables. It is additive and needs `pg_trgm`.
 5. Run `005_reflect_schema.sql` for Reflect: tier/access columns on `memory_facts`,
    `memory_conflict_reviews` and `macro_memories`. It is additive.
+6. Run `006_speaker_names.sql`: `speaker_name` on `documents`, `memory_facts` and
+   `observations`, for conversations between named people. It is additive; Retain needs it to
+   write, and Recall reads databases with or without it.
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine
