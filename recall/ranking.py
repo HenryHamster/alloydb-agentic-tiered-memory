@@ -8,7 +8,7 @@ from typing import Any
 
 from recall.config import MemoryType, RecallConfig
 from recall.models import Memory, Scored, TimeWindow
-from retain.models import Speaker
+from retain.models import CODE_BUILT_PREFIXES, Speaker, is_code_built
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +114,23 @@ def apply_boosts(
         boost += config.evidence_boost * min(evidence - 1, 4) / 4
         if refers_back and _is_user_fact(memory):
             boost += config.user_request_boost
+        if not refers_back and _is_said_by_person(memory):
+            boost -= config.said_penalty
         boost = max(-config.max_boost, min(config.max_boost, boost))
         score = item.relevance * (1 + boost) * memory.confidence
         boosted.append(replace(item, boost=boost, score=score))
     boosted.sort(key=lambda item: item.score, reverse=True)
     return boosted
+
+
+def _is_said_by_person(memory: Memory) -> bool:
+    """Retain's verbatim fallback for a named person ("Melanie said: ..."). An agent chat's
+    "The user said: ..." requests are what back-references need, so they are not included."""
+    return (
+        memory.type == MemoryType.FACT
+        and is_code_built(memory.text)
+        and not memory.text.startswith(CODE_BUILT_PREFIXES)
+    )
 
 
 def _is_user_fact(memory: Memory) -> bool:

@@ -603,3 +603,28 @@ def test_only_temporary_provider_errors_are_retried(error, retry):
     from shared.llm import is_rate_limited
 
     assert is_rate_limited(RuntimeError(error)) is retry
+
+
+def test_list_questions_are_flagged_by_query_analysis():
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false, "list": true}'
+    assert analyze_query(
+        "What events has Caroline attended?", NOW, generate=lambda p: reply
+    ).wants_list
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false}'
+    assert not analyze_query("Where is Caroline from?", NOW, generate=lambda p: reply).wants_list
+
+
+def test_a_persons_verbatim_turn_ranks_below_facts_unless_the_question_refers_back():
+    said = Memory(
+        "s", MemoryType.FACT, "Melanie said: Absolutely! So glad we can always be there.",
+        occurred_at=NOW,
+    )  # fmt: skip
+    request = Memory("u", MemoryType.FACT, "The user said: restart psql-001", occurred_at=NOW)
+    scored = [Scored(said, 0.6), Scored(request, 0.6)]
+    plain = {s.memory.id: s.boost for s in apply_boosts(scored, NOW, None, RecallConfig())}
+    back = {
+        s.memory.id: s.boost
+        for s in apply_boosts(scored, NOW, None, RecallConfig(), refers_back=True)
+    }
+    assert plain["s"] < plain["u"]
+    assert back["s"] >= plain["u"]

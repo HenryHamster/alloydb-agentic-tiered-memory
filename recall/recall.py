@@ -212,8 +212,9 @@ class Recaller:
 
             with tracer.stage("filter_and_abstain") as stage:
                 min_relevance = config.min_relevance if reranked else 0.0
+                max_items = config.list_max_items if plan.wants_list else config.max_items
                 kept, stage.detail = filter_and_abstain(
-                    boosted, as_of, include_invalid, min_relevance, config.max_items,
+                    boosted, as_of, include_invalid, min_relevance, max_items,
                     config.min_items if reranked else 0,
                 )  # fmt: skip
                 stage.count = len(kept)

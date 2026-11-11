@@ -191,6 +191,8 @@ class QueryPlan:
     llm_used: bool = False
     # The question points back at earlier talk without naming it ("that server").
     refers_back: bool = False
+    # The question asks for several items or a count ("what events", "how many").
+    wants_list: bool = False
 
 
 @dataclass

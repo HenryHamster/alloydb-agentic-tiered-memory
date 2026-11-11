@@ -66,6 +66,8 @@ class RecallConfig:
     # empty, so the count, not the score, is the main limit. Results with no positive score
     # still abstain. TODO(recall): confirm both on the full 10-question set.
     max_items: int = 10
+    # List and count questions ("what events has Caroline attended?") need room for every item.
+    list_max_items: int = 15
     min_relevance: float = 0.1
     # Reranker scores are not calibrated across questions: a vague back-reference ("the film
     # we picked") scores its own evidence 0.06-0.08. Keep this many best positive results even
@@ -89,6 +91,10 @@ class RecallConfig:
     # For questions that point back at earlier talk ("that server"), the user's own earlier
     # requests are the facts that name the thing.
     user_request_boost: float = 0.05
+    # A person's verbatim turn kept by Retain's fallback ("Melanie said: Absolutely! So glad we
+    # can always be there") is a reaction, not a fact; the answer once quoted one over the fact
+    # it reacted to. It ranks lower unless the question points back at the talk itself.
+    said_penalty: float = 0.25
     # TODO(recall): tune once real fact ages are available.
     recency_half_life_days: float = 90.0
     # With Reflect enabled, widen from hot to warm/archived until this many results are kept.

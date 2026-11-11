@@ -34,7 +34,7 @@ from reflect.models import FactState, Tier
 from reflect.store import InMemoryReflectStore
 from retain import Scope
 from retain.extraction import GeminiFactExtractor
-from tiered_memory import EXACT_VALUES_RULE, TieredMemory
+from tiered_memory import ANSWER_RULES, EXACT_VALUES_RULE, TieredMemory
 from valkey_buffer import SessionBuffer
 
 
@@ -140,6 +140,7 @@ def test_the_answer_prompt_tells_the_model_to_copy_stored_values_exactly():
     system, _, prompts = answering_system()
     system.answer(SCOPE, "Get the server status", record=False)
     assert EXACT_VALUES_RULE in prompts[0]
+    assert ANSWER_RULES in prompts[0]
 
 
 def test_candidate_writes_share_round_id_and_retention_failure_is_visible():
