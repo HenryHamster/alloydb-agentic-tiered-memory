@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta
 
 from recall.models import QueryPlan, TimeWindow, as_aware
-from shared.llm import Generate
+from shared.llm import Generate, generate_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,8 @@ def analyze_query(
 
     try:
         prompt = _decomposition_prompt(query, query_time, max_sub_queries)
-        data = json.loads(_strip_fences(generate(prompt)))
+        # Rate limits are retried like every other Gemini call; one 429 used to end the answer.
+        data = json.loads(_strip_fences(generate_with_retry(generate, prompt)))
         plan.llm_used = True
         seen = {query.lower()}
         for sub_query in [str(q).strip() for q in data.get("sub_queries") or []][:max_sub_queries]:

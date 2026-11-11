@@ -573,3 +573,17 @@ def test_adk_tool_wrappers_build():
 def test_a_back_reference_needs_a_word_that_points_at_earlier_talk(question, expected):
     reply = '{"sub_queries": [], "time_window": null, "refers_back": true}'
     assert analyze_query(question, NOW, generate=lambda p: reply).refers_back is expected
+
+
+def test_query_analysis_retries_a_rate_limit(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: None)
+    replies = iter([RuntimeError("429 RESOURCE_EXHAUSTED"), '{"sub_queries": ["x"]}'])
+
+    def generate(prompt):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    plan = analyze_query("what did Caroline research?", NOW, generate=generate, strict=True)
+    assert plan.sub_queries[-1] == "x"
