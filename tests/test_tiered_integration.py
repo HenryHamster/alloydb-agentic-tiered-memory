@@ -292,3 +292,9 @@ def test_session_tagged_history_facts_are_recalled_from_the_query_session():
         found[label] = recaller.recall(query, "favourite movie id", decompose=False).items
     assert not found["raw"]
     assert any("tt2543164" in item.memory.text for item in found["wrapped"])
+
+
+def test_answer_instructions_are_answered_but_not_searched():
+    question = {"question": "What did Caroline research?", "instructions": "Answer briefly."}
+
+    assert retrieval_query(question) == "What did Caroline research?"

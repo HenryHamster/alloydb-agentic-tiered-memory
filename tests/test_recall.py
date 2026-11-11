@@ -558,3 +558,18 @@ def test_adk_tool_wrappers_build():
 
     tools = make_recall_tools(Memories().recaller(), SCOPE)
     assert {tool.name for tool in tools} == {"search_memory", "get_episode", "get_supporting"}
+
+
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("How did Melanie's son handle the accident?", False),
+        ("What did Caroline research?", False),
+        ("Restart that database server.", True),
+        ("Which movie did we pick?", True),
+        ("Book the hotel I mentioned earlier.", True),
+    ],
+)
+def test_a_back_reference_needs_a_word_that_points_at_earlier_talk(question, expected):
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": true}'
+    assert analyze_query(question, NOW, generate=lambda p: reply).refers_back is expected

@@ -111,6 +111,13 @@ def _strip_fences(text: str) -> str:
     return text
 
 
+_POINTING = re.compile(
+    r"\b(?:that|those|this|these|the one|the same|earlier|before|previous(?:ly)?|again|"
+    r"last time|we|us|our|you|your|i|me|my)\b",
+    re.IGNORECASE,
+)
+
+
 def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int) -> str:
     return f"""You prepare questions for an AI agent's memory search. Return at most {max_sub_queries} search queries in total.
 
@@ -159,7 +166,10 @@ def analyze_query(
             if sub_query and sub_query.lower() not in seen:
                 seen.add(sub_query.lower())
                 plan.sub_queries.append(sub_query)
-        plan.refers_back = data.get("refers_back") is True
+        # The model also flags plain questions about other people ("How did Melanie's son
+        # handle the accident?"), which pulls raw rounds over specific facts. A real
+        # back-reference points at the talk itself: that, those, earlier, we, you, my.
+        plan.refers_back = data.get("refers_back") is True and bool(_POINTING.search(query))
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")
         if plan.window is None and has_window:
