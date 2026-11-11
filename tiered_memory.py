@@ -54,7 +54,19 @@ class TieredMemory:
         # Reflect (fact merging and macro induction) is off for now; Retain observations still run.
         self.reflect_enabled = reflect
 
-    def record_turn(self, scope, user_text, assistant_text, *, timestamp=None, episode_id=None):
+    def record_turn(
+        self,
+        scope,
+        user_text,
+        assistant_text,
+        *,
+        timestamp=None,
+        episode_id=None,
+        user_name=None,
+        assistant_name=None,
+    ):
+        """Names are for conversations between people ("Caroline", "Melanie"): facts then name
+        who said what, and a named second speaker is a person, not an agent."""
         if not scope.session_id:
             raise ValueError("record_turn requires a session_id")
         at = timestamp or datetime.now(timezone.utc)
@@ -62,7 +74,13 @@ class TieredMemory:
             scope.session_id, user_text, assistant_text, at, round_id=episode_id
         )
         return self.retainer.retain_turn(
-            scope, user_text, assistant_text, timestamp=at, episode_id=round_id
+            scope,
+            user_text,
+            assistant_text,
+            timestamp=at,
+            episode_id=round_id,
+            user_name=user_name,
+            assistant_name=assistant_name,
         )
 
     def context(

@@ -1,5 +1,6 @@
 """Retain records. Field names mirror sql/004_retain_schema.sql."""
 
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
@@ -158,6 +159,7 @@ class Message:
     speaker: Speaker
     text: str
     timestamp: datetime
+    name: str | None = None  # the speaker's own name ("Melanie"); a named speaker is a person
 
     def __post_init__(self):
         _require_aware(self.timestamp)
@@ -176,6 +178,9 @@ class Document:
     occurred_at: datetime
     recorded_at: datetime
     expires_at: datetime | None = None
+    name: str | None = None  # speaker name for extraction; not a stored column
+    # The session's previous turn, read for references ("we did it"); not stored or citable.
+    context: str | None = None
 
     def __post_init__(self):
         _require_aware(self.occurred_at, self.recorded_at, self.expires_at)
@@ -213,10 +218,12 @@ class RelationMention:
 
 # Facts Retain builds from message structure rather than the model (retain/extraction.py).
 CODE_BUILT_PREFIXES = ("The assistant called the ", "A tool returned: ", "The user said: ")
+# Verbatim fallbacks for named speakers: "Melanie said: ...".
+_NAMED_FALLBACK = re.compile(r"[^\W\d][\w .'-]{0,39} said: ")
 
 
 def is_code_built(text: str) -> bool:
-    return text.startswith(CODE_BUILT_PREFIXES)
+    return text.startswith(CODE_BUILT_PREFIXES) or _NAMED_FALLBACK.match(text) is not None
 
 
 @dataclass(frozen=True)
