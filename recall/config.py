@@ -81,7 +81,10 @@ class RecallConfig:
     # verbatim source rounds of the top kept facts: they keep exact IDs and turn order that
     # extracted facts can paraphrase away.
     source_rounds: int = 2
-    source_round_below: float = 0.3
+    # Calibrated so about the same share of questions count as weak as before: searching with
+    # the bare question (not its answer instructions) raised scores by ~0.05-0.1, and at 0.3 no
+    # LoCoMo question got its raw rounds any more, losing "grandma ... my home country, Sweden".
+    source_round_below: float = 0.4
     source_round_chars: int = 2400
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
