@@ -587,3 +587,19 @@ def test_query_analysis_retries_a_rate_limit(monkeypatch):
 
     plan = analyze_query("what did Caroline research?", NOW, generate=generate, strict=True)
     assert plan.sub_queries[-1] == "x"
+
+
+@pytest.mark.parametrize(
+    "error,retry",
+    [
+        ("429 RESOURCE_EXHAUSTED. Resource exhausted.", True),
+        ("504 DEADLINE_EXCEEDED. Deadline expired before operation could complete.", True),
+        ("503 UNAVAILABLE. The service is currently unavailable.", True),
+        ("400 INVALID_ARGUMENT. Request contains an invalid argument.", False),
+        ("403 PERMISSION_DENIED.", False),
+    ],
+)
+def test_only_temporary_provider_errors_are_retried(error, retry):
+    from shared.llm import is_rate_limited
+
+    assert is_rate_limited(RuntimeError(error)) is retry
