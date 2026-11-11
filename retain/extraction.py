@@ -1161,17 +1161,24 @@ _SHARED_MEDIA = re.compile(
 
 
 def _drop_invented_dates(row, source, said_on):
-    """A full date far from the day said, with no date words in the source, was made up.
+    """A full date far from the day said, which nothing in the source supports, was made up.
 
     "I've known them for 4 years" once came back dated 2019, and the answer then counted back
-    four more years. With no phrase, day, month or year in the turn, the date can only be
-    the model's arithmetic; the message time stands instead.
+    four more years; "5 years already!" came back as 2018 although the only date phrase in
+    the turn was a figurative "feels like just yesterday". A month, year, season or holiday
+    may be where the date came from, so it stands; a relative phrase supports it only if it
+    resolves to about that date. Otherwise the message time stands instead.
     """
-    if _relative_dates(source, said_on) or _DATE_WORDS.search(source):
+    if _DATE_WORDS.search(source):
         return row
+    phrases = [found[2] for found in _relative_dates(source, said_on) if found[1] == "day"]
     for field in ("occurred_at", "valid_from"):
         day = _model_day(row, field)
-        if day is not None and abs((day.astimezone(said_on.tzinfo) - said_on).days) > 31:
+        if day is None:
+            continue
+        day = day.astimezone(said_on.tzinfo)
+        supported = any(abs((day.date() - value).days) <= 31 for value in phrases)
+        if not supported and abs((day - said_on).days) > 31:
             row[field] = None
     return row
 

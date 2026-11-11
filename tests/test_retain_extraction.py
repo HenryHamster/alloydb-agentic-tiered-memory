@@ -256,7 +256,8 @@ def test_invalid_dates_still_reject_the_row(field, value):
     ],
 )
 def test_complete_dates_keep_their_exact_timestamp(value, expected):
-    selected = chunks()
+    # The source states the date, so it is not mistaken for one the model made up.
+    selected = chunks(SOURCE + " That was on 29 February 2024.")
     extractor, _ = extractor_for([fact_row(selected[0], occurred_at=value)])
 
     (fact,) = extractor.extract(selected)

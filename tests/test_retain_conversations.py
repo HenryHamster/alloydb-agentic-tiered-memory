@@ -594,3 +594,16 @@ def test_a_shared_photo_keeps_the_day_it_was_shared_and_the_text_dates_its_subje
         "Melanie shared a photo of a painting of a sunset with a pink sky that she did the week "
         "before 13 October 2023."
     )
+
+
+def test_a_figurative_yesterday_does_not_support_a_date_years_back():
+    row = resolve_in(
+        "Melanie: 5 years already! Time flies- feels like just yesterday I put this dress on!",
+        "Melanie has been married for 5 years.",
+        "5 years already!",
+        FRIDAY_9_JUNE,
+        category=Category.ATTRIBUTE,
+        valid_from="2018-06-09",
+    )
+
+    assert row["valid_from"] is None
