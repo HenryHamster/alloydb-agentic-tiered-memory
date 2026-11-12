@@ -3,8 +3,11 @@
 from collections.abc import Sequence
 from datetime import datetime
 
+from recall.config import MemoryType
 from recall.models import Memory, RecallItem, Scored
 from shared.tokens import TokenCounter, estimate_tokens
+
+ORIGINAL_WORDING_HEADING = "Original wording (exact words behind the memories above):"
 
 
 def format_line(memory: Memory, stale: bool) -> str:
@@ -34,14 +37,20 @@ def pack(
 ) -> tuple[list[RecallItem], str, int, bool]:
     """Fills the budget best-first; skips items that do not fit so smaller ones still can."""
     items, lines, used, truncated = [], [], 0, False
+    quoting = False
     for item in scored:
         stale = item.memory.is_stale(as_of)
         line = format_line(item.memory, stale)
+        heading = item.memory.type == MemoryType.MESSAGE and not quoting
+        if heading:
+            # Quotes sit under their own heading so the memories above stay the answer's basis.
+            line = f"{ORIGINAL_WORDING_HEADING}\n{line}"
         tokens = count_tokens(line)
         if used + tokens > max_tokens:
             truncated = True
             continue
         used += tokens
+        quoting = quoting or heading
         lines.append(line)
         items.append(
             RecallItem(

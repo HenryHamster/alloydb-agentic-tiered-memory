@@ -45,13 +45,14 @@ RETRIEVAL_QUERY_CHARS = 300
 
 
 def retrieval_query(question):
-    """What Recall searches with: the question plus a short hint naming each tool.
+    """What Recall searches with: the question, plus a short hint naming each tool.
 
-    The answer prompt gets the full tool schemas and output rules; in a search they would
-    outweigh the question itself. Returns None for questions without tools.
+    The answer prompt gets the full tool schemas, output rules and answer instructions; in a
+    search they would outweigh the question itself. Returns None when the prompt is the
+    question alone.
     """
     if not question.get("tools"):
-        return None
+        return question["question"] if question.get("instructions") else None
     hints = "; ".join(f"{t['name']}: {t.get('description', '')}" for t in question["tools"])
     return (question["question"] + "\nTools: " + hints)[:RETRIEVAL_QUERY_CHARS]
 
@@ -240,6 +241,8 @@ def run_job(
                 schema.restore(snapshot)  # Includes tiers, access counts and Reflect state.
                 system = backend.system(schema)
                 prompt = question["question"]
+                if question.get("instructions"):
+                    prompt += "\n\n" + question["instructions"]
                 if question.get("tools"):
                     prompt += "\n\nAvailable tool schemas:\n" + json.dumps(
                         question["tools"], ensure_ascii=False

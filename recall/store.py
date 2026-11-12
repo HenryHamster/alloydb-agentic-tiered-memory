@@ -3,14 +3,14 @@
 import re
 from collections import defaultdict
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from recall.config import EXPLAINING_RELATIONS, MemoryType
 from recall.models import Memory, TimeWindow
 from retain.entities import normalize_name
 from retain.models import Document, Scope, Visibility, is_visible, resolve_visibility
-from retain.store import InMemoryRetainStore
+from retain.store import InMemoryRetainStore, _cosine
 from retain.store import _cosine as cosine  # same similarity Retain links with
 
 
@@ -65,6 +65,19 @@ class RecallStore(Protocol):
 
     def get_supporting(self, scope: Scope, observation_id: str) -> list[Memory]:
         """The readable facts an observation was built from."""
+        ...
+
+    def search_messages(
+        self,
+        scope: Scope,
+        embeddings: Sequence[Sequence[float]],
+        limit: int,
+        exclude_episode_ids: Sequence[str] = (),
+        on_day: date | None = None,
+    ) -> list[Memory]:
+        """Readable original user/assistant messages nearest to any query vector, as MESSAGE
+        memories (id = document_id), best first and without duplicates. With `on_day`, only
+        messages said on that day."""
         ...
 
 
@@ -193,6 +206,26 @@ class InMemoryRecallStore:
             return []
         facts = self.retain_store.get_facts(observation.fact_ids)
         return [Memory.from_fact(fact) for fact in facts if fact.visible_to(scope)]
+
+    def search_messages(self, scope, embeddings, limit, exclude_episode_ids=(), on_day=None):
+        excluded = set(exclude_episode_ids)
+        documents = [
+            d
+            for d in self.retain_store.documents.values()
+            if d.embedding is not None
+            and d.episode_id not in excluded
+            and episode_visible(d.scope, scope)
+            and (on_day is None or (d.occurred_at is not None and d.occurred_at.date() == on_day))
+        ]
+        best: dict[str, tuple[float, object]] = {}
+        for vector in embeddings:
+            ranked = sorted(documents, key=lambda d: -_cosine(d.embedding, vector))[:limit]
+            for d in ranked:
+                score = _cosine(d.embedding, vector)
+                if d.document_id not in best or score > best[d.document_id][0]:
+                    best[d.document_id] = (score, d)
+        ordered = sorted(best.values(), key=lambda row: -row[0])[:limit]
+        return [Memory.from_message(d) for _, d in ordered]
 
     # Candidate rows: (memory, embedding) readable by `scope`, filtered by type and validity.
 

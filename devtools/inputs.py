@@ -66,6 +66,12 @@ def validate_questions(document):
                 for t in question["tools"]
             ):
                 raise ValueError("Tools need name and JSON-schema parameters")
+        # Answer-format rules ("answer in at most 6 words") go in the answer prompt only, so
+        # they are not searched as if they were part of the question.
+        if "instructions" in question and (
+            not isinstance(question["instructions"], str) or not question["instructions"].strip()
+        ):
+            raise ValueError("instructions must be nonempty text")
         if "expected_answer" in question and not isinstance(question["expected_answer"], str):
             raise ValueError("expected_answer must be text")
         if "expected_tool_call" in question and not isinstance(
@@ -76,7 +82,9 @@ def validate_questions(document):
 
 
 def inference_questions(questions):
-    return [{k: q[k] for k in ("id", "question", "tools") if k in q} for q in questions]
+    return [
+        {k: q[k] for k in ("id", "question", "instructions", "tools") if k in q} for q in questions
+    ]
 
 
 def reference_time(history):

@@ -46,8 +46,17 @@ def thinking(level: str | None) -> dict:
     return {"thinking_config": {"thinking_level": level}} if level else {}
 
 
+# Temporary provider errors worth another try: rate limits, and the server being busy or timing
+# out. On LoCoMo runs a single 504 or 429 from one of ~800 calls otherwise ended the whole run;
+# the same request then succeeded on replay.
+_RETRYABLE = ("429", "RESOURCE_EXHAUSTED", "500 INTERNAL", "503", "UNAVAILABLE", "504",
+              "DEADLINE_EXCEEDED")  # fmt: skip
+
+
 def is_rate_limited(error: Exception) -> bool:
-    return "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
+    """True for errors a retry can fix: rate limits and temporary server failures."""
+    text = str(error)
+    return any(marker in text for marker in _RETRYABLE)
 
 
 def generate_with_retry(generate: Generate, prompt: str, attempts: int = 4) -> str:

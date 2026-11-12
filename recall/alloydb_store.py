@@ -240,6 +240,46 @@ class AlloyDBRecallStore:
             ],
         }
 
+    def search_messages(self, scope, embeddings, limit, exclude_episode_ids=(), on_day=None):
+        if not embeddings:
+            return []
+        params = self._params(scope, datetime.now(timezone.utc), False)
+        params["exclude"] = list(exclude_episode_ids)
+        params["limit"] = limit
+        params["on_day"] = on_day
+        parts = []
+        for i, vector in enumerate(embeddings):
+            params[f"qvec_{i}"] = _vector(vector)
+            parts.append(
+                "(SELECT d.document_id::text AS id, d.episode_id, d.speaker, d.text,"
+                " d.occurred_at, d.recorded_at,"
+                f" 1 - (d.embedding <=> %(qvec_{i})s::vector) AS similarity"
+                f" FROM documents d WHERE {EPISODE_SQL} AND d.embedding IS NOT NULL"
+                " AND d.speaker IN ('user', 'assistant')"
+                " AND NOT (d.episode_id = ANY(%(exclude)s::text[]))"
+                " AND (%(on_day)s::date IS NULL"
+                " OR (d.occurred_at AT TIME ZONE 'UTC')::date = %(on_day)s::date)"
+                f" ORDER BY d.embedding <=> %(qvec_{i})s::vector LIMIT %(limit)s)"
+            )
+        sql = (
+            "SELECT DISTINCT ON (id) id, episode_id, speaker, text, occurred_at, recorded_at,"
+            " similarity FROM (" + " UNION ALL ".join(parts) + ") m"
+            " ORDER BY id, similarity DESC"
+        )
+        rows = sorted(self._fetch(sql, params), key=lambda row: -row[6])[:limit]
+        return [
+            Memory(
+                id=row[0],
+                type=MemoryType.MESSAGE,
+                text=row[3],
+                occurred_at=row[4],
+                recorded_at=row[5],
+                speaker=Speaker(row[2]),
+                source_episode_id=row[1],
+            )
+            for row in rows
+        ]
+
     def get_supporting(self, scope, observation_id):
         if not _is_uuid(observation_id):
             return []
