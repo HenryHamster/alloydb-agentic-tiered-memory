@@ -181,6 +181,8 @@ class Document:
     name: str | None = None  # speaker name for extraction; not a stored column
     # The session's previous turn, read for references ("we did it"); not stored or citable.
     context: str | None = None
+    # The message's own vector, stored so Recall can find exact wording by meaning.
+    embedding: tuple[float, ...] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         _require_aware(self.occurred_at, self.recorded_at, self.expires_at)

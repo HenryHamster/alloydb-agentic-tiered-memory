@@ -20,11 +20,15 @@ CREATE TABLE IF NOT EXISTS documents (
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ,          -- retention window ("valid for x time"); NULL keeps forever
     retained_at TIMESTAMPTZ,         -- set when Retain finished; ingestion ledger for retries
+    embedding VECTOR(768),           -- the message's own vector, so Recall can quote exact words
     UNIQUE (episode_id, position)
 );
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS embedding VECTOR(768);
 
 CREATE INDEX IF NOT EXISTS documents_episode_idx ON documents (user_id, episode_id, position);
 CREATE INDEX IF NOT EXISTS documents_expiry_idx ON documents (expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS documents_embedding_idx
+ON documents USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 
 -- One 8-15 word claim per row. Visibility decides who can read it; project_id/session_id record origin.
 CREATE TABLE IF NOT EXISTS memory_facts (

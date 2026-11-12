@@ -398,8 +398,8 @@ def _insert_document(cur, document):
     cur.execute(
         "INSERT INTO documents "
         "(document_id, episode_id, position, user_id, project_id, session_id, speaker, text, "
-        "occurred_at, recorded_at, expires_at) "
-        "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "occurred_at, recorded_at, expires_at, embedding) "
+        "VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector) "
         "ON CONFLICT (document_id) DO NOTHING RETURNING document_id::text",
         (
             document.document_id,
@@ -413,6 +413,7 @@ def _insert_document(cur, document):
             document.occurred_at,
             document.recorded_at,
             document.expires_at,
+            _vector(document.embedding) if document.embedding is not None else None,
         ),
     )
     if cur.fetchone() is not None:

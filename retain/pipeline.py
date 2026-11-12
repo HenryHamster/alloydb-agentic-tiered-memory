@@ -40,12 +40,19 @@ from retain.store import RetainStore
 logger = logging.getLogger(__name__)
 
 
+# Long serialized tool events are cut; the start of a message carries what it is about.
+MESSAGE_EMBED_CHARS = 4000
+
+
 @dataclass(frozen=True)
 class RetainConfig:
     max_chunk_chars: int = 700
     document_ttl: timedelta | None = timedelta(days=90)  # None keeps documents forever
     # Every N retained rounds per scope: consolidate observations, purge expired documents.
     maintenance_every: int = 20  # 0 disables
+    # Store a vector per user/assistant message, so Recall can quote the exact words a fact
+    # summarised away ("the worst was self-doubt"). One small embedding call per round.
+    embed_messages: bool = True
 
 
 def _utcnow() -> datetime:
@@ -156,6 +163,7 @@ class Retainer:
         links += causal_links(extracted, stored_id)
         links += self.linker.link(kept) if kept else []
 
+        documents = self._embed_messages(documents)
         batch = WriteBatch(
             documents=tuple(documents),
             facts=tuple(kept),
@@ -169,6 +177,24 @@ class Retainer:
         self.store.write(batch)
         self._maybe_maintain(scope, now)
         return RetainResult(episode_id, batch, extracted=len(extracted))
+
+    def _embed_messages(self, documents: list[Document]) -> list[Document]:
+        if not self.config.embed_messages:
+            return documents
+        index = [
+            i
+            for i, d in enumerate(documents)
+            if d.speaker in (Speaker.USER, Speaker.ASSISTANT) and d.text.strip()
+        ]
+        if not index:
+            return documents
+        vectors = self.embedder([documents[i].text[:MESSAGE_EMBED_CHARS] for i in index])
+        if len(vectors) != len(index):
+            raise ValueError("Embedder must return one vector per message")
+        out = list(documents)
+        for i, vector in zip(index, vectors):
+            out[i] = replace(out[i], embedding=tuple(vector))
+        return out
 
     def _maybe_maintain(self, scope: Scope, now: datetime) -> None:
         """Proposal step 4 and document retention, run after the round is committed."""
