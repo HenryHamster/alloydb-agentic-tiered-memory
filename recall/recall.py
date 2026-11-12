@@ -21,7 +21,9 @@ See docs/RECALL_NOTES.md for decisions and what is still open.
 """
 
 import logging
+import re
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from recall.config import (
@@ -34,7 +36,7 @@ from recall.config import (
 )
 from recall.models import Memory, QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
-from recall.query import analyze_query
+from recall.query import analyze_query, said_on_day
 from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
 from recall.store import RecallStore
 from retain.embeddings import Embedder
@@ -235,6 +237,22 @@ class Recaller:
             stage.count = len(rounds)
             stage.detail = {"episodes": [item.memory.id for item in rounds]}
 
+        if (
+            depth == RecallDepth.LOW
+            and config.quote_messages > 0
+            and embeddings is not None
+            and self.reranker is not None
+            and not _ASKS_DATE.match(query)
+            # A list needs every matching fact, and quotes would push items out.
+            and not plan.wants_list
+        ):
+            with tracer.stage("quote_messages") as stage:
+                quotes, stage.detail = self._quote_messages(
+                    scope, plan, kept, embeddings, exclude_episode_ids, said_on_day(query)
+                )
+                kept = [*kept, *quotes]
+                stage.count = len(quotes)
+
         # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
             items, context, used, truncated = pack(kept, as_of, max_tokens, self.count_tokens)
@@ -262,6 +280,46 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _quote_messages(self, scope, plan, kept, embeddings, exclude_episode_ids, day=None):
+        """Original messages that match the question on their own, placed after the facts.
+
+        Searched by meaning, reranked against every sub-query like any candidate, and kept
+        only above quote_min_relevance; a message already shown in a source round is skipped.
+        A question about what was said on a named day ("on 16 June, 2023") searches only that
+        day's messages: facts carry when an event happened, not the day it was talked about.
+        """
+        config = self.config
+        try:
+            found = self.store.search_messages(
+                scope, embeddings, config.quote_pool, exclude_episode_ids, on_day=day
+            )
+        except Exception as e:
+            if self.strict:
+                raise
+            logger.warning("Message search failed; answering without quotes: %s", e)
+            return [], {"error": str(e)}
+        shown = "\n".join(i.memory.text for i in kept if i.memory.type == MemoryType.EPISODE)
+        candidates = [Scored(m, 0.0, channels=("quote",)) for m in found if m.text not in shown]
+        if not candidates:
+            return [], {"candidates": 0}
+        n = len(candidates)
+        ranked, reranked = rerank(
+            plan.sub_queries, candidates, self.reranker, n, n, strict=self.strict
+        )
+        if not reranked:
+            return [], {"candidates": n, "reranked": False}
+        quotes = [
+            replace(item, score=item.relevance)
+            for item in ranked
+            if item.relevance >= config.quote_min_relevance
+        ][: config.quote_messages]
+        return quotes, {
+            "day": day.isoformat() if day else None,
+            "candidates": n,
+            "top": [(item.memory.id, round(item.relevance, 3)) for item in ranked[:5]],
+            "quoted": [item.memory.id for item in quotes],
+        }
 
     def _source_rounds(
         self,
@@ -358,6 +416,14 @@ class Recaller:
             boosted, as_of, include_invalid, config.min_relevance, config.followup_limit
         )
         return added
+
+
+# Questions answered by a date or duration, where facts carry the resolved date.
+_ASKS_DATE = re.compile(
+    r"\s*(?:when|since when|how long|how many (?:days|weeks|months|years)"
+    r"|what (?:year|month|date|day|time))\b",
+    re.IGNORECASE,
+)
 
 
 def build_recaller(

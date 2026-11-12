@@ -28,6 +28,7 @@ class MemoryType(StrEnum):
     OBSERVATION = "observation"  # observations
     EPISODE = "episode"  # documents grouped by episode_id
     MENTAL_MODEL = "mental_model"  # Reflect macro_memories
+    MESSAGE = "message"  # one original message, quoted by Recall (documents.embedding)
 
 
 DEFAULT_TYPES = (MemoryType.FACT, MemoryType.OBSERVATION)
@@ -86,6 +87,14 @@ class RecallConfig:
     # LoCoMo question got its raw rounds any more, losing "grandma ... my home country, Sweden".
     source_round_below: float = 0.4
     source_round_chars: int = 2400
+    # Facts keep the gist of a message and can drop the detail asked about ("the worst was
+    # self-doubt"). The automatic context also searches original messages by meaning and quotes
+    # up to `quote_messages` that the reranker scores at least `quote_min_relevance` on their
+    # own, after the facts and without taking a fact's slot. Date questions skip them: facts
+    # carry the resolved date, a message only "last Friday". 0 turns quotes off.
+    quote_messages: int = 2
+    quote_min_relevance: float = 0.5
+    quote_pool: int = 20
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
     recency_boost: float = 0.10

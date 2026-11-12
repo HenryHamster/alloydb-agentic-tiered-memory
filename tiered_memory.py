@@ -32,6 +32,12 @@ ANSWER_RULES = (
     "be true, give the most likely answer the memory supports instead of saying it is not "
     "mentioned."
 )
+# Recall quotes a few original messages next to the facts it found; facts are summaries.
+MESSAGE_RULE = (
+    "Lines under Original wording are the exact words someone said. The memory lines above "
+    "them decide the answer; use the original wording only to add exact details to what those "
+    "memories support. If they point to different things, follow the memories."
+)
 EXACT_VALUES_RULE = (
     "When you fill tool arguments, copy IDs, names and values exactly as they appear in "
     "memory. Don't add URL schemes, domains, regions or other parts that memory doesn't contain."
@@ -145,6 +151,8 @@ class TieredMemory:
             + ANSWER_RULES
             + " "
             + EXACT_VALUES_RULE
+            + " "
+            + MESSAGE_RULE
             + "\n\n"
             + context.format()
             + "\n\nUser: "

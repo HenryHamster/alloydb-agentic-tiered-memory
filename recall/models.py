@@ -143,6 +143,19 @@ class Memory:
             source_episode_id=first.episode_id,
         )
 
+    @classmethod
+    def from_message(cls, document: Document) -> "Memory":
+        """One original message, quoted with who said it."""
+        return cls(
+            id=document.document_id,
+            type=MemoryType.MESSAGE,
+            text=document.text,
+            recorded_at=document.recorded_at,
+            occurred_at=document.occurred_at,
+            speaker=document.speaker,
+            source_episode_id=document.episode_id,
+        )
+
     def primary_date(self) -> datetime | None:
         return self.occurred_at or self.valid_from or self.recorded_at
 

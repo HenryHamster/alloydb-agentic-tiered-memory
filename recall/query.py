@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from recall.models import QueryPlan, TimeWindow, as_aware
 from shared.llm import Generate, generate_with_retry
@@ -16,6 +16,13 @@ _MONTHS = [
 ]  # fmt: skip
 _LAST_N_RE = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s+(day|week|month|year)s?\b")
 _MONTH_RE = re.compile(r"\b(?:in|during)\s+(" + "|".join(_MONTHS) + r")(?:\s+((?:19|20)\d{2}))?\b")
+_MONTH_NAMES = "|".join(_MONTHS)
+_DAY_FIRST_RE = re.compile(
+    r"\bon\s+(\d{1,2})(?:st|nd|rd|th)?\s+(" + _MONTH_NAMES + r"),?\s+((?:19|20)\d{2})\b"
+)
+_MONTH_FIRST_RE = re.compile(
+    r"\bon\s+(" + _MONTH_NAMES + r")\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d{2})\b"
+)
 _YEAR_RE = re.compile(r"\b(?:in|during)\s+((?:19|20)\d{2})\b")
 
 
@@ -87,6 +94,23 @@ def parse_time_phrase(text: str, now: datetime) -> TimeWindow | None:
     if match:
         return _year_window(int(match.group(1)), tz)
     return None
+
+
+def said_on_day(text: str) -> date | None:
+    """The exact day a question names ("on 16 June, 2023", "on May 3, 2023"), else None."""
+    lowered = text.lower()
+    match = _DAY_FIRST_RE.search(lowered)
+    if match:
+        day, month, year = match.group(1), match.group(2), match.group(3)
+    else:
+        match = _MONTH_FIRST_RE.search(lowered)
+        if not match:
+            return None
+        month, day, year = match.group(1), match.group(2), match.group(3)
+    try:
+        return date(int(year), _MONTHS.index(month) + 1, int(day))
+    except ValueError:
+        return None
 
 
 def parse_time_range(text: str | None, now: datetime) -> TimeWindow | None:
