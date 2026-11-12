@@ -10,9 +10,10 @@ linking, update classification, and observation building are implemented.
 ```
 AsyncMemoryWorker (retainer=...)          one queued turn, trusted Scope(user, project, session)
 └─ Retainer.retain_turn
-   1 documents        store both messages; episode = one round; skip if already retained
+   1 documents        store the round's messages, one per reply or tool-event run;
+                      episode = one round; skip if already retained
    2 chunk_documents  700-char lossless spans (shared/chunking.py)
-   3 FactExtractor    ~8-15 word facts + evidence quote, when, entities, relations,
+   3 FactExtractor    detailed facts + evidence quote, when, entities, relations,
                       causal refs, proposed visibility; tool calls/results built by code
    4 EntityResolver   mentions -> canonical per-user entities (exact, alias, fuzzy)
    5 Embedder         768-dim text-embedding-005 vectors
@@ -58,14 +59,51 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   Reduced-precision ISO dates (`2023`, `2024-03`) in either extracted timestamp field preserve
   the fact and date in `details.when`, leaving the exact timestamp unset. The usual source-time
   default for `valid_from` still applies in storage; it does not mean the partial date was
-  resolved. No missing month or day is invented. Complete dates and timestamps remain validated;
-  a cited relative phrase can supply an exact date only when the source timestamp is known.
+  resolved. No missing month or day is invented. Complete dates and timestamps remain validated.
+- **Relative dates are resolved by code** from the phrase in the evidence quote and the time the
+  message was sent (only when the source timestamp is known): days ("yesterday", "3 days ago"),
+  weekdays ("last Friday" = the most recent Friday strictly before), weekends, weeks ("last week"
+  = `occurred_at` 7 days earlier, `when` "the week before 22 May 2023"), months and years
+  (`when` only). The model put "last Friday" a week early in all four LoCoMo cases, so the code's
+  date wins over the model's, and a disagreement never drops the fact. The phrase in the fact text
+  is replaced with the date ("last month" becomes "in April 2023") so an answer cannot count back
+  from it twice; "ten years ago" keeps the duration and adds "(around 2013)". The model is told to
+  copy relative words as said rather than compute dates. The phrase is looked for in the quote,
+  then the sentence around it (short quotes drop "last week" said a few words later), then the
+  fact text. A day the model wrote into the text anyway is replaced when it is the only date
+  there and within two weeks of the code's date; a date already present is never written twice;
+  an event whose text has no date gets one. Failing all of that, a model date within two weeks
+  of the chunk's only day phrase is corrected to it. A full date more than a month from the day said, in a turn
+  with no date words at all (no phrase, month, year, season or holiday), is dropped: it can only
+  be the model's arithmetic ("known them for 4 years" once came back dated 2019). A "shared a
+  photo" fact keeps the day it was shared: in "a painting I did last week" the phrase dates the
+  painting, so only the text gets that date (moving the fact a week back lost "what painting did
+  Melanie show on 13 October").
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
+- **People, not only agents.** `retain_turn` / `record_turn` take optional `user_name` and
+  `assistant_name`, and a serialized assistant event may carry a `name`. A named speaker is a
+  person (two-person chats such as LoCoMo): the name goes to the model as `speaker_name`, facts
+  name who said what instead of "the user"/"the assistant", their statements are `asserted`
+  `world` facts, and their preferences are not demoted. Without a name nothing changes.
+  The prompt asks for every statement in a turn (opinions, meanings, reactions, feelings, a view
+  phrased as a question) and for "it/that/we did it" to be named from the context. That context
+  includes the session's previous turn (`Document.context`, read but never stored or cited), so
+  "we just did it yesterday" can name the walk shown in the photo one round earlier.
+  A named speaker's fact that still opens with "The assistant" gets their name.
+- **One document per reply.** A serialized event list from the assistant side is split: each
+  plain reply becomes its own document with clean text (quotable, with its own speaker name),
+  and consecutive tool calls and results stay together as JSON for the tool-fact builders.
+- **Detail over brevity.** Facts are complete statements that keep names, numbers, durations,
+  places, what an object means, what was made, and feelings, with each detail in the same fact as
+  the thing it describes. Photo captions (`[shares a photo: ...]`) are recorded as what the
+  speaker showed. The earlier 8-15 word target dropped exactly the details LoCoMo asked about.
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
   same user and visible from the new fact; a fact never supersedes a broader one.
 - **Fail-soft on model output.** A bad extraction row, repeated key or bad reference drops only
-  that row; an invalid or missing classifier decision keeps the fact as new; an ambiguous entity
+  that row; an invalid or missing classifier decision keeps the fact as new, and so does a classifier
+  call that still fails after its retries (Gemini answered one small LoCoMo request with 429
+  on every attempt); an ambiguous entity
   name gets its own entity. A response that is not valid JSON still fails the round, which then
   stays unretained so it can be retried.
 - **Extraction cost.** `build_retainer` runs extraction at `low` thinking with the lean schema
@@ -74,8 +112,14 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   full schema at `medium`. On three Mem2Act histories this cut extraction from $2.63 to $0.35 and
   kept every key fact. Code locates the evidence quote, including quotes of serialized assistant
   turns whose line breaks are stored as `\n`; the words must still appear in order.
-- **Requests are facts.** The prompt records what the user asked for, and a short user message
-  that no extracted fact cites is kept verbatim (`The user said: ...`).
+- **Requests are facts.** The prompt records what the user asked for, and a message chunk that
+  no extracted fact cites is kept verbatim: `The user said: ...`, or `Melanie said: ...` for a
+  named speaker. An unnamed agent's own reply is not. Chit-chat is not kept: a turn of at most 12
+  words made only of function words and reactions ("Wow, so proud of you!"); any number,
+  question, request, name or other content word keeps it. Between named people, questions are
+  small talk and are dropped from the turn ("Wow! How was it?" keeps nothing), and the fallback
+  text drops the "Melanie:" prefix so the name is not repeated. Rejected model rows are counted by
+  reason in one log line per extraction.
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
@@ -87,9 +131,16 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   categories: a tool call cites the user's request, a tool result the call before it, and an
   assistant fact the tool event whose names it repeats, else the request. `evidenced_by` is not
   a Reflect clustering relation, so these links add no macro summaries.
-- **Code-built facts** (tool calls, tool results, `The user said: ...`) get `other` entities from
+- **Code-built facts** (tool calls, tool results, `The user said: ...`, `<Name> said: ...`) get `other` entities from
   naming fields (`*_id`, `name`, `path`, `url`, `make`, ...) and ID-like tokens, never tool
   names. Two code-built facts never get a `similar` link: their template wording inflates cosine.
+- **Observations.** One per entity with at least three current asserted facts. The people
+  talking get none: theirs would summarize nearly every fact, lose detail and be rebuilt every
+  session (observations were 42% of LoCoMo ingest cost). When a group only gains facts, the
+  model updates the previous summary from the new facts alone. The prompt says newer facts win
+  (with their date), every person, pet and item is named, and each fact belongs to the person it
+  is about. A version is dated from its facts, never the wall clock, so a replayed history
+  doesn't make a summary look newer than the facts it covers.
 - **Graph.** Stored relationally (`memory_links`, `entity_relations`); traversals are SQL joins or
   recursive CTEs. Apache Spark can read these tables for offline graph analytics; it is not on
   the per-turn path.

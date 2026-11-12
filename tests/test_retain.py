@@ -242,6 +242,20 @@ def test_turn_stores_documents_facts_entities_relations_and_causal_links():
     assert result.extracted == 3 and not result.skipped
 
 
+def test_each_message_is_stored_with_its_own_vector_unless_turned_off():
+    extractor = ScriptedExtractor(dict(text="User likes dark mode.", evidence="dark mode"))
+    store = InMemoryRetainStore()
+    retainer(extractor, store).retain_turn(SCOPE, "I like dark mode.", "Noted.")
+    assert len(store.documents) == 2
+    assert all(len(d.embedding) == len(embed(["x"])[0]) for d in store.documents.values())
+
+    plain = InMemoryRetainStore()
+    retainer(extractor, plain, config=RetainConfig(embed_messages=False)).retain_turn(
+        SCOPE, "I like dark mode.", "Noted."
+    )
+    assert all(d.embedding is None for d in plain.documents.values())
+
+
 def test_replayed_episode_is_skipped_without_calling_the_model():
     extractor = ScriptedExtractor(dict(text="User prefers Python 3.11.", evidence="Python"))
     pipeline = retainer(extractor)

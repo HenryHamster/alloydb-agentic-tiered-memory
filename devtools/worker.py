@@ -96,8 +96,17 @@ def ingest(system, history, logical, clock, usage, output):
                 - timedelta(seconds=sum(len(s["messages"]) for s in history["sessions"]) - ordinal)
             )
             usage.context = {"stage": "retain", "session": session["id"], "round": index}
+            # An optional "name" on a history message marks a person (two-person chats such as
+            # LoCoMo); assistant event names travel inside the serialized events.
+            first = session["messages"][indices[0]] if indices else {}
+            name = first.get("name") if first.get("role") == "user" else None
             receipt = system.record_turn(
-                scope, user, events, timestamp=at, episode_id=f"{logical}:{session['id']}:{index}"
+                scope,
+                user,
+                events,
+                timestamp=at,
+                episode_id=f"{logical}:{session['id']}:{index}",
+                user_name=name if isinstance(name, str) and name.strip() else None,
             )
             save_json(output / "retention" / f"{ordinal:05d}.json", serial(receipt))
             mapping.append({"session": session["id"], "round": index, "messages": indices})

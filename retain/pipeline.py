@@ -1,5 +1,6 @@
 """Retain pipeline: documents -> chunks -> facts -> entities -> embeddings -> updates -> links."""
 
+import json
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -39,12 +40,19 @@ from retain.store import RetainStore
 logger = logging.getLogger(__name__)
 
 
+# Long serialized tool events are cut; the start of a message carries what it is about.
+MESSAGE_EMBED_CHARS = 4000
+
+
 @dataclass(frozen=True)
 class RetainConfig:
     max_chunk_chars: int = 700
     document_ttl: timedelta | None = timedelta(days=90)  # None keeps documents forever
     # Every N retained rounds per scope: consolidate observations, purge expired documents.
     maintenance_every: int = 20  # 0 disables
+    # Store a vector per user/assistant message, so Recall can quote the exact words a fact
+    # summarised away ("the worst was self-doubt"). One small embedding call per round.
+    embed_messages: bool = True
 
 
 def _utcnow() -> datetime:
@@ -77,6 +85,9 @@ class Retainer:
         self.config = config
         self.clock = clock
         self._rounds_since_maintenance: dict[Scope, int] = {}
+        # Names of the people talking, per user; their own entities get no observation.
+        self._speaker_names: dict[str, set[str]] = {}
+        self._last_turn: dict[tuple, tuple] = {}
 
     def retain_turn(
         self,
@@ -86,9 +97,14 @@ class Retainer:
         *,
         timestamp: datetime | None = None,
         episode_id: str | None = None,
+        user_name: str | None = None,
+        assistant_name: str | None = None,
     ) -> RetainResult:
         at = timestamp or self.clock()
-        messages = [Message(Speaker.USER, user_msg, at), Message(Speaker.ASSISTANT, ai_msg, at)]
+        messages = [
+            Message(Speaker.USER, user_msg, at, user_name),
+            Message(Speaker.ASSISTANT, ai_msg, at, assistant_name),
+        ]
         return self.retain(scope, messages, episode_id=episode_id)
 
     def retain(
@@ -147,6 +163,7 @@ class Retainer:
         links += causal_links(extracted, stored_id)
         links += self.linker.link(kept) if kept else []
 
+        documents = self._embed_messages(documents)
         batch = WriteBatch(
             documents=tuple(documents),
             facts=tuple(kept),
@@ -160,6 +177,24 @@ class Retainer:
         self.store.write(batch)
         self._maybe_maintain(scope, now)
         return RetainResult(episode_id, batch, extracted=len(extracted))
+
+    def _embed_messages(self, documents: list[Document]) -> list[Document]:
+        if not self.config.embed_messages:
+            return documents
+        index = [
+            i
+            for i, d in enumerate(documents)
+            if d.speaker in (Speaker.USER, Speaker.ASSISTANT) and d.text.strip()
+        ]
+        if not index:
+            return documents
+        vectors = self.embedder([documents[i].text[:MESSAGE_EMBED_CHARS] for i in index])
+        if len(vectors) != len(index):
+            raise ValueError("Embedder must return one vector per message")
+        out = list(documents)
+        for i, vector in zip(index, vectors):
+            out[i] = replace(out[i], embedding=tuple(vector))
+        return out
 
     def _maybe_maintain(self, scope: Scope, now: datetime) -> None:
         """Proposal step 4 and document retention, run after the round is committed."""
@@ -178,11 +213,37 @@ class Retainer:
             logger.warning("Retain maintenance failed for %s", scope, exc_info=True)
 
     def consolidate(self, reader: Scope) -> list[Observation]:
-        """Periodic observation pass (proposal step 4); a no-op without a builder."""
-        return self.observation_builder.consolidate(reader) if self.observation_builder else []
+        """Periodic observation pass (proposal step 4); a no-op without a builder.
+
+        The people talking get no observation of their own: theirs would summarize almost every
+        fact, lose detail and be rebuilt every session. Their pets, places and events still do.
+        """
+        if not self.observation_builder:
+            return []
+        names = sorted(self._speaker_names.get(reader.user_id, ()))
+        if not names:
+            return self.observation_builder.consolidate(reader)
+        canonical = {normalize_name(name) for name in names}
+        speakers = frozenset(
+            entity.entity_id
+            for entity in self.store.find_entities(reader.user_id, sorted(canonical))
+            # find_entities also returns fuzzy candidates; only exact names are the speakers.
+            if entity.canonical_name in canonical
+            or canonical.intersection(normalize_name(a) for a in entity.aliases)
+        )
+        return self.observation_builder.consolidate(reader, skip_entity_ids=speakers)
 
     def _documents(self, scope, messages, episode_id, now) -> list[Document]:
         ttl = self.config.document_ttl
+        split = [part for message in messages for part in _split_events(message)]
+        for message in split:
+            if message.name:
+                self._speaker_names.setdefault(scope.user_id, set()).add(message.name)
+        # The previous round's last turn, so "we just did it yesterday" can name what "it" is.
+        session = (scope.user_id, scope.project_id, scope.session_id)
+        seen_episode, before, last = self._last_turn.get(session, (None, None, None))
+        earlier = before if seen_episode == episode_id else last  # a retry reads the same turn
+        self._last_turn[session] = (episode_id, earlier, split[-1].text if split else None)
         return [
             Document(
                 document_id=stable_id(episode_id, position),
@@ -194,8 +255,10 @@ class Retainer:
                 occurred_at=message.timestamp,
                 recorded_at=now,
                 expires_at=now + ttl if ttl else None,
+                name=message.name,
+                context=earlier if position == 0 else None,
             )
-            for position, message in enumerate(messages)
+            for position, message in enumerate(split)
         ]
 
     def _decide(self, facts: list[MemoryFact]) -> list[UpdateDecision]:
@@ -255,6 +318,58 @@ def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | 
     return None
 
 
+def _split_events(message: Message) -> list[Message]:
+    """One message per event when the text is a serialized event list.
+
+    Plain replies become clean text with their own speaker name, so each is extracted and
+    quoted on its own. Consecutive tool calls and results stay together as JSON, which the
+    tool-fact builders read.
+    """
+    events = _event_list(message.text) if message.speaker != Speaker.USER else None
+    if events is None:
+        return [message]
+    parts, tools = [], []
+
+    def flush():
+        if tools:
+            parts.append(replace(message, text=json.dumps(tools, ensure_ascii=False), name=None))
+            tools.clear()
+
+    for event in events:
+        content = event.get("content")
+        if (
+            event.get("role") == "assistant"
+            and isinstance(content, str)
+            and content.strip()
+            and not event.get("tool_calls")
+        ):
+            flush()
+            name = event.get("name")
+            parts.append(
+                replace(
+                    message,
+                    text=content,
+                    name=name.strip() if isinstance(name, str) and name.strip() else message.name,
+                )
+            )
+        else:
+            tools.append(event)
+    flush()
+    return parts or [message]
+
+
+def _event_list(text):
+    try:
+        events = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(events, list) or not events:
+        return None
+    if not all(isinstance(event, dict) and isinstance(event.get("role"), str) for event in events):
+        return None
+    return events
+
+
 def _episode_id(scope: Scope, messages: Sequence[Message]) -> str:
     parts = [(m.speaker, m.timestamp.isoformat(), m.text) for m in messages]
     return stable_id(scope.user_id, scope.project_id, scope.session_id, *parts)
@@ -266,7 +381,11 @@ def _build_fact(
     """Stored fact plus its memory_entities and entity_relations rows."""
     claim_type = fact.claim_type
     # Trust boundary: an assistant can propose a preference, never assert the user's.
-    if document.speaker != Speaker.USER and fact.category == Category.PREFERENCE:
+    if (
+        document.speaker != Speaker.USER
+        and document.name is None
+        and fact.category == Category.PREFERENCE
+    ):
         if claim_type == ClaimType.ASSERTED:
             claim_type = ClaimType.PROPOSED
     fact_id = stable_id(document.document_id, normalize_name(fact.text), claim_type)

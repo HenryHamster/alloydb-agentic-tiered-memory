@@ -11,8 +11,13 @@ from shared.llm import is_rate_limited, thinking
 
 
 class ObservationBuilder(Protocol):
-    def consolidate(self, reader: Scope) -> list[Observation]:
-        """Create, refresh or close observations visible to `reader`; return those written."""
+    def consolidate(
+        self, reader: Scope, skip_entity_ids: frozenset[str] = frozenset()
+    ) -> list[Observation]:
+        """Create, refresh or close observations visible to `reader`; return those written.
+
+        Entities in `skip_entity_ids` (the people talking) get no observation.
+        """
         ...
 
 
@@ -38,7 +43,9 @@ class GeminiObservationBuilder:
         self.min_facts = min_facts
         self.thinking_level = thinking_level
 
-    def consolidate(self, reader: Scope) -> list[Observation]:
+    def consolidate(
+        self, reader: Scope, skip_entity_ids: frozenset[str] = frozenset()
+    ) -> list[Observation]:
         fact_reader = getattr(self.store, "facts_for_observations", None)
         observation_reader = getattr(self.store, "observations_for", None)
         if fact_reader is None or observation_reader is None:
@@ -52,7 +59,7 @@ class GeminiObservationBuilder:
                 and fact.claim_type == ClaimType.ASSERTED
                 and fact.entity_ids
             ):
-                for entity_id in set(fact.entity_ids):
+                for entity_id in set(fact.entity_ids) - skip_entity_ids:
                     groups[_group_key(fact.scope, fact.visibility, entity_id)].append(fact)
 
         now = datetime.now(timezone.utc)
@@ -83,13 +90,20 @@ class GeminiObservationBuilder:
             if previous is not None and previous.fact_ids == fact_ids:
                 active_ids.add(group_key)
                 continue
-            summary = self._summarize(facts)
+            added = (
+                [] if previous is None else [f for f in facts if f.fact_id not in previous.fact_ids]
+            )
+            if added and set(previous.fact_ids) <= set(fact_ids):
+                # Only new facts: update the previous summary instead of re-reading every fact.
+                summary = self._summarize(added, previous=previous.text)
+            else:
+                summary = self._summarize(facts)
             if summary is None:
                 if previous is not None:
                     closing[previous.observation_id] = _close_version(previous, now)
                 continue
 
-            valid_from = _version_start(facts, previous, now)
+            valid_from = _version_start(facts, previous)
             observation_id = _next_observation_id(
                 scope, visibility, entity_id, versions, previous, fact_ids
             )
@@ -150,7 +164,7 @@ class GeminiObservationBuilder:
             self.store.write_observations(written)
         return written
 
-    def _summarize(self, facts):
+    def _summarize(self, facts, previous=None):
         source = [
             {
                 "fact_id": fact.fact_id,
@@ -163,10 +177,19 @@ class GeminiObservationBuilder:
             }
             for fact in facts
         ]
+        update = (
+            "Update this current observation with the new facts below; keep what they don't "
+            "change. Current observation: " + json.dumps(previous, ensure_ascii=False) + "\n"
+            if previous
+            else ""
+        )
         prompt = (
-            "Write a concise observation supported only by these asserted facts. Preserve "
+            update + "Write a concise observation supported only by these asserted facts. Preserve "
             "qualifiers, dates, and contradictions; do not infer unstated causes or attributes. "
             "Cover ALL provided facts, including separate topics; do not select a subset. "
+            "When facts change over time, state the latest and keep its date. Name every "
+            "distinct person, pet and item (never merge or drop one), and attribute each fact "
+            "to the person it is about. "
             "If a useful complete synthesis is impossible, return an empty summary and an "
             "empty fact_ids array. Otherwise fact_ids MUST contain EVERY input fact_id "
             "exactly once. Return only the requested JSON object.\n"
@@ -263,11 +286,15 @@ def _next_observation_id(scope, visibility, entity_id, history, previous, fact_i
     return stable_id(base_id, "version", predecessor, *fact_ids)
 
 
-def _version_start(facts, previous, now):
+def _version_start(facts, previous):
     if previous is None:
         return min(fact.valid_from for fact in facts)
     added = [fact.valid_from for fact in facts if fact.fact_id not in previous.fact_ids]
-    return max(previous.valid_from, min(added)) if added else max(now, previous.valid_from)
+    if added:
+        return max(previous.valid_from, min(added))
+    # Facts only left the group. Date it from the facts, not the wall clock, so a replayed
+    # history doesn't make the summary look newer than everything it covers.
+    return max(previous.valid_from, max(fact.valid_from for fact in facts))
 
 
 def _close_version(observation, at):
