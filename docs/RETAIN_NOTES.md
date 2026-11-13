@@ -166,3 +166,12 @@ test (`tests/test_retain_live.py`), and read-only inspection queries. The codela
 `agent_entities` writer and reader unless a `build_retainer(...)` instance is explicitly injected
 into the worker. The legacy reader cannot retrieve `memory_facts` or `observations`; Recall still
 needs its AlloyDB adapter for the Retain schema before Retain → Recall → Reflect can be verified.
+
+### Named-speaker fallback questions
+
+Unextracted named-speaker turns keep statements, requests, confirmations and questions
+containing numbers; ordinary conversational questions are omitted. These deterministic
+rules are conservative exceptions to the question filter, not a semantic importance
+classifier. Source evidence and validated model facts are unchanged; no model calls are
+added. Offline regression tests cover useful-question preservation and conversational
+noise. Retrieval/accuracy effects still require evaluation.

@@ -673,11 +673,11 @@ def _is_chit_chat(text, names=(), person=False):
 
     Any number, question, request, name or other content word keeps the turn ("I was so
     scared.", "Bailey is so sweet!", "The necklace stands for love, faith and strength").
-    Between people (`person`), a question or "what a day!" opener is not kept on its own:
-    their questions are small talk, and the answers hold the facts.
+    Conversational questions are filtered separately. Remaining questions are kept even
+    for named people: they may contain requests, constraints, or confirmations.
     """
     words = text.split()
-    if len(words) > 12 or re.search(r"\d", text) or (not person and "?" in text):
+    if len(words) > 12 or re.search(r"\d", text) or "?" in text:
         return False
     body = _without_speaker(text)
     if not person and _REQUEST_START.match(body.strip()):
@@ -695,11 +695,34 @@ def _without_speaker(text):
     return re.sub(r"^[^\W\d][\w .'-]{0,39}:\s*", "", text)  # "Melanie: " prefix
 
 
+# Preserve requests and statement-like confirmations; ordinary conversational questions
+# still rely on their answers. This runs only on named-speaker fallback text.
+_REQUEST_QUESTION = re.compile(
+    r"(?:please|pls|can|could|would|will|shall|should|let'?s|i need|i want|i'd like|"
+    r"check|show|find|get|tell|give|help|make|set|send|book|remind|open|run|restart|"
+    r"stop|start|update|create|delete|remove|add|list|look|yes|no)\b",
+    re.IGNORECASE,
+)
+_CONFIRMATION_QUESTION = re.compile(
+    r",\s*(?:right|correct|okay|ok|isn't it|aren't we|didn't we|don't we)\?+$",
+    re.IGNORECASE,
+)
+
+
 def _statements(text):
-    """A person's turn without its questions: "Wow! How was it? [shares a photo: a cake]"
-    keeps "Wow! [shares a photo: a cake]"."""
+    """Keep statements and potentially actionable questions missed by extraction."""
     parts = re.split(r"(?<=[.!?\]])\s+", _without_speaker(text))
-    return " ".join(part for part in parts if part and not part.rstrip().endswith("?"))
+    return " ".join(
+        part
+        for part in parts
+        if part
+        and (
+            not part.rstrip().endswith("?")
+            or _REQUEST_QUESTION.match(part.replace("’", "'"))
+            or _CONFIRMATION_QUESTION.search(part.replace("’", "'"))
+            or re.search(r"\d", part)
+        )
+    )
 
 
 def _is_event_json(text):
