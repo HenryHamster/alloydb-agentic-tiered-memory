@@ -206,6 +206,8 @@ class QueryPlan:
     refers_back: bool = False
     # The question asks for several items or a count ("what events", "how many").
     wants_list: bool = False
+    # The question counts occurrences ("how many times"), so near-repeats must all be kept.
+    counting: bool = False
 
 
 @dataclass
