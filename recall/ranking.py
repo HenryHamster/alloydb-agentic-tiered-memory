@@ -1,7 +1,7 @@
 """Ranking stages: fuse the search channels, rerank, boost, then filter and abstain."""
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import replace
 from datetime import datetime
 from typing import Any
@@ -132,31 +132,44 @@ def filter_and_abstain(
     min_relevance: float,
     max_items: int,
     min_items: int = 0,
+    similar: Set[frozenset[str]] = frozenset(),
+    similar_cap: int = 0,
 ) -> tuple[list[Scored], dict[str, Any]]:
     """Keeps the best `max_items` with relevance >= `min_relevance`; hides superseded memories.
 
     `scored` is best-first. The best `min_items` positive results are kept even under
     `min_relevance`. A result with no positive relevance is never kept, so a query with
-    nothing relevant still abstains. Stores already exclude superseded rows; this check
-    also covers stores that do not. The returned detail counts each kind of drop and lists
-    the best dropped candidates, so a missing memory can be traced.
+    nothing relevant still abstains. With `similar_cap`, a result is skipped once that many
+    kept results share a pair in `similar` with it, so near-repeats leave room for distinct
+    answers. Stores already exclude superseded rows; this check also covers stores that do
+    not. The returned detail counts each kind of drop and lists the best dropped candidates,
+    so a missing memory can be traced.
     """
-    kept, below_min, over_max, stale = [], [], [], 0
+
+    def repeats_kept(item: Scored) -> int:
+        return sum(frozenset((item.memory.id, k.memory.id)) in similar for k in kept)
+
+    kept, below_min, repeats, over_max, stale = [], [], [], [], 0
     for item in scored:
         if item.memory.consolidated_into or (not include_invalid and item.memory.is_stale(as_of)):
             stale += 1
         elif item.relevance <= 0 or (item.relevance < min_relevance and len(kept) >= min_items):
             below_min.append(item)
+        elif similar_cap and repeats_kept(item) >= similar_cap:
+            repeats.append(item)
         elif len(kept) >= max_items:
             over_max.append(item)
         else:
             kept.append(item)
-    dropped = sorted([*below_min, *over_max], key=lambda item: item.relevance, reverse=True)
+    dropped = sorted(
+        [*below_min, *repeats, *over_max], key=lambda item: item.relevance, reverse=True
+    )
     return kept, {
         "min_relevance": min_relevance,
         "max_items": max_items,
         "min_items": min_items,
         "below_min": len(below_min),
+        "repeats": len(repeats),
         "over_max": len(over_max),
         "stale_hidden": stale,
         "dropped": [item.summary() for item in dropped[:TRACE_DROPPED]],

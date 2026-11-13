@@ -17,6 +17,7 @@ _MONTHS = [
 _LAST_N_RE = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s+(day|week|month|year)s?\b")
 _MONTH_RE = re.compile(r"\b(?:in|during)\s+(" + "|".join(_MONTHS) + r")(?:\s+((?:19|20)\d{2}))?\b")
 _YEAR_RE = re.compile(r"\b(?:in|during)\s+((?:19|20)\d{2})\b")
+_COUNTING_RE = re.compile(r"\b(?:how many|how often|number of)\b")
 
 
 def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
@@ -141,6 +142,7 @@ def analyze_query(
     query is always the first sub-query. decompose=False (used by Reflect) skips the LLM.
     """
     plan = QueryPlan(sub_queries=[query], window=temporal_window)
+    plan.counting = bool(_COUNTING_RE.search(query.lower()))
     if temporal_window:
         plan.window_source = "explicit"
     else:
