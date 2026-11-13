@@ -316,6 +316,47 @@ def test_the_trace_lists_dropped_candidates_with_scores(memories):
     assert stage["dropped"][0]["relevance"] == 0.05 and stage["dropped"][0]["channels"]
 
 
+def five_pride_facts_a_talk_and_a_support_group(memories):
+    """LoCoMo q032: five Pride facts filled the list, so the talk and support group were cut."""
+    pride = [
+        memories.fact(f"Caroline went to an LGBTQ pride parade, mention {n}") for n in range(5)
+    ]
+    for i, fact in enumerate(pride):
+        for other in pride[i + 1 :]:
+            memories.link(fact, other, relation=Relation.SIMILAR)
+    talk = memories.fact("Caroline gave an LGBTQ talk at a school event")
+    group = memories.fact("Caroline went to an LGBTQ support group")
+    return pride, talk, group
+
+
+def pride_first(query, texts):
+    return [0.9 if "pride" in text else 0.5 for text in texts]
+
+
+def test_near_repeats_leave_room_for_distinct_answers_to_a_list_question(memories):
+    pride, talk, group = five_pride_facts_a_talk_and_a_support_group(memories)
+    question = "What LGBTQ events has Caroline been to?"
+
+    off = RecallConfig(max_items=4, similar_cap=0)
+    crowded = memories.recaller(reranker=pride_first, config=off).recall(SCOPE, question)
+    assert set(ids(crowded)) <= {f.fact_id for f in pride}
+
+    on = RecallConfig(max_items=4)
+    result = memories.recaller(reranker=pride_first, config=on).recall(SCOPE, question)
+    assert {talk.fact_id, group.fact_id} <= set(ids(result))
+    assert sum(f.fact_id in ids(result) for f in pride) == on.similar_cap
+    stage = next(s for s in result.trace if s.stage == "filter_and_abstain").to_dict()
+    assert stage["repeats"] == 3
+
+
+def test_counting_questions_keep_every_near_repeat(memories):
+    pride, _, _ = five_pride_facts_a_talk_and_a_support_group(memories)
+    recaller = memories.recaller(reranker=pride_first, config=RecallConfig(max_items=5))
+
+    result = recaller.recall(SCOPE, "How many pride parades has Caroline been to?")
+    assert {f.fact_id for f in pride} <= set(ids(result))
+
+
 @pytest.mark.parametrize("budget", [1, 15, 60, 10_000])
 def test_packed_context_never_exceeds_the_token_budget(memories, budget):
     for n in range(20):
@@ -416,6 +457,19 @@ def test_time_phrases_resolve_to_windows(phrase, start, end):
 
 def test_questions_without_a_time_phrase_get_no_window():
     assert parse_time_phrase("what database do we use", NOW) is None
+
+
+@pytest.mark.parametrize(
+    "question,counting",
+    [
+        ("How many times has Melanie gone to the beach?", True),
+        ("How often does she paint?", True),
+        ("What is the number of kids she has?", True),
+        ("What LGBTQ events has Caroline been to?", False),
+    ],
+)
+def test_counting_questions_are_recognised_without_the_llm(question, counting):
+    assert analyze_query(question, NOW, decompose=False).counting is counting
 
 
 def test_decomposition_keeps_the_original_question_and_drops_repeats():

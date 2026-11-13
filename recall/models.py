@@ -191,6 +191,8 @@ class QueryPlan:
     llm_used: bool = False
     # The question points back at earlier talk without naming it ("that server").
     refers_back: bool = False
+    # The question counts occurrences ("how many times"), so near-repeats must all be kept.
+    counting: bool = False
 
 
 @dataclass

@@ -9,7 +9,8 @@
     rerank           cross-encode the fused head against every sub-query
     apply_boosts     small capped recency / window-fit / evidence / user-request boosts
     filter_and_abstain  the best max_items at or above min_relevance, never fewer than
-                        min_items positive ones (both apply to reranked scores only); hides
+                        min_items positive ones (both apply to reranked scores only); skips
+                        near-repeats (similar_cap, off for counting questions); hides
                         superseded memories
     graph_followup   adds the round links (request, tool call, result) of the top kept facts
     source_rounds    for back-references or weak results, adds the verbatim rounds behind
@@ -129,6 +130,7 @@ class Recaller:
                 "window_source": plan.window_source,
                 "llm_used": plan.llm_used,
                 "refers_back": plan.refers_back,
+                "counting": plan.counting,
             }
 
         # Embed each sub-query for the vector channel.
@@ -212,9 +214,12 @@ class Recaller:
 
             with tracer.stage("filter_and_abstain") as stage:
                 min_relevance = config.min_relevance if reranked else 0.0
+                similar_cap = 0 if plan.counting else config.similar_cap
+                ids = [item.memory.id for item in boosted]
+                similar = self.store.similar_pairs(ids) if similar_cap else set()
                 kept, stage.detail = filter_and_abstain(
                     boosted, as_of, include_invalid, min_relevance, config.max_items,
-                    config.min_items if reranked else 0,
+                    config.min_items if reranked else 0, similar, similar_cap,
                 )  # fmt: skip
                 stage.count = len(kept)
             if reranked and len(kept) >= config.tier_min_hits:

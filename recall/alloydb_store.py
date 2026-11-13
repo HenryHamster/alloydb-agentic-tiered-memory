@@ -240,6 +240,12 @@ class AlloyDBRecallStore:
             ],
         }
 
+    def similar_pairs(self, ids):
+        ids = [i for i in dict.fromkeys(ids) if _is_uuid(i)]  # episode ids are not facts
+        if len(ids) < 2:
+            return set()
+        return {frozenset(row) for row in self._fetch(_SIMILAR_SQL, {"ids": ids})}
+
     def get_supporting(self, scope, observation_id):
         if not _is_uuid(observation_id):
             return []
@@ -489,6 +495,12 @@ SELECT {FACT_JSON}
 FROM (SELECT * FROM picked ORDER BY grp, pos LIMIT %(limit)s) p
 JOIN memory_facts f ON f.fact_id = p.fact_id
 ORDER BY p.grp, p.pos
+"""
+
+_SIMILAR_SQL = """
+SELECT from_fact_id::text, to_fact_id::text FROM memory_links
+WHERE relation = 'similar'
+  AND from_fact_id = ANY(%(ids)s::uuid[]) AND to_fact_id = ANY(%(ids)s::uuid[])
 """
 
 _EPISODE_GET_SQL = f"""

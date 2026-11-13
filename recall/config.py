@@ -71,6 +71,10 @@ class RecallConfig:
     # we picked") scores its own evidence 0.06-0.08. Keep this many best positive results even
     # under min_relevance; 0 restores strict abstention.
     min_items: int = 5
+    # Skip a fact once this many facts it shares a `similar` link with are already kept, so
+    # near-repeats (five Pride facts) cannot fill a list answer. Counting questions ("how many
+    # times") keep every repeat. 0 turns it off.
+    similar_cap: int = 2
     # After filtering, follow the round links of the top kept facts so a request, its tool
     # call and the result arrive together.
     followup_seeds: int = 3

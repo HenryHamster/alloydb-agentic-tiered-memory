@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from recall.config import EXPLAINING_RELATIONS, MemoryType
 from recall.models import Memory, TimeWindow
 from retain.entities import normalize_name
-from retain.models import Document, Scope, Visibility, is_visible, resolve_visibility
+from retain.models import Document, Relation, Scope, Visibility, is_visible, resolve_visibility
 from retain.store import InMemoryRetainStore
 from retain.store import _cosine as cosine  # same similarity Retain links with
 
@@ -57,6 +57,10 @@ class RecallStore(Protocol):
         rest, then by weight. With `relations`, only links of those relations are followed
         and shared-entity facts are skipped.
         """
+        ...
+
+    def similar_pairs(self, ids: Sequence[str]) -> set[frozenset[str]]:
+        """Pairs among `ids` that Retain joined with a `similar` link, in either direction."""
         ...
 
     def get_episode(self, scope: Scope, episode_id: str) -> dict[str, Any] | None:
@@ -162,6 +166,14 @@ class InMemoryRecallStore:
             key=_newest_first,
         )
         return ([readable[fact_id] for fact_id in linked] + shared)[:limit]
+
+    def similar_pairs(self, ids):
+        wanted = set(ids)
+        return {
+            frozenset((link.from_fact_id, link.to_fact_id))
+            for link in list(self.retain_store.links.values())
+            if link.relation == Relation.SIMILAR and {link.from_fact_id, link.to_fact_id} <= wanted
+        }
 
     def get_episode(self, scope, episode_id):
         documents = self._episodes(scope).get(episode_id)
