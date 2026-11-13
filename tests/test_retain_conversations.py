@@ -462,7 +462,7 @@ def test_an_unrelated_date_far_from_the_phrase_is_left_alone():
 # --- questions between people, and the previous turn as context -------------------------------
 
 
-def test_a_persons_questions_are_dropped_and_their_statements_kept_without_the_name_twice():
+def test_only_generic_social_questions_are_dropped_from_named_fallbacks():
     docs = [
         document("Caroline: Wow, what a fun moment! What's the band?", speaker=Speaker.USER,
                  name="Caroline"),
@@ -477,6 +477,7 @@ def test_a_persons_questions_are_dropped_and_their_statements_kept_without_the_n
     facts = extractor.extract(chunk_documents(docs))
 
     assert [fact.text for fact in facts] == [
+        "Caroline said: Wow, what a fun moment! What's the band?",
         "Melanie said: We made pots at the workshop.",
         "The user said: what is the status of db-7?",
     ]
@@ -607,3 +608,37 @@ def test_a_figurative_yesterday_does_not_support_a_date_years_back():
     )
 
     assert row["valid_from"] is None
+
+
+@pytest.mark.parametrize("speaker", [Speaker.USER, Speaker.ASSISTANT])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Can you pick me up at 5 tomorrow?",
+        "We agreed on Friday, right?",
+        "Please don't delete db-7, okay?",
+        "Yes, use that one?",
+        "How was it after the accident?",
+        "Sunflowers mean warmth and happiness, right?",
+        "Thanks! Can you help?",
+    ],
+)
+def test_named_fallback_preserves_missed_requests_and_question_form_facts(speaker, body):
+    doc = document("Alex: " + body, speaker=speaker, name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: " + body
+    assert fact.evidence == doc.text
+    assert fact.visibility == Visibility.SESSION
+
+
+def test_social_question_filter_preserves_following_detail():
+    doc = document("Alex: How was it? My deadline is Friday.", name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: My deadline is Friday."
+    assert fact.evidence == doc.text

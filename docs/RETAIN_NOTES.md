@@ -166,3 +166,21 @@ test (`tests/test_retain_live.py`), and read-only inspection queries. The codela
 `agent_entities` writer and reader unless a `build_retainer(...)` instance is explicitly injected
 into the worker. The legacy reader cannot retrieve `memory_facts` or `observations`; Recall still
 needs its AlloyDB adapter for the Retain schema before Retain → Recall → Reflect can be verified.
+
+### Follow-up: preserve useful questions in named-speaker fallbacks
+
+Missing extraction is not evidence that a question is disposable. Named speakers can
+ask for actions, confirm dates, or express facts as questions. The fallback path now
+removes only complete generic social questions (for example, "How was it?") and
+preserves other questions, including "We agreed on Friday, right?" and the LoCoMo
+wording "Sunflowers mean warmth and happiness, right?". Remaining question marks
+prevent the filler-word filter from dropping the message. Source evidence is unchanged;
+validated extracted facts are unaffected and no model calls are added.
+
+This is a follow-up to Retain v3, not a replacement for its small-talk filtering.
+The earlier courtesy-only branch matched zero user messages in conv-26. Inspecting
+v3's named-speaker rules on that same history excluded 13 user messages from fallback
+eligibility, but these are potential fallbacks, not observed stored/retrieved facts.
+The follow-up deliberately keeps substantive questions that v3 removed. Offline
+regression tests cover requests, negation, confirmation, both speaker roles, and
+mixed social/useful text. No new cloud run or answer-accuracy gain is claimed.
