@@ -673,7 +673,7 @@ def _is_chit_chat(text, names=(), person=False):
 
     Any number, question, request, name or other content word keeps the turn ("I was so
     scared.", "Bailey is so sweet!", "The necklace stands for love, faith and strength").
-    Generic social questions are removed separately. Remaining questions are kept even
+    Conversational questions are filtered separately. Remaining questions are kept even
     for named people: they may contain requests, constraints, or confirmations.
     """
     words = text.split()
@@ -695,24 +695,33 @@ def _without_speaker(text):
     return re.sub(r"^[^\W\d][\w .'-]{0,39}:\s*", "", text)  # "Melanie: " prefix
 
 
-# Only complete, unqualified social questions are disposable. Unknown questions survive.
-_SOCIAL_QUESTION = re.compile(
-    r"(?:how (?:are you|have you been(?: lately)?|was it|is it going)|how's it going|what's up)\?+",
+# Preserve requests and statement-like confirmations; ordinary conversational questions
+# still rely on their answers. This runs only on named-speaker fallback text.
+_REQUEST_QUESTION = re.compile(
+    r"(?:please|pls|can|could|would|will|shall|should|let'?s|i need|i want|i'd like|"
+    r"check|show|find|get|tell|give|help|make|set|send|book|remind|open|run|restart|"
+    r"stop|start|update|create|delete|remove|add|list|look|yes|no)\b",
+    re.IGNORECASE,
+)
+_CONFIRMATION_QUESTION = re.compile(
+    r",\s*(?:right|correct|okay|ok|isn't it|aren't we|didn't we|don't we)\?+$",
     re.IGNORECASE,
 )
 
 
 def _statements(text):
-    """Remove only generic social questions, preserving other questions and exact wording.
-
-    A named speaker can make requests or express facts as questions. Missing model
-    extraction must not erase those statements merely because they end with '?'.
-    """
+    """Keep statements and potentially actionable questions missed by extraction."""
     parts = re.split(r"(?<=[.!?\]])\s+", _without_speaker(text))
     return " ".join(
         part
         for part in parts
-        if part and not _SOCIAL_QUESTION.fullmatch(part.strip().replace("’", "'"))
+        if part
+        and (
+            not part.rstrip().endswith("?")
+            or _REQUEST_QUESTION.match(part.replace("’", "'"))
+            or _CONFIRMATION_QUESTION.search(part.replace("’", "'"))
+            or re.search(r"\d", part)
+        )
     )
 
 

@@ -462,7 +462,7 @@ def test_an_unrelated_date_far_from_the_phrase_is_left_alone():
 # --- questions between people, and the previous turn as context -------------------------------
 
 
-def test_only_generic_social_questions_are_dropped_from_named_fallbacks():
+def test_conversational_questions_are_dropped_from_named_fallbacks():
     docs = [
         document("Caroline: Wow, what a fun moment! What's the band?", speaker=Speaker.USER,
                  name="Caroline"),
@@ -477,7 +477,6 @@ def test_only_generic_social_questions_are_dropped_from_named_fallbacks():
     facts = extractor.extract(chunk_documents(docs))
 
     assert [fact.text for fact in facts] == [
-        "Caroline said: Wow, what a fun moment! What's the band?",
         "Melanie said: We made pots at the workshop.",
         "The user said: what is the status of db-7?",
     ]
@@ -618,7 +617,9 @@ def test_a_figurative_yesterday_does_not_support_a_date_years_back():
         "We agreed on Friday, right?",
         "Please don't delete db-7, okay?",
         "Yes, use that one?",
-        "How was it after the accident?",
+        "Could you help me get home?",
+        "Is the deadline November 15?",
+        "We’re meeting tomorrow, aren’t we?",
         "Sunflowers mean warmth and happiness, right?",
         "Thanks! Can you help?",
     ],
@@ -642,3 +643,19 @@ def test_social_question_filter_preserves_following_detail():
 
     assert fact.text == "Alex said: My deadline is Friday."
     assert fact.evidence == doc.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Wow! What pet do you have?",
+        "What got you into running?",
+        "Cool! What did it look like?",
+        "How was it?",
+        "Wow, what a fun moment! What's the band?",
+    ],
+)
+def test_named_conversational_questions_do_not_create_fallbacks(body):
+    doc = document("Alex: " + body, name="Alex")
+    extractor, _ = extractor_returning([])
+    assert extractor.extract(chunk_documents([doc])) == []
