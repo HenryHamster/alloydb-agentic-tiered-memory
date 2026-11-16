@@ -35,6 +35,12 @@ import run_mem2act  # noqa: E402
 import run_original as base  # noqa: E402
 
 
+def query_text(question):
+    """The original codelab has one query string: the question, a blank line, the
+    instructions. PR13's runner builds its answer prompt the same way."""
+    return question["question"] + "\n\n" + question["instructions"]
+
+
 def session_id(user_id, index, date):
     return f"{user_id}_s{index:03d}_" + re.sub(r"[^A-Za-z0-9_]", "_", date)
 
@@ -149,7 +155,7 @@ def answer(a, env, case):
                 env.client,
                 user_id,
                 qsession,
-                q["question"],
+                query_text(q),
                 prev_session_id=previous,
             )
             elapsed = time.perf_counter() - t0
@@ -163,7 +169,7 @@ def answer(a, env, case):
                 "answer_seconds": elapsed,
                 "orchestrator_latency_seconds": latency,
                 "prompt": prompt,
-                "question": q["question"],
+                "question": query_text(q),
                 "question_session": qsession,
             },
         )
@@ -195,7 +201,7 @@ def main():
     a.ledger.mkdir(parents=True, exist_ok=True)
     case = json.loads(a.case.read_text(encoding="utf-8"))
     for q in case["questions"]:
-        assert set(q) == {"id", "question"}, "no labels at runtime"
+        assert set(q) == {"id", "question", "instructions"}, "no labels at runtime"
     with (a.ledger / ".pilot.lock").open("w") as lockfile:
         fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
         ledger = base.Ledger(a.ledger, a.limit_usd, a.infrastructure_reserve_usd)
