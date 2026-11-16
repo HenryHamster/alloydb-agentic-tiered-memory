@@ -159,7 +159,9 @@ class Message:
     speaker: Speaker
     text: str
     timestamp: datetime
-    name: str | None = None  # the speaker's own name ("Melanie"); a named speaker is a person
+    # The speaker's own name ("Melanie"). A named user is a person; a named assistant is one
+    # only under RetainConfig.assistant_is_human, otherwise Retain drops the name.
+    name: str | None = None
 
     def __post_init__(self):
         _require_aware(self.timestamp)
@@ -178,7 +180,8 @@ class Document:
     occurred_at: datetime
     recorded_at: datetime
     expires_at: datetime | None = None
-    name: str | None = None  # speaker name for extraction; not a stored column
+    # A person's name for extraction (None for agents and tools); not a stored column.
+    name: str | None = None
     # The session's previous turn, read for references ("we did it"); not stored or citable.
     context: str | None = None
     # The message's own vector, stored so Recall can find exact wording by meaning.

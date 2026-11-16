@@ -1,5 +1,6 @@
 """Two-person conversations (LoCoMo-style), relative dates and observation scope."""
 
+import dataclasses
 import json
 from datetime import datetime, timezone
 from unittest.mock import Mock
@@ -32,7 +33,7 @@ from retain.models import (
     WriteBatch,
     is_code_built,
 )
-from retain.pipeline import Retainer, _build_fact, _split_events
+from retain.pipeline import RetainConfig, Retainer, _build_fact, _split_events
 from retain.store import InMemoryRetainStore
 from tests.test_retain_observations import ENTITY, builder, memory_fact
 
@@ -169,6 +170,42 @@ def test_a_named_speakers_preference_is_not_demoted():
 
     assert person.claim_type == ClaimType.ASSERTED
     assert proposal.claim_type == ClaimType.PROPOSED
+
+
+def bare_retainer(**config):
+    return Retainer(
+        store=Mock(),
+        extractor=Mock(),
+        entity_resolver=Mock(),
+        embedder=Mock(),
+        linker=Mock(),
+        config=RetainConfig(**config),
+    )
+
+
+def test_a_named_agent_is_still_an_agent_unless_the_assistant_is_human():
+    events = [{"role": "assistant", "content": "You should use Python 3.12.", "name": "helper"}]
+    messages = [
+        Message(Speaker.USER, "Alex: Which Python?", MONDAY, "Alex"),
+        Message(Speaker.ASSISTANT, json.dumps(events), MONDAY, "helper"),
+    ]
+    agent = bare_retainer()._documents(SCOPE, messages, "ep", MONDAY)
+    person = bare_retainer(assistant_is_human=True)._documents(SCOPE, messages, "ep", MONDAY)
+
+    assert [d.name for d in agent] == ["Alex", None]
+    assert [d.name for d in person] == ["Alex", "helper"]
+    # The agent's reply reaches the model without a speaker_name and stays a proposal.
+    chunk = chunk_documents(agent)[1]
+    row = model_row(chunk, "The assistant suggested Python 3.12.", "You should use Python 3.12.")
+    extractor, client = extractor_returning([row], keep_unrecorded_user_messages=False)
+    (fact,) = extractor.extract([chunk])
+    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
+    preference = dataclasses.replace(
+        fact, category=Category.PREFERENCE, claim_type=ClaimType.ASSERTED
+    )
+    stored, _, _ = _build_fact(preference, agent[1], EntityResolution({}), MONDAY)
+    assert stored.claim_type == ClaimType.PROPOSED
 
 
 # --- fallback ------------------------------------------------------------------------------------
@@ -336,6 +373,7 @@ def test_the_people_talking_get_no_observation_of_their_own():
         embedder=Mock(),
         linker=Mock(),
         observation_builder=builder,
+        config=RetainConfig(assistant_is_human=True),
     )
     retainer._documents(
         SCOPE, [Message(Speaker.ASSISTANT, "Melanie: hi", MONDAY, "Melanie")], "ep", MONDAY

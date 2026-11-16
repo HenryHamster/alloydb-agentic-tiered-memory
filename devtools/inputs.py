@@ -18,6 +18,9 @@ def validate_history(history):
     if not isinstance(history, dict):
         raise ValueError("History must be a JSON object")
     safe_name(history.get("id"))
+    # Two people talking (LoCoMo): the assistant role is a human, see RetainConfig.
+    if not isinstance(history.get("assistant_is_human", False), bool):
+        raise ValueError("assistant_is_human must be true or false")
     sessions = history.get("sessions")
     if not isinstance(sessions, list) or not sessions:
         raise ValueError("History needs a nonempty sessions array")

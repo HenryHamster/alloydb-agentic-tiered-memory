@@ -82,10 +82,14 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
 - **People, not only agents.** `retain_turn` / `record_turn` take optional `user_name` and
-  `assistant_name`, and a serialized assistant event may carry a `name`. A named speaker is a
-  person (two-person chats such as LoCoMo): the name goes to the model as `speaker_name`, facts
-  name who said what instead of "the user"/"the assistant", their statements are `asserted`
-  `world` facts, and their preferences are not demoted. Without a name nothing changes.
+  `assistant_name`, and a serialized assistant event may carry a `name`. A named user is a
+  person. A named assistant is one only when `RetainConfig(assistant_is_human=True)` says the
+  conversation is between two people (LoCoMo); agent frameworks often set `name`, so it is never
+  inferred, and by default Retain drops an assistant's name before extraction. A person's name
+  goes to the model as `speaker_name`, facts name who said what instead of "the user"/"the
+  assistant", their statements are `asserted` `world` facts, and their preferences are not
+  demoted. Without a person's name nothing changes. The developer runner turns the flag on with
+  `"assistant_is_human": true` at the top of a history file, or `dev.py run --assistant-is-human`.
   The prompt asks for every statement in a turn (opinions, meanings, reactions, feelings, a view
   phrased as a question) and for "it/that/we did it" to be named from the context. That context
   includes the session's previous turn (`Document.context`, read but never stored or cited), so

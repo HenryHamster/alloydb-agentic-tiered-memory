@@ -29,7 +29,7 @@ Copy [the history](../fixtures/dev/history.json) and [questions](../fixtures/dev
 ]}]}
 ```
 
-History IDs, session IDs and question IDs must be unique within their respective input and contain 1–80 letters, digits, dots, underscores or hyphens, starting with a letter or digit. Messages support `user`, `assistant`, `tool`, `system`, and JSON content/tool_calls. Optional `timestamp` must include a timezone, e.g. `2026-10-28T12:00:00Z`. Without dates the runner uses a reproducible synthetic execution clock and marks source dates unknown. It widens extracted session-visible facts to the fixture's project namespace so cross-session questions can use them, as the Mem2Act harness does.
+History IDs, session IDs and question IDs must be unique within their respective input and contain 1–80 letters, digits, dots, underscores or hyphens, starting with a letter or digit. Messages support `user`, `assistant`, `tool`, `system`, and JSON content/tool_calls. Optional `timestamp` must include a timezone, e.g. `2026-10-28T12:00:00Z`. An optional `name` on a message names its speaker. For a conversation between two people (LoCoMo), set `"assistant_is_human": true` at the top of the history, or pass `--assistant-is-human` to `dev.py run`: named assistant turns are then a person's asserted statements. Without it, a named assistant is still the agent. Without dates the runner uses a reproducible synthetic execution clock and marks source dates unknown. It widens extracted session-visible facts to the fixture's project namespace so cross-session questions can use them, as the Mem2Act harness does.
 
 ```json
 {"questions":[
