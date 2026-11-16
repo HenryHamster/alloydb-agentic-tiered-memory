@@ -3,14 +3,14 @@
 import re
 from collections import defaultdict
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Protocol
 
-from recall.config import MemoryType
+from recall.config import EXPLAINING_RELATIONS, MemoryType
 from recall.models import Memory, TimeWindow
 from retain.entities import normalize_name
 from retain.models import Document, Scope, Visibility, is_visible, resolve_visibility
-from retain.store import InMemoryRetainStore
+from retain.store import InMemoryRetainStore, _cosine
 from retain.store import _cosine as cosine  # same similarity Retain links with
 
 
@@ -49,8 +49,14 @@ class RecallStore(Protocol):
         limit: int,
         *,
         tiers: Sequence[str] | None = None,
+        relations: Sequence[str] | None = None,
     ) -> list[Memory]:
-        """One hop from the seeds over memory_links (by weight) and shared entities."""
+        """One hop from the seeds over memory_links, then facts sharing an entity with a seed.
+
+        Linked facts come first: those reached by an EXPLAINING_RELATIONS link before the
+        rest, then by weight. With `relations`, only links of those relations are followed
+        and shared-entity facts are skipped.
+        """
         ...
 
     def get_episode(self, scope: Scope, episode_id: str) -> dict[str, Any] | None:
@@ -59,6 +65,19 @@ class RecallStore(Protocol):
 
     def get_supporting(self, scope: Scope, observation_id: str) -> list[Memory]:
         """The readable facts an observation was built from."""
+        ...
+
+    def search_messages(
+        self,
+        scope: Scope,
+        embeddings: Sequence[Sequence[float]],
+        limit: int,
+        exclude_episode_ids: Sequence[str] = (),
+        on_day: date | None = None,
+    ) -> list[Memory]:
+        """Readable original user/assistant messages nearest to any query vector, as MESSAGE
+        memories (id = document_id), best first and without duplicates. With `on_day`, only
+        messages said on that day."""
         ...
 
 
@@ -120,7 +139,7 @@ class InMemoryRecallStore:
         return {name: results for name, results in lists.items() if results}
 
     def expand_neighbors(
-        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None
+        self, scope, seed_ids, types, as_of, include_invalid, limit, *, tiers=None, relations=None
     ):
         if MemoryType.FACT not in types:
             return []
@@ -131,19 +150,27 @@ class InMemoryRecallStore:
                 scope, [MemoryType.FACT], as_of, include_invalid, tiers
             )
         }
-        by_link: dict[str, float] = {}
+        # Per neighbour: whether any link to it explains a seed, and its strongest weight.
+        explains: dict[str, bool] = {}
+        weight: dict[str, float] = {}
         for link in list(self.retain_store.links.values()):
+            if relations is not None and link.relation not in relations:
+                continue
             ends = ((link.from_fact_id, link.to_fact_id), (link.to_fact_id, link.from_fact_id))
             for here, there in ends:  # links are followed in both directions
                 if here in seeds and there in readable and there not in seeds:
-                    by_link[there] = max(by_link.get(there, 0.0), link.weight)
-        linked = sorted(by_link, key=lambda fact_id: -by_link[fact_id])
+                    explaining = link.relation in EXPLAINING_RELATIONS
+                    explains[there] = explains.get(there, False) or explaining
+                    weight[there] = max(weight.get(there, 0.0), link.weight)
+        linked = sorted(weight, key=lambda fact_id: (not explains[fact_id], -weight[fact_id]))
+        if relations is not None:
+            return [readable[fact_id] for fact_id in linked][:limit]
         seed_entities = {e for i in seeds if i in readable for e in readable[i].entity_ids}
         shared = sorted(
             (
                 m
                 for m in readable.values()
-                if m.id not in seeds and m.id not in by_link and seed_entities & set(m.entity_ids)
+                if m.id not in seeds and m.id not in weight and seed_entities & set(m.entity_ids)
             ),
             key=_newest_first,
         )
@@ -179,6 +206,26 @@ class InMemoryRecallStore:
             return []
         facts = self.retain_store.get_facts(observation.fact_ids)
         return [Memory.from_fact(fact) for fact in facts if fact.visible_to(scope)]
+
+    def search_messages(self, scope, embeddings, limit, exclude_episode_ids=(), on_day=None):
+        excluded = set(exclude_episode_ids)
+        documents = [
+            d
+            for d in self.retain_store.documents.values()
+            if d.embedding is not None
+            and d.episode_id not in excluded
+            and episode_visible(d.scope, scope)
+            and (on_day is None or (d.occurred_at is not None and d.occurred_at.date() == on_day))
+        ]
+        best: dict[str, tuple[float, object]] = {}
+        for vector in embeddings:
+            ranked = sorted(documents, key=lambda d: -_cosine(d.embedding, vector))[:limit]
+            for d in ranked:
+                score = _cosine(d.embedding, vector)
+                if d.document_id not in best or score > best[d.document_id][0]:
+                    best[d.document_id] = (score, d)
+        ordered = sorted(best.values(), key=lambda row: -row[0])[:limit]
+        return [Memory.from_message(d) for _, d in ordered]
 
     # Candidate rows: (memory, embedding) readable by `scope`, filtered by type and validity.
 

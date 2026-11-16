@@ -67,7 +67,7 @@ explicit Dream request can otherwise propose recovering a deleted quote again.
 
 ## PostgreSQL setup and worker
 
-Run `sql/006_dream_schema.sql` explicitly after migrations 004 and 005. Importing
+Run `sql/007_dream_schema.sql` explicitly after migrations 004–006. Importing
 Dream and constructing the regular memory system do not execute migrations.
 No migration has been applied to a live database as part of this change.
 

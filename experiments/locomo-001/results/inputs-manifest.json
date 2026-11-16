@@ -1,0 +1,23 @@
+{
+ "dataset": "/srv/data/projects/alloydb-memory-bench/datasets/locomo-src/data/locomo10.json",
+ "dataset_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+ "sample_index": 0,
+ "sample_id": "conv-26",
+ "selection_rule": "first conversation in locomo10.json file order, fixed before any run",
+ "instruction": "\n\nAnswer with a short phrase of at most 6 words, based only on what was said in the conversation. If the answer is a time, give the specific date, month or year.",
+ "sessions": 19,
+ "messages": 419,
+ "questions": 152,
+ "questions_by_category": {
+  "1": 32,
+  "2": 37,
+  "3": 13,
+  "4": 70
+ },
+ "files": {
+  "history-conv-26.json": "ed892c52790b98730eecbaaf1fd4d70bb808e7ae31efb7d2d403a5ab1f13a835",
+  "questions-conv-26.json": "e67d88cc2bf582fb5592a76c2d228d743817dda04edb91fdf0b51a32dc77701c",
+  "case-conv-26.json": "2c8e26bbe74e07dfc5df4587d7d4a0328520935082e1e0460ec228080749e93b",
+  "references-conv-26.json": "92bd11a45a68ba675cbe5644c69e5dc743a1a724d87a2cd17e3124e466b0f924"
+ }
+}

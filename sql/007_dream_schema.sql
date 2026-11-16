@@ -1,4 +1,4 @@
--- Optional Dream extension. Run explicitly after 004 and 005.
+-- Optional Dream extension. Run explicitly after 004–006.
 -- Staged output is kept in dream_runs, outside active memory tables.
 CREATE TABLE IF NOT EXISTS dream_runs (
     run_id UUID PRIMARY KEY,

@@ -79,7 +79,13 @@ class RequestCache:
             try:
                 response = invoke(key)
             except BaseException as error:
-                call.update(status="failed", error_type=type(error).__name__)
+                call.update(
+                    status="failed", error_type=type(error).__name__, error=str(error)[:1000]
+                )
+                save_json(
+                    self.usage.folder / "calls" / f"{call['id']:05d}.json",
+                    {"request": request, "error": str(error)[:1000]},
+                )
                 raise
             else:
                 call.update(

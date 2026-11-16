@@ -1,6 +1,6 @@
 """Dream transactions: offline reference implementation and durable PostgreSQL queue.
 
-Run sql/006_dream_schema.sql explicitly before using AlloyDBDreamStore. No
+Run sql/007_dream_schema.sql explicitly before using AlloyDBDreamStore. No
 background thread or migration starts merely by importing this module.
 """
 

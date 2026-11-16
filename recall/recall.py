@@ -1,14 +1,19 @@
 """Recall pipeline: find stored evidence and return it ranked, dated, typed and token-fitted.
 
-    analyze_query    time phrases -> date window; multi-part questions -> sub-queries
+    analyze_query    time phrases -> date window; multi-part questions, back-references and
+                     abbreviations -> sub-queries
     embed            one vector per sub-query (a failure skips the vector channel)
     search           vector, keyword, query-entity and temporal channels in one store call
     graph_expand     one hop over memory_links and shared entities from the fused top hits
     fuse_rrf         reciprocal rank fusion; drops memories from rounds the caller already shows
     rerank           cross-encode the fused head against every sub-query
-    apply_boosts     small capped recency / window-fit / evidence boosts
-    filter_and_abstain  relevance floor (reranked only; best few kept if all fall below)
-                        and superseded memories
+    apply_boosts     small capped recency / window-fit / evidence / user-request boosts
+    filter_and_abstain  the best max_items at or above min_relevance, never fewer than
+                        min_items positive ones (both apply to reranked scores only); hides
+                        superseded memories
+    graph_followup   adds the round links (request, tool call, result) of the top kept facts
+    source_rounds    for back-references or weak results, adds the verbatim rounds behind
+                     the top kept facts
     pack             best-first into the token budget as dated, typed lines
 
 Every stage is injected or pure, so the pipeline runs offline with InMemoryRecallStore.
@@ -16,13 +21,22 @@ See docs/RECALL_NOTES.md for decisions and what is still open.
 """
 
 import logging
+import re
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 
-from recall.config import DEFAULT_TYPES, MemoryType, RecallConfig, RecallDepth, parse_types
-from recall.models import QueryPlan, RecallResult, TimeWindow, Tracer, as_aware
+from recall.config import (
+    DEFAULT_TYPES,
+    ROUND_RELATIONS,
+    MemoryType,
+    RecallConfig,
+    RecallDepth,
+    parse_types,
+)
+from recall.models import Memory, QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
-from recall.query import analyze_query
+from recall.query import analyze_query, said_on_day
 from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
 from recall.store import RecallStore
 from retain.embeddings import Embedder
@@ -79,7 +93,7 @@ class Recaller:
     ) -> RecallResult:
         """Finds stored evidence for `query` that `scope` may read.
 
-        The score floor applies to reranker scores only; fused ranks are not calibrated
+        min_relevance applies to reranker scores only; fused ranks are not calibrated
         relevance, so unreranked results are never abstained on score.
 
         exclude_episode_ids are rounds the caller already shows verbatim (the Valkey sliding
@@ -113,7 +127,11 @@ class Recaller:
                 strict=self.strict,
             )
             stage.count = len(plan.sub_queries)
-            stage.detail = {"window_source": plan.window_source, "llm_used": plan.llm_used}
+            stage.detail = {
+                "window_source": plan.window_source,
+                "llm_used": plan.llm_used,
+                "refers_back": plan.refers_back,
+            }
 
         # Embed each sub-query for the vector channel.
         with tracer.stage("embed") as stage:
@@ -189,19 +207,51 @@ class Recaller:
                 stage.detail = {"reranked": reranked}
 
             with tracer.stage("apply_boosts") as stage:
-                boosted = apply_boosts(ranked, as_of, plan.window, config)
+                boosted = apply_boosts(
+                    ranked, as_of, plan.window, config, refers_back=plan.refers_back
+                )
                 stage.count = len(boosted)
 
             with tracer.stage("filter_and_abstain") as stage:
-                floor = config.score_floor if reranked else 0.0
-                kept, dropped = filter_and_abstain(
-                    boosted, as_of, include_invalid, floor, config.floor_fallback_top
-                )
+                min_relevance = config.min_relevance if reranked else 0.0
+                max_items = config.list_max_items if plan.wants_list else config.max_items
+                kept, stage.detail = filter_and_abstain(
+                    boosted, as_of, include_invalid, min_relevance, max_items,
+                    config.min_items if reranked else 0,
+                )  # fmt: skip
                 stage.count = len(kept)
-                stage.detail = {"score_floor": floor, **dropped}
-            # Fallback hits are below the floor, so they never end the tier search early.
-            if reranked and not dropped["fallback"] and len(kept) >= config.tier_min_hits:
+            if reranked and len(kept) >= config.tier_min_hits:
                 break
+
+        with tracer.stage("graph_followup") as stage:
+            added = self._follow_round_links(
+                scope, plan, kept, types, as_of, include_invalid, visited, exclude_episode_ids
+            )
+            kept = sorted([*kept, *added], key=lambda item: item.score, reverse=True)
+            stage.count = len(added)
+            stage.detail = {"added": [item.summary() for item in added]}
+
+        with tracer.stage("source_rounds") as stage:
+            rounds = self._source_rounds(scope, plan, kept, exclude_episode_ids)
+            kept = [*kept, *rounds]
+            stage.count = len(rounds)
+            stage.detail = {"episodes": [item.memory.id for item in rounds]}
+
+        if (
+            depth == RecallDepth.LOW
+            and config.quote_messages > 0
+            and embeddings is not None
+            and self.reranker is not None
+            and not _ASKS_DATE.match(query)
+            # A list needs every matching fact, and quotes would push items out.
+            and not plan.wants_list
+        ):
+            with tracer.stage("quote_messages") as stage:
+                quotes, stage.detail = self._quote_messages(
+                    scope, plan, kept, embeddings, exclude_episode_ids, said_on_day(query)
+                )
+                kept = [*kept, *quotes]
+                stage.count = len(quotes)
 
         # Format the survivors as dated, typed lines until the token budget runs out.
         with tracer.stage("pack") as stage:
@@ -230,6 +280,150 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _quote_messages(self, scope, plan, kept, embeddings, exclude_episode_ids, day=None):
+        """Original messages that match the question on their own, placed after the facts.
+
+        Searched by meaning, reranked against every sub-query like any candidate, and kept
+        only above quote_min_relevance; a message already shown in a source round is skipped.
+        A question about what was said on a named day ("on 16 June, 2023") searches only that
+        day's messages: facts carry when an event happened, not the day it was talked about.
+        """
+        config = self.config
+        try:
+            found = self.store.search_messages(
+                scope, embeddings, config.quote_pool, exclude_episode_ids, on_day=day
+            )
+        except Exception as e:
+            if self.strict:
+                raise
+            logger.warning("Message search failed; answering without quotes: %s", e)
+            return [], {"error": str(e)}
+        shown = "\n".join(i.memory.text for i in kept if i.memory.type == MemoryType.EPISODE)
+        candidates = [Scored(m, 0.0, channels=("quote",)) for m in found if m.text not in shown]
+        if not candidates:
+            return [], {"candidates": 0}
+        n = len(candidates)
+        ranked, reranked = rerank(
+            plan.sub_queries, candidates, self.reranker, n, n, strict=self.strict
+        )
+        if not reranked:
+            return [], {"candidates": n, "reranked": False}
+        quotes = [
+            replace(item, score=item.relevance)
+            for item in ranked
+            if item.relevance >= config.quote_min_relevance
+        ][: config.quote_messages]
+        return quotes, {
+            "day": day.isoformat() if day else None,
+            "candidates": n,
+            "top": [(item.memory.id, round(item.relevance, 3)) for item in ranked[:5]],
+            "quoted": [item.memory.id for item in quotes],
+        }
+
+    def _source_rounds(
+        self,
+        scope: Scope,
+        plan: QueryPlan,
+        kept: Sequence[Scored],
+        exclude_episode_ids: Sequence[str],
+    ) -> list[Scored]:
+        """The verbatim rounds behind the top kept facts, for weak or back-referring questions.
+
+        Placed after the ranked memories with the score of the fact that led to them, so the
+        answer sees exact values (IDs, codes) and the order of the original turns.
+        """
+        config = self.config
+        best = max((item.relevance for item in kept), default=0.0)
+        if not kept or config.source_rounds <= 0:
+            return []
+        if not (plan.refers_back or best < config.source_round_below):
+            return []
+        excluded, episode_ids = set(exclude_episode_ids), {}
+        for item in kept:
+            episode_id = item.memory.source_episode_id
+            if item.memory.type != MemoryType.FACT or not episode_id or episode_id in excluded:
+                continue
+            episode_ids.setdefault(episode_id, item)
+            if len(episode_ids) >= config.source_rounds:
+                break
+        rounds = []
+        for episode_id, origin in episode_ids.items():
+            try:
+                episode = self.store.get_episode(scope, episode_id)
+            except Exception as e:
+                if self.strict:
+                    raise
+                logger.warning("Source round lookup failed; skipping it: %s", e)
+                continue
+            if not episode or not episode["messages"]:
+                continue
+            text = "\n".join(f"{m['speaker']}: {m['text']}" for m in episode["messages"])
+            first = episode["messages"][0].get("occurred_at")
+            memory = Memory(
+                id=episode_id,
+                type=MemoryType.EPISODE,
+                text=text[: config.source_round_chars],
+                occurred_at=datetime.fromisoformat(first) if first else None,
+                source_episode_id=episode_id,
+            )
+            rounds.append(
+                Scored(memory, origin.relevance, score=origin.score, channels=("source_round",))
+            )
+        return rounds
+
+    def _follow_round_links(
+        self,
+        scope: Scope,
+        plan: QueryPlan,
+        kept: Sequence[Scored],
+        types: Sequence[MemoryType],
+        as_of: datetime,
+        include_invalid: bool,
+        visited_tiers: Sequence[str],
+        exclude_episode_ids: Sequence[str],
+    ) -> list[Scored]:
+        """Relevant facts linked to the top kept facts by Retain's round links.
+
+        Search often finds one end of a request -> tool call -> result chain but not the other
+        (the request that names the server). Neighbours are reranked and filtered like every
+        other candidate; without a reranker their scores would not compare, so none are added.
+        """
+        config = self.config
+        seeds = [item.memory.id for item in kept if item.memory.type == MemoryType.FACT]
+        seeds = seeds[: config.followup_seeds]
+        if self.reranker is None or not seeds:
+            return []
+
+        neighbors = self.store.expand_neighbors(
+            scope, seeds, types, as_of, include_invalid, config.followup_limit,
+            tiers=visited_tiers or None, relations=ROUND_RELATIONS,
+        )  # fmt: skip
+        known = {item.memory.id for item in kept}
+        candidates = [
+            Scored(memory, 0.0, channels=("graph_followup",))
+            for memory in neighbors
+            if memory.id not in known and memory.source_episode_id not in exclude_episode_ids
+        ]
+        n = len(candidates)
+        ranked, reranked = rerank(
+            plan.sub_queries, candidates, self.reranker, n, n, strict=self.strict
+        )
+        if not reranked:
+            return []
+        boosted = apply_boosts(ranked, as_of, plan.window, config, refers_back=plan.refers_back)
+        added, _ = filter_and_abstain(
+            boosted, as_of, include_invalid, config.min_relevance, config.followup_limit
+        )
+        return added
+
+
+# Questions answered by a date or duration, where facts carry the resolved date.
+_ASKS_DATE = re.compile(
+    r"\s*(?:when|since when|how long|how many (?:days|weeks|months|years)"
+    r"|what (?:year|month|date|day|time))\b",
+    re.IGNORECASE,
+)
 
 
 def build_recaller(

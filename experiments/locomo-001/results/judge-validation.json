@@ -1,0 +1,188 @@
+{
+ "labelled_by": "Claude Code session 0fd31fbe (hand, before seeing judge labels)",
+ "rule": "mem0 ACCURACY_PROMPT generous reading",
+ "n": 20,
+ "agree": 19,
+ "rows": [
+  {
+   "item_id": "j0094",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q092"
+  },
+  {
+   "item_id": "j0024",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q109"
+  },
+  {
+   "item_id": "j0250",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q051"
+  },
+  {
+   "item_id": "j0148",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "month contains the date; generous rule",
+   "system": "pr13",
+   "question_id": "conv-26-q036"
+  },
+  {
+   "item_id": "j0070",
+   "hand": "CORRECT",
+   "judge": "WRONG",
+   "agree": false,
+   "note": "2 of 3 names; generous",
+   "system": "pr13",
+   "question_id": "conv-26-q052"
+  },
+  {
+   "item_id": "j0217",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "1 of 2; generous",
+   "system": "original",
+   "question_id": "conv-26-q061"
+  },
+  {
+   "item_id": "j0190",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q029"
+  },
+  {
+   "item_id": "j0093",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "car accident vs injury break: different event",
+   "system": "pr13",
+   "question_id": "conv-26-q135"
+  },
+  {
+   "item_id": "j0004",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q132"
+  },
+  {
+   "item_id": "j0238",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q012"
+  },
+  {
+   "item_id": "j0048",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q073"
+  },
+  {
+   "item_id": "j0105",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q045"
+  },
+  {
+   "item_id": "j0252",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "2 of 3 overlap; generous",
+   "system": "original",
+   "question_id": "conv-26-q032"
+  },
+  {
+   "item_id": "j0109",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q054"
+  },
+  {
+   "item_id": "j0082",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "ambiguous: counts wrong (one cat vs two)",
+   "system": "pr13",
+   "question_id": "conv-26-q124"
+  },
+  {
+   "item_id": "j0163",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q004"
+  },
+  {
+   "item_id": "j0154",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q135"
+  },
+  {
+   "item_id": "j0189",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q029"
+  },
+  {
+   "item_id": "j0216",
+   "hand": "CORRECT",
+   "judge": "CORRECT",
+   "agree": true,
+   "note": "",
+   "system": "pr13",
+   "question_id": "conv-26-q105"
+  },
+  {
+   "item_id": "j0204",
+   "hand": "WRONG",
+   "judge": "WRONG",
+   "agree": true,
+   "note": "",
+   "system": "original",
+   "question_id": "conv-26-q131"
+  }
+ ]
+}

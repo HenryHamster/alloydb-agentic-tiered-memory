@@ -312,6 +312,8 @@ def collect_archive(archive, expected_hash, output, run_id):
 
 def run_remote(cloud, args, source):
     history = validate_history(read_json(args.history))
+    if getattr(args, "assistant_is_human", False):
+        history["assistant_is_human"] = True
     if args.question is not None:
         questions = [{"id": "adhoc", "question": args.question}]
     else:
@@ -451,6 +453,11 @@ def main(argv=None):
     selection.add_argument("--questions", type=Path)
     selection.add_argument("--question")
     run.add_argument("--question-id")
+    run.add_argument(
+        "--assistant-is-human",
+        action="store_true",
+        help="Two people talking (LoCoMo): treat the assistant role as a person for this run",
+    )
     run.add_argument("--name")
     run.add_argument("--mode", choices=["cached", "replay", "fresh"], default="cached")
     run.add_argument("--max-output-tokens", type=int, default=65536)

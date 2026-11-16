@@ -204,7 +204,8 @@ def test_changed_supporting_facts_create_a_new_version_and_preserve_the_old_one(
             text=json.dumps(
                 {
                     "summary": "The service uses the revised deployment settings.",
-                    "fact_ids": [fact.fact_id for fact in (*first_facts, memory_fact(32))],
+                    # Only new facts are sent with the previous summary, so only they return.
+                    "fact_ids": [memory_fact(32).fact_id],
                 }
             )
         ),
@@ -226,6 +227,9 @@ def test_changed_supporting_facts_create_a_new_version_and_preserve_the_old_one(
     assert current.text == "The service uses the revised deployment settings."
     assert set(current.fact_ids) == {fact.fact_id for fact in (*first_facts, added)}
     assert len(store.observations) == 2
+    update_prompt = client.models.generate_content.call_args.kwargs["contents"]
+    assert "The service uses the original deployment settings." in update_prompt
+    assert first_facts[0].fact_id not in update_prompt
 
 
 def test_superseded_supporting_fact_refreshes_only_its_scope():

@@ -39,8 +39,15 @@ def database():
     try:
         conn = connect()
         with conn, conn.cursor() as cur:
-            for name in ("004_retain_schema.sql", "005_reflect_schema.sql", "006_dream_schema.sql"):
-                cur.execute((root / "sql" / name).read_text(encoding="utf-8"))
+            for name in (
+                "004_retain_schema.sql",
+                "005_reflect_schema.sql",
+                "006_document_embeddings.sql",
+                "007_dream_schema.sql",
+            ):
+                ddl = (root / "sql" / name).read_text(encoding="utf-8")
+                # This isolated schema has no concurrent writers.
+                cur.execute(ddl.replace("CREATE INDEX CONCURRENTLY", "CREATE INDEX"))
         conn.close()
         retain = AlloyDBRetainStore(connect)
         try:

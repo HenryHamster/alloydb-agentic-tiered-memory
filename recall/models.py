@@ -143,6 +143,19 @@ class Memory:
             source_episode_id=first.episode_id,
         )
 
+    @classmethod
+    def from_message(cls, document: Document) -> "Memory":
+        """One original message, quoted with who said it."""
+        return cls(
+            id=document.document_id,
+            type=MemoryType.MESSAGE,
+            text=document.text,
+            recorded_at=document.recorded_at,
+            occurred_at=document.occurred_at,
+            speaker=document.speaker,
+            source_episode_id=document.episode_id,
+        )
+
     def primary_date(self) -> datetime | None:
         return self.occurred_at or self.valid_from or self.recorded_at
 
@@ -189,6 +202,10 @@ class QueryPlan:
     window: TimeWindow | None
     window_source: str | None = None  # "explicit", "rules" or "llm"
     llm_used: bool = False
+    # The question points back at earlier talk without naming it ("that server").
+    refers_back: bool = False
+    # The question asks for several items or a count ("what events", "how many").
+    wants_list: bool = False
 
 
 @dataclass
@@ -197,6 +214,17 @@ class Scored:
     relevance: float
     boost: float = 0.0
     score: float = 0.0
+    # The search lists that found this memory ("vector:0", "keyword:1", "graph", ...).
+    channels: tuple[str, ...] = ()
+
+    def summary(self) -> dict[str, Any]:
+        """A short trace line for a candidate, kept or dropped."""
+        return {
+            "id": self.memory.id,
+            "text": self.memory.text[:80],
+            "relevance": round(self.relevance, 4),
+            "channels": list(self.channels),
+        }
 
 
 @dataclass
@@ -235,6 +263,7 @@ class RecallItem:
     rank: int
     stale: bool
     tokens: int
+    channels: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -243,6 +272,7 @@ class RecallItem:
             "relevance": round(self.relevance, 6),
             "rank": self.rank,
             "stale": self.stale,
+            "channels": list(self.channels),
         }
 
 

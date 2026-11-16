@@ -44,7 +44,7 @@ Four new real-PostgreSQL tests are included and run when `DEV_TEST_DSN` points t
 a disposable pgvector database; they were skipped locally because none was
 configured. A live AlloyDB migration or deployment has not been performed.
 
-Enable Dream explicitly and run `sql/006_dream_schema.sql` after 004/005 when
+Enable Dream explicitly and run `sql/007_dream_schema.sql` after 004–006 when
 deploying. Provider adapters own billing controls. Apply briefly locks source
 tables; freshness checks conservatively scan the source/fact snapshot. Human
 review remains necessary to validate the meaning of generated lessons.

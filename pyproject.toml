@@ -35,7 +35,7 @@ py-modules = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "experiments/locomo-001/harness"]
 pythonpath = ["."]  # bench/ is a repo-local harness, not an installed package
 addopts = "-q"
 

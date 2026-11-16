@@ -3,12 +3,15 @@
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from recall.models import QueryPlan, TimeWindow, as_aware
-from shared.llm import Generate
+from shared.llm import Generate, generate_with_retry
 
 logger = logging.getLogger(__name__)
+
+# Retry a temporary provider error at most once in query analysis (see analyze_query).
+QUERY_ANALYSIS_ATTEMPTS = 2
 
 _MONTHS = [
     "january", "february", "march", "april", "may", "june",
@@ -16,6 +19,13 @@ _MONTHS = [
 ]  # fmt: skip
 _LAST_N_RE = re.compile(r"\b(?:last|past|previous)\s+(\d+)\s+(day|week|month|year)s?\b")
 _MONTH_RE = re.compile(r"\b(?:in|during)\s+(" + "|".join(_MONTHS) + r")(?:\s+((?:19|20)\d{2}))?\b")
+_MONTH_NAMES = "|".join(_MONTHS)
+_DAY_FIRST_RE = re.compile(
+    r"\bon\s+(\d{1,2})(?:st|nd|rd|th)?\s+(" + _MONTH_NAMES + r"),?\s+((?:19|20)\d{2})\b"
+)
+_MONTH_FIRST_RE = re.compile(
+    r"\bon\s+(" + _MONTH_NAMES + r")\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d{2})\b"
+)
 _YEAR_RE = re.compile(r"\b(?:in|during)\s+((?:19|20)\d{2})\b")
 
 
@@ -89,6 +99,23 @@ def parse_time_phrase(text: str, now: datetime) -> TimeWindow | None:
     return None
 
 
+def said_on_day(text: str) -> date | None:
+    """The exact day a question names ("on 16 June, 2023", "on May 3, 2023"), else None."""
+    lowered = text.lower()
+    match = _DAY_FIRST_RE.search(lowered)
+    if match:
+        day, month, year = match.group(1), match.group(2), match.group(3)
+    else:
+        match = _MONTH_FIRST_RE.search(lowered)
+        if not match:
+            return None
+        month, day, year = match.group(1), match.group(2), match.group(3)
+    try:
+        return date(int(year), _MONTHS.index(month) + 1, int(day))
+    except ValueError:
+        return None
+
+
 def parse_time_range(text: str | None, now: datetime) -> TimeWindow | None:
     """Accepts "START/END" ISO dates (end date inclusive) or a phrase such as "last month"."""
     if not text or not text.strip():
@@ -111,12 +138,56 @@ def _strip_fences(text: str) -> str:
     return text
 
 
-def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int) -> str:
-    return f"""You prepare questions for an AI agent's memory search.
+_POINTING = re.compile(
+    r"\b(?:that|those|this|these|the one|the same|earlier|before|previous(?:ly)?|again|"
+    r"last time|we|us|our|you|your|i|me|my)\b",
+    re.IGNORECASE,
+)
+# "this year", "that week", "these days" name a period, not earlier talk.
+_PERIOD = re.compile(
+    r"\b(?:this|that|these|those)\s+(?:year|month|week|weekend|day|morning|afternoon|evening|"
+    r"night|summer|winter|spring|autumn|fall|season|time|days|weeks|months|years)\b",
+    re.IGNORECASE,
+)
+_WH_START = re.compile(r"\s*(?:what|which|who|whom|whose|when|where|why|how)\b", re.IGNORECASE)
 
-1. If the question asks about more than one distinct thing, split it into at most {max_sub_queries} self-contained search queries; otherwise return it as the only query.
-2. If it refers to a time ("last week", "in March", "before the launch"), resolve it to a date window. The current time is {query_time.isoformat()}. The end date is exclusive.
-3. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null}}
+
+def points_back(query: str) -> bool:
+    """True when the query has a word pointing at earlier talk (that, earlier, we, my...),
+    not counting period phrases such as "this year"."""
+    return bool(_POINTING.search(_PERIOD.sub(" ", query)))
+
+
+def _is_third_person_question(query: str) -> bool:
+    """A wh-question naming someone after its first word: "What did Caroline research?"."""
+    words = re.findall(r"[A-Za-z][A-Za-z']*", query)
+    return bool(_WH_START.match(query)) and any(w[0].isupper() and w != "I" for w in words[1:])
+
+
+def confirm_refers_back(query: str, llm_refers_back: bool) -> bool:
+    """Whether a query the model flagged as a back-reference really is one.
+
+    The model also flags plain third-person questions ("How did Melanie's son handle the
+    accident?"), which pulls raw rounds over specific facts; those count only with a word
+    pointing at the talk itself. Agent requests ("Restart the database server", "Check the
+    status of the server from yesterday") keep the model's judgement: they often name what
+    the user asked about before without any pointing word.
+    """
+    if not llm_refers_back:
+        return False
+    return points_back(query) if _is_third_person_question(query) else True
+
+
+def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int) -> str:
+    return f"""You prepare questions for an AI agent's memory search. Return at most {max_sub_queries} search queries in total.
+
+1. If the question asks about more than one distinct thing, split it into self-contained search queries; otherwise return it as the only query.
+2. If the question refers back to something discussed earlier without naming it ("that database server", "those issues we talked about"), add one query naming it in general terms as what the user asked about before, e.g. "database server the user asked to check" or "problems the user asked about". Set refers_back to true.
+3. If the question uses an abbreviation, add one query with it spelled out, e.g. "AI" -> "artificial intelligence".
+4. If answering needs a fact about another person or thing first, add one query for that fact, e.g. "which book did Melanie read on Caroline's advice?" -> "books Caroline mentioned or loves". If the question names a general status or trait, add one query in the concrete words an answer would use, e.g. "Caroline's relationship status" -> "Caroline single, partner, dating, breakup".
+5. Only return a time_window for an explicit period such as "last week", "in March" or "before the launch". Words like now, currently, right now, latest and recent are not windows; return null. The current time is {query_time.isoformat()}. The end date is exclusive.
+6. Set list to true when the question asks for several items or a count ("what events", "which books", "how many times"); otherwise false.
+7. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false}}
 
 Question: {query}
 JSON:"""
@@ -134,7 +205,8 @@ def analyze_query(
 ) -> QueryPlan:
     """Turns time phrases into a date window and splits multi-part questions.
 
-    Window precedence: explicit argument, then the rule parser, then the LLM. The original
+    Window precedence: explicit argument, then the rule parser, then the LLM. The LLM also
+    adds queries for back-references and abbreviations and reports refers_back. The original
     query is always the first sub-query. decompose=False (used by Reflect) skips the LLM.
     """
     plan = QueryPlan(sub_queries=[query], window=temporal_window)
@@ -149,22 +221,34 @@ def analyze_query(
 
     try:
         prompt = _decomposition_prompt(query, query_time, max_sub_queries)
-        data = json.loads(_strip_fences(generate(prompt)))
+        # Query analysis is on the answer path: retry a temporary error once (one 429 used to
+        # end the answer), but not four times, which after deadline errors cost 4 timeouts
+        # plus 21 s of backoff before falling back to the original query.
+        data = json.loads(
+            _strip_fences(generate_with_retry(generate, prompt, attempts=QUERY_ANALYSIS_ATTEMPTS))
+        )
         plan.llm_used = True
         seen = {query.lower()}
         for sub_query in [str(q).strip() for q in data.get("sub_queries") or []][:max_sub_queries]:
             if sub_query and sub_query.lower() not in seen:
                 seen.add(sub_query.lower())
                 plan.sub_queries.append(sub_query)
+        plan.refers_back = confirm_refers_back(query, data.get("refers_back") is True)
+        plan.wants_list = data.get("list") is True
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")
         if plan.window is None and has_window:
             tz = query_time.tzinfo
-            plan.window = TimeWindow(
+            llm_window = TimeWindow(
                 as_aware(datetime.fromisoformat(window["start"].strip()), tz),
                 as_aware(datetime.fromisoformat(window["end"].strip()), tz),
             )
-            plan.window_source = "llm"
+            # "Right now" can come back as today's window, which would penalise every older
+            # memory; drop windows starting today or later (rules already handle "today").
+            today = query_time.replace(hour=0, minute=0, second=0, microsecond=0)
+            if llm_window.start < today:
+                plan.window = llm_window
+                plan.window_source = "llm"
     except Exception as e:
         if strict:
             raise

@@ -2,7 +2,7 @@
 
 `tiered_memory.build_memory_system` connects the production Retain stages, AlloyDB
 Recall, Reflect and Valkey. Gemini generation uses the global endpoint and
-text-embedding-005 uses a regional endpoint. Apply schemas 004 and 005. Enable
+text-embedding-005 uses a regional endpoint. Apply schemas 004, 005 and 006. Enable
 Discovery Engine and grant the AlloyDB service agent `roles/discoveryengine.viewer`
 for `ai.rank`; the database AI query engine flag must already be enabled.
 
