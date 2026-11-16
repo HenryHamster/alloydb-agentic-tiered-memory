@@ -71,7 +71,12 @@ def build(sample):
         for turn in conv[key]:
             dia_ids[turn["dia_id"]] = (key, len(messages))
             messages.append(
-                {"role": roles[turn["speaker"]], "content": content(turn), "timestamp": when}
+                {
+                    "role": roles[turn["speaker"]],
+                    "name": turn["speaker"],
+                    "content": content(turn),
+                    "timestamp": when,
+                }
             )
         sessions.append({"id": key, "date_time": conv[key + "_date_time"], "messages": messages})
     questions, references = [], {}
@@ -113,6 +118,8 @@ def main(dataset, out_dir, conversation=DEFAULT_CONVERSATION):
         # PR13 developer CLI format (devtools/inputs.py).
         f"history-{sid}.json": {
             "id": sid,
+            # Both LoCoMo speakers are people: the assistant role is a second human.
+            "assistant_is_human": True,
             "sessions": [{"id": s["id"], "messages": s["messages"]} for s in sessions],
         },
         f"questions-{sid}.json": {"questions": questions},
