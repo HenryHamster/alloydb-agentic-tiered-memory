@@ -53,6 +53,11 @@ class RetainConfig:
     # Store a vector per user/assistant message, so Recall can quote the exact words a fact
     # summarised away ("the worst was self-doubt"). One small embedding call per round.
     embed_messages: bool = True
+    # A conversation between two people (LoCoMo): the assistant role is a second human, so a
+    # named assistant's statements are asserted world facts about them. Off for agent traffic,
+    # where a `name` on an assistant event (often set by agent frameworks) never makes its
+    # proposals world facts. Must be set explicitly; it is never inferred from names.
+    assistant_is_human: bool = False
 
 
 def _utcnow() -> datetime:
@@ -236,6 +241,11 @@ class Retainer:
     def _documents(self, scope, messages, episode_id, now) -> list[Document]:
         ttl = self.config.document_ttl
         split = [part for message in messages for part in _split_events(message)]
+        # Only a person keeps a name for extraction: a named agent is still an agent.
+        split = [
+            message if self._is_person(message) else replace(message, name=None)
+            for message in split
+        ]
         for message in split:
             if message.name:
                 self._speaker_names.setdefault(scope.user_id, set()).add(message.name)
@@ -260,6 +270,11 @@ class Retainer:
             )
             for position, message in enumerate(split)
         ]
+
+    def _is_person(self, message: Message) -> bool:
+        if message.speaker == Speaker.USER:
+            return True
+        return message.speaker == Speaker.ASSISTANT and self.config.assistant_is_human
 
     def _decide(self, facts: list[MemoryFact]) -> list[UpdateDecision]:
         """Classify new facts, then enforce the trust boundary on the model's targets.

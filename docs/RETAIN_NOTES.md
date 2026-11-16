@@ -70,22 +70,31 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   from it twice; "ten years ago" keeps the duration and adds "(around 2013)". The model is told to
   copy relative words as said rather than compute dates. The phrase is looked for in the quote,
   then the sentence around it (short quotes drop "last week" said a few words later), then the
-  fact text. A day the model wrote into the text anyway is replaced when it is the only date
+  fact text. In the quote and the sentence a phrase counts only in a clause about this fact (one
+  sharing a content word with it): in "My sister arrived on Tuesday and I fly out next Friday",
+  "next Friday" does not date the sister's arrival. A day the model wrote into the text anyway is replaced when it is the only date
   there and within two weeks of the code's date; a date already present is never written twice;
   an event whose text has no date gets one. Failing all of that, a model date within two weeks
-  of the chunk's only day phrase is corrected to it. A full date more than a month from the day said, in a turn
-  with no date words at all (no phrase, month, year, season or holiday), is dropped: it can only
-  be the model's arithmetic ("known them for 4 years" once came back dated 2019). A "shared a
+  of the chunk's only day phrase, on the same side of the day said, is corrected to it when that
+  phrase's clause is about the fact. A full date more than a month from the day said is dropped
+  only on evidence that the model counted it from a duration: the turn states one ("for 4
+  years", "5 years already!") and has no month, year, season, holiday or nearby relative phrase
+  it could come from ("known them for 4 years" once came back dated 2019). Without a duration
+  the date stands, so "Book my flight for Dec 20" and "invoice 12/30" keep theirs. A "shared a
   photo" fact keeps the day it was shared: in "a painting I did last week" the phrase dates the
   painting, so only the text gets that date (moving the fact a week back lost "what painting did
   Melanie show on 13 October").
 - **Trust.** Speaker, scope and episode come from documents, not the model. An assistant cannot
   assert a user preference; it is stored as `proposed`.
 - **People, not only agents.** `retain_turn` / `record_turn` take optional `user_name` and
-  `assistant_name`, and a serialized assistant event may carry a `name`. A named speaker is a
-  person (two-person chats such as LoCoMo): the name goes to the model as `speaker_name`, facts
-  name who said what instead of "the user"/"the assistant", their statements are `asserted`
-  `world` facts, and their preferences are not demoted. Without a name nothing changes.
+  `assistant_name`, and a serialized assistant event may carry a `name`. A named user is a
+  person. A named assistant is one only when `RetainConfig(assistant_is_human=True)` says the
+  conversation is between two people (LoCoMo); agent frameworks often set `name`, so it is never
+  inferred, and by default Retain drops an assistant's name before extraction. A person's name
+  goes to the model as `speaker_name`, facts name who said what instead of "the user"/"the
+  assistant", their statements are `asserted` `world` facts, and their preferences are not
+  demoted. Without a person's name nothing changes. The developer runner turns the flag on with
+  `"assistant_is_human": true` at the top of a history file, or `dev.py run --assistant-is-human`.
   The prompt asks for every statement in a turn (opinions, meanings, reactions, feelings, a view
   phrased as a question) and for "it/that/we did it" to be named from the context. That context
   includes the session's previous turn (`Document.context`, read but never stored or cited), so
@@ -166,3 +175,12 @@ test (`tests/test_retain_live.py`), and read-only inspection queries. The codela
 `agent_entities` writer and reader unless a `build_retainer(...)` instance is explicitly injected
 into the worker. The legacy reader cannot retrieve `memory_facts` or `observations`; Recall still
 needs its AlloyDB adapter for the Retain schema before Retain → Recall → Reflect can be verified.
+
+### Named-speaker fallback questions
+
+Unextracted named-speaker turns keep statements, requests, confirmations and questions
+containing numbers; ordinary conversational questions are omitted. These deterministic
+rules are conservative exceptions to the question filter, not a semantic importance
+classifier. Source evidence and validated model facts are unchanged; no model calls are
+added. Offline regression tests cover useful-question preservation and conversational
+noise. Retrieval/accuracy effects still require evaluation.

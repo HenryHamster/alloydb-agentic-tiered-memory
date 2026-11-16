@@ -247,6 +247,35 @@ def model(tmp_path, mode="cached", run="run"):
     return CachedModels(provider, provider, cache), usage, provider
 
 
+def test_history_flag_makes_the_assistant_a_person_only_when_set(tmp_path):
+    from datetime import datetime, timezone
+
+    from devtools.inputs import validate_history
+    from devtools.worker import ingest
+
+    class Recording:
+        def __init__(self):
+            self.retainer = SimpleNamespace(extractor=Mock(), config=RetainConfig())
+            self.seen = []
+
+        def record_turn(self, *args, **kwargs):
+            self.seen.append(self.retainer.config.assistant_is_human)
+            return {}
+
+        def finish_session(self, scope):
+            return {}
+
+    base = read_json(SOURCE / "fixtures/dev/history.json")
+    clock = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for flag in (None, True):
+        history = dict(base) if flag is None else {**base, "assistant_is_human": flag}
+        system = Recording()
+        ingest(system, validate_history(history), "x", clock, SimpleNamespace(), tmp_path)
+        assert set(system.seen) == {bool(flag)}
+    with pytest.raises(ValueError, match="assistant_is_human"):
+        validate_history({**base, "assistant_is_human": "yes"})
+
+
 def test_provider_cache_replay_preserves_responses_and_reports_usage(tmp_path):
     first, usage, provider = model(tmp_path)
     provider.models.generate_content.return_value.parsed = [{"fact": "array response"}]
@@ -400,9 +429,12 @@ def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, capsys):
         mode="cached",
         max_output_tokens=1024,
         cache_epoch="1",
+        assistant_is_human=True,
     )
     assert run_remote(FakeCloud(), args, SOURCE) == 0
     report = read_json(next((tmp_path / "results").glob("*/report.json")))
+    # --assistant-is-human travels in the job's history, so it is part of the prepared key.
+    assert read_json(next((tmp_path / "results").glob("*/history.json")))["assistant_is_human"]
     assert report["questions"][0]["score"]["correct"]
     console = capsys.readouterr().out
     assert "Reported new tokens:" in console and "Full results:" in console
@@ -547,3 +579,18 @@ def test_real_sql_pipeline_preparation_restore_answer_replay(tmp_path, extension
     assert second["status"] == "completed", second
     assert not read_json(tmp_path / "second/usage.json")["calls"]
     assert len(fixture.requests) == count
+
+
+def test_schema_ddl_applies_the_document_embedding_migration_in_one_transaction():
+    from devtools.state import schema_ddl
+
+    root = Path(__file__).resolve().parents[1]
+    original = (root / "sql" / "004_retain_schema.sql").read_text(encoding="utf8")
+    documents = original.split("CREATE TABLE IF NOT EXISTS documents", 1)[1].split(");", 1)[0]
+    assert "embedding" not in documents  # 004 is unchanged for databases that already ran it
+    ddl = list(schema_ddl(root))
+    assert len(ddl) == 3
+    assert "ADD COLUMN IF NOT EXISTS embedding VECTOR(768)" in ddl[2]
+    assert "documents_embedding_idx" in ddl[2]
+    assert not any("CONCURRENTLY" in part for part in ddl)
+    assert not any("CREATE EXTENSION" in part for part in ddl)

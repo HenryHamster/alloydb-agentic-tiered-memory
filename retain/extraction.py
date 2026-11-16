@@ -659,34 +659,40 @@ _FILLER = frozenset(
     """a an the and or but so to of for in on at with about it its it's this that that's these
     those is am are was were be been being do does did have has had i i'm i've i'll i'd me my
     you you're your yours we we're our us he she they them their his her him just really very
-    too also all much more such what how oh aw aww awww ah ahh ooh hmm wow yay yes yeah yep no nope ok okay haha lol omg
+    too also all much more such what how oh aw aww awww ah ahh ooh hmm wow yay yeah yep nope ok okay haha lol omg
     hey hi hello thanks thank great awesome amazing cool nice lovely beautiful wonderful
     fantastic incredible brilliant sweet good glad happy proud congrats congratulations
-    sounds sound looks look seems totally definitely absolutely agree true right same love
-    can't wait hear means mean lot always here there know fun moment day time experience pic
+    sounds sound looks seems totally definitely absolutely agree true right same love
+    wait hear means mean lot always here there know fun moment day time experience pic
     picture photo stuff thing things""".split()
 )
+# Reactions that only read as filler together ("No way!", "Can't wait!"); "no", "yes" and
+# "can't" alone can answer or refuse something ("No, keep db-7.").
+_REACTION_PHRASES = re.compile(r"\b(?:no way|can't wait)\b", re.IGNORECASE)
+# Words that are filler only in a small-talk question ("Would you do it again?").
+_QUESTION_FILLER = frozenset("can could would will tell again way ever".split())
 
 
 def _is_chit_chat(text, names=(), person=False):
     """A short turn with nothing to look up later: only function words and reactions.
 
-    Any number, question, request, name or other content word keeps the turn ("I was so
-    scared.", "Bailey is so sweet!", "The necklace stands for love, faith and strength").
-    Between people (`person`), a question or "what a day!" opener is not kept on its own:
-    their questions are small talk, and the answers hold the facts.
+    Any number, request, name or other content word keeps the turn ("I was so scared.",
+    "Bailey is so sweet!", "The necklace stands for love, faith and strength"). A question
+    is judged by the same words ("Can you help?" is kept, "No way, really?" is not), so a
+    named person's requests, constraints and confirmations survive but small talk does not.
     """
     words = text.split()
-    if len(words) > 12 or re.search(r"\d", text) or (not person and "?" in text):
+    if len(words) > 12 or re.search(r"\d", text):
         return False
-    body = _without_speaker(text)
+    body = _without_speaker(text).replace("’", "'")
     if not person and _REQUEST_START.match(body.strip()):
         return False
+    filler = _FILLER | _QUESTION_FILLER if body.rstrip().endswith("?") else _FILLER
     skip = {name.casefold() for name in names}
-    for word in body.split():
+    for word in _REACTION_PHRASES.sub(" ", body).split():
         folded = word.strip(".,;:!?()[]{}\"'").casefold()
         nickname = len(folded) >= 3 and any(name.startswith(folded) for name in skip)
-        if folded and folded not in skip and not nickname and folded not in _FILLER:
+        if folded and folded not in skip and not nickname and folded not in filler:
             return False
     return True
 
@@ -695,11 +701,34 @@ def _without_speaker(text):
     return re.sub(r"^[^\W\d][\w .'-]{0,39}:\s*", "", text)  # "Melanie: " prefix
 
 
+# Preserve requests and statement-like confirmations; ordinary conversational questions
+# still rely on their answers. This runs only on named-speaker fallback text.
+_REQUEST_QUESTION = re.compile(
+    r"(?:please|pls|can|could|would|will|shall|should|let'?s|i need|i want|i'd like|"
+    r"check|show|find|get|tell|give|help|make|set|send|book|remind|open|run|restart|"
+    r"stop|start|update|create|delete|remove|add|list|look|yes|no)\b",
+    re.IGNORECASE,
+)
+_CONFIRMATION_QUESTION = re.compile(
+    r",\s*(?:right|correct|okay|ok|isn't it|aren't we|didn't we|don't we)\?+$",
+    re.IGNORECASE,
+)
+
+
 def _statements(text):
-    """A person's turn without its questions: "Wow! How was it? [shares a photo: a cake]"
-    keeps "Wow! [shares a photo: a cake]"."""
+    """Keep statements and potentially actionable questions missed by extraction."""
     parts = re.split(r"(?<=[.!?\]])\s+", _without_speaker(text))
-    return " ".join(part for part in parts if part and not part.rstrip().endswith("?"))
+    return " ".join(
+        part
+        for part in parts
+        if part
+        and (
+            not part.rstrip().endswith("?")
+            or _REQUEST_QUESTION.match(part.replace("’", "'"))
+            or _CONFIRMATION_QUESTION.search(part.replace("’", "'"))
+            or re.search(r"\d", part)
+        )
+    )
 
 
 def _is_event_json(text):
@@ -1071,6 +1100,47 @@ def _sentence_of(text, quote):
     return text[left:right]
 
 
+# Clause boundaries: sentence ends, semicolons and joining conjunctions ("... and I fly out").
+_CLAUSE_BREAK = re.compile(r"(?<=[.!?])\s+|\s*;\s*|,?\s+(?:and|but|while|whereas)\s+", re.I)
+_TIME_WORDS = frozenset(
+    """last next past ago week weeks weekend weekends month months year years day days yesterday
+    today tomorrow tonight night morning afternoon evening earlier couple several monday tuesday
+    wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun""".split()
+)
+
+
+def _content_words(text, skip):
+    return {
+        word[:5]
+        for word in re.findall(r"[^\W\d_]{3,}", text.casefold())
+        if word not in _FILLER and word not in _TIME_WORDS and word not in skip
+    }
+
+
+def _own_relative_dates(source, fact_text, said_on, skip=frozenset()):
+    """The relative date phrases of `source` that belong to this fact.
+
+    A phrase in another clause dates another event: in "My sister arrived on Tuesday and I fly
+    out next Friday", "next Friday" is not when the sister arrived. A source of one clause
+    keeps every phrase; otherwise a phrase counts only when its clause shares a content word
+    with the fact text.
+    """
+    found = _relative_dates(source, said_on)
+    bounds = [0, *(m.end() for m in _CLAUSE_BREAK.finditer(source)), len(source) + 1]
+    if len(bounds) <= 2 or not found:
+        return found
+    fact_words = _content_words(fact_text, skip)
+    owned = []
+    for item in found:
+        start = item[0].start()
+        left = max(b for b in bounds if b <= start)
+        right = min(b for b in bounds if b > start)
+        clause = source[left:right].replace(item[0][0], " ")
+        if fact_words & _content_words(clause, skip):
+            owned.append(item)
+    return owned
+
+
 def _model_day(row, field):
     value = row[field]
     if not value or _partial_date_parts(value) is not None:
@@ -1084,9 +1154,11 @@ def _model_day(row, field):
 def _resolve_relative_dates(row, chunk):
     """Date a fact from a relative phrase in what was said, overriding the model's date.
 
-    The phrase is looked for in the quote, then the sentence around it, then the fact text.
-    Failing those, a model date a few days off the chunk's only day phrase is replaced: the
-    model computed it from that phrase (often a week early), and code does it reliably.
+    The phrase is looked for in the quote, then the sentence around it, then the fact text;
+    in the quote and the sentence it must sit in a clause about this fact. Failing those, a
+    model date a few days off the chunk's only day phrase, on the same side of the day said,
+    is replaced when that phrase's clause is about this fact: the model computed it from that
+    phrase (often a week early), and code does it reliably.
     A disagreement never drops the fact: the code's date wins. The fact text gets the
     absolute date, so an answer never counts back from it a second time.
     """
@@ -1097,20 +1169,29 @@ def _resolve_relative_dates(row, chunk):
         if row["category"] == Category.EVENT or row["fact_type"] == FactType.EXPERIENCE
         else "valid_from"
     )
+    skip = frozenset({chunk.document.name.casefold()} if chunk.document.name else ())
     found = None
-    for source in (row["evidence"], _sentence_of(chunk.text, row["evidence"]), row["text"]):
-        found = _relative_date(source, said_on)
-        if found:
+    for source in (row["evidence"], _sentence_of(chunk.text, row["evidence"])):
+        owned = _own_relative_dates(source, row["text"], said_on, skip)
+        if owned:
+            found = owned[0]
             break
+    else:
+        found = _relative_date(row["text"], said_on)
     when = details.get("when")
     if found is None:
         supplied = _model_day(row, field) or _model_day(row, "occurred_at")
         candidates = [f for f in _relative_dates(chunk.text, said_on) if f[1] == "day"]
+        owned = [
+            f for f in _own_relative_dates(chunk.text, row["text"], said_on, skip) if f[1] == "day"
+        ]
         day = supplied.astimezone(said_on.tzinfo).date() if supplied is not None else None
         if (
             day is not None
             and day != said_on.date()
             and len({f[2] for f in candidates}) == 1
+            and owned
+            and (day < said_on.date()) == (candidates[0][2] < said_on.date())
             and 0 < abs((day - candidates[0][2]).days) <= 14  # the model's off-by-a-week date
             and not _ABSOLUTE_DAY.search(chunk.text)
         ):
@@ -1161,15 +1242,17 @@ _SHARED_MEDIA = re.compile(
 
 
 def _drop_invented_dates(row, source, said_on):
-    """A full date far from the day said, which nothing in the source supports, was made up.
+    """Drop a full date far from the day said when the turn shows it was counted from a duration.
 
     "I've known them for 4 years" once came back dated 2019, and the answer then counted back
     four more years; "5 years already!" came back as 2018 although the only date phrase in
-    the turn was a figurative "feels like just yesterday". A month, year, season or holiday
-    may be where the date came from, so it stands; a relative phrase supports it only if it
-    resolves to about that date. Otherwise the message time stands instead.
+    the turn was a figurative "feels like just yesterday". Only such a duration is evidence
+    against the date: "Book my flight for Dec 20" and "invoice 12/30" keep theirs. Even then a
+    month, year, season or holiday may be where the date came from, so it stands, and a
+    relative phrase supports it if it resolves to about that date. Otherwise the message time
+    stands instead.
     """
-    if _DATE_WORDS.search(source):
+    if not _DURATION.search(source) or _DATE_WORDS.search(source):
         return row
     phrases = [found[2] for found in _relative_dates(source, said_on) if found[1] == "day"]
     for field in ("occurred_at", "valid_from"):
@@ -1197,6 +1280,13 @@ _ABSOLUTE_DAY = re.compile(
 _DATE_WORDS = re.compile(
     rf"\b(?:{_MONTH_NAME}|(?:19|20)\d{{2}}|spring|summer|fall|autumn|winter|christmas|"
     r"thanksgiving|easter|halloween|new year)\b",
+    re.IGNORECASE,
+)
+# A length of time ("for 4 years", "5 years already!"), not a point in time ("in 2 years",
+# "3 years ago", "a 5 year old").
+_DURATION = re.compile(
+    rf"(?<![\w-])(?<!\bin ){_NUMBER} (?:years?|months?|weeks?|decades?)(?![\w-])"
+    r"(?! (?:ago|from now|later|earlier|before|after|old)\b)(?![ -]old\b)",
     re.IGNORECASE,
 )
 _MONTH_YEAR = re.compile(rf"\b(?:{_MONTH_NAME}) \d{{4}}\b|\b(?:19|20)\d{{2}}\b", re.IGNORECASE)

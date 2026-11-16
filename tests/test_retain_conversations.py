@@ -1,5 +1,6 @@
 """Two-person conversations (LoCoMo-style), relative dates and observation scope."""
 
+import dataclasses
 import json
 from datetime import datetime, timezone
 from unittest.mock import Mock
@@ -32,7 +33,7 @@ from retain.models import (
     WriteBatch,
     is_code_built,
 )
-from retain.pipeline import Retainer, _build_fact, _split_events
+from retain.pipeline import RetainConfig, Retainer, _build_fact, _split_events
 from retain.store import InMemoryRetainStore
 from tests.test_retain_observations import ENTITY, builder, memory_fact
 
@@ -169,6 +170,42 @@ def test_a_named_speakers_preference_is_not_demoted():
 
     assert person.claim_type == ClaimType.ASSERTED
     assert proposal.claim_type == ClaimType.PROPOSED
+
+
+def bare_retainer(**config):
+    return Retainer(
+        store=Mock(),
+        extractor=Mock(),
+        entity_resolver=Mock(),
+        embedder=Mock(),
+        linker=Mock(),
+        config=RetainConfig(**config),
+    )
+
+
+def test_a_named_agent_is_still_an_agent_unless_the_assistant_is_human():
+    events = [{"role": "assistant", "content": "You should use Python 3.12.", "name": "helper"}]
+    messages = [
+        Message(Speaker.USER, "Alex: Which Python?", MONDAY, "Alex"),
+        Message(Speaker.ASSISTANT, json.dumps(events), MONDAY, "helper"),
+    ]
+    agent = bare_retainer()._documents(SCOPE, messages, "ep", MONDAY)
+    person = bare_retainer(assistant_is_human=True)._documents(SCOPE, messages, "ep", MONDAY)
+
+    assert [d.name for d in agent] == ["Alex", None]
+    assert [d.name for d in person] == ["Alex", "helper"]
+    # The agent's reply reaches the model without a speaker_name and stays a proposal.
+    chunk = chunk_documents(agent)[1]
+    row = model_row(chunk, "The assistant suggested Python 3.12.", "You should use Python 3.12.")
+    extractor, client = extractor_returning([row], keep_unrecorded_user_messages=False)
+    (fact,) = extractor.extract([chunk])
+    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
+    preference = dataclasses.replace(
+        fact, category=Category.PREFERENCE, claim_type=ClaimType.ASSERTED
+    )
+    stored, _, _ = _build_fact(preference, agent[1], EntityResolution({}), MONDAY)
+    assert stored.claim_type == ClaimType.PROPOSED
 
 
 # --- fallback ------------------------------------------------------------------------------------
@@ -336,6 +373,7 @@ def test_the_people_talking_get_no_observation_of_their_own():
         embedder=Mock(),
         linker=Mock(),
         observation_builder=builder,
+        config=RetainConfig(assistant_is_human=True),
     )
     retainer._documents(
         SCOPE, [Message(Speaker.ASSISTANT, "Melanie: hi", MONDAY, "Melanie")], "ep", MONDAY
@@ -408,6 +446,38 @@ def test_a_model_date_off_the_chunks_only_day_phrase_is_corrected():
     )
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "My sister arrived on Tuesday",
+        "sister arrived",
+        "My sister arrived on Tuesday and I fly out next Friday",
+    ],
+)
+def test_a_phrase_in_another_clause_does_not_move_the_fact(evidence):
+    row = resolve_in(
+        "Melanie: My sister arrived on Tuesday and I fly out next Friday.",
+        "Melanie's sister arrived on Tuesday.",
+        evidence,
+        MONDAY,
+        occurred_at="2023-05-16",
+    )
+
+    assert row["occurred_at"] == "2023-05-16"
+    assert row["text"] == "Melanie's sister arrived on Tuesday."
+
+
+def test_a_phrase_in_the_facts_own_clause_still_dates_it():
+    row = resolve_in(
+        "Melanie: My sister arrived on Tuesday and I fly out next Friday.",
+        "Melanie flies out next Friday.",
+        "I fly out next Friday",
+        MONDAY,
+    )
+
+    assert row["occurred_at"] == "2023-05-26T00:00:00+00:00"
+
+
 def test_the_quote_has_the_phrase_and_the_text_a_computed_date():
     row = resolve_in(
         "Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday!",
@@ -462,7 +532,7 @@ def test_an_unrelated_date_far_from_the_phrase_is_left_alone():
 # --- questions between people, and the previous turn as context -------------------------------
 
 
-def test_a_persons_questions_are_dropped_and_their_statements_kept_without_the_name_twice():
+def test_conversational_questions_are_dropped_from_named_fallbacks():
     docs = [
         document("Caroline: Wow, what a fun moment! What's the band?", speaker=Speaker.USER,
                  name="Caroline"),
@@ -596,6 +666,21 @@ def test_a_shared_photo_keeps_the_day_it_was_shared_and_the_text_dates_its_subje
     )
 
 
+@pytest.mark.parametrize(
+    ("source", "day"),
+    [
+        ("Alex: Book my flight for Dec 20.", "2026-12-20"),
+        ("Alex: Please pay invoice 12/30 before the holidays.", "2026-12-30"),
+        ("Alex: The lease runs until 3/1/27.", "2027-03-01"),
+    ],
+)
+def test_a_far_date_is_kept_without_a_duration_against_it(source, day):
+    said = datetime(2026, 11, 15, 9, 0, tzinfo=timezone.utc)
+    row = resolve_in(source, "Alex has a date.", source.split(": ", 1)[1], said, occurred_at=day)
+
+    assert row["occurred_at"] == day
+
+
 def test_a_figurative_yesterday_does_not_support_a_date_years_back():
     row = resolve_in(
         "Melanie: 5 years already! Time flies- feels like just yesterday I put this dress on!",
@@ -607,3 +692,69 @@ def test_a_figurative_yesterday_does_not_support_a_date_years_back():
     )
 
     assert row["valid_from"] is None
+
+
+@pytest.mark.parametrize("speaker", [Speaker.USER, Speaker.ASSISTANT])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Can you pick me up at 5 tomorrow?",
+        "We agreed on Friday, right?",
+        "Please don't delete db-7, okay?",
+        "Yes, use that one?",
+        "Could you help me get home?",
+        "Is the deadline November 15?",
+        "We’re meeting tomorrow, aren’t we?",
+        "Sunflowers mean warmth and happiness, right?",
+        "Thanks! Can you help?",
+    ],
+)
+def test_named_fallback_preserves_missed_requests_and_question_form_facts(speaker, body):
+    doc = document("Alex: " + body, speaker=speaker, name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: " + body
+    assert fact.evidence == doc.text
+    assert fact.visibility == Visibility.SESSION
+
+
+def test_social_question_filter_preserves_following_detail():
+    doc = document("Alex: How was it? My deadline is Friday.", name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: My deadline is Friday."
+    assert fact.evidence == doc.text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Wow! What pet do you have?",
+        "What got you into running?",
+        "Cool! What did it look like?",
+        "How was it?",
+        "Wow, what a fun moment! What's the band?",
+        "Can you tell me more about it?",
+        "Would you do it again?",
+        "No way, really?",
+        "That's so cool, right?",
+    ],
+)
+def test_named_conversational_questions_do_not_create_fallbacks(body):
+    doc = document("Alex: " + body, name="Alex")
+    extractor, _ = extractor_returning([])
+    assert extractor.extract(chunk_documents([doc])) == []
+
+
+@pytest.mark.parametrize("body", ["No, that is it.", "Yes, I did.", "I can't do that."])
+def test_a_short_yes_no_or_cant_answer_is_not_chit_chat(body):
+    doc = document("Alex: " + body, name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: " + body

@@ -83,7 +83,8 @@ class TieredMemory:
         assistant_name=None,
     ):
         """Names are for conversations between people ("Caroline", "Melanie"): facts then name
-        who said what, and a named second speaker is a person, not an agent."""
+        who said what. A named user is a person; a named assistant is one only when the
+        retainer's RetainConfig sets assistant_is_human."""
         if not scope.session_id:
             raise ValueError("record_turn requires a session_id")
         at = timestamp or datetime.now(timezone.utc)

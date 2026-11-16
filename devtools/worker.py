@@ -99,6 +99,10 @@ def ingest(system, history, logical, clock, usage, output):
     # Session-only extraction must not make earlier sessions invisible to the question.
     extractor = system.retainer.extractor
     system.retainer.extractor = HistoryVisibility(extractor)
+    # A two-person history says so explicitly; names alone never make the assistant a person.
+    system.retainer.config = dataclasses.replace(
+        system.retainer.config, assistant_is_human=history.get("assistant_is_human", False)
+    )
     mapping = []
     ordinal = 0
     for session in history["sessions"]:
@@ -114,8 +118,8 @@ def ingest(system, history, logical, clock, usage, output):
                 - timedelta(seconds=sum(len(s["messages"]) for s in history["sessions"]) - ordinal)
             )
             usage.context = {"stage": "retain", "session": session["id"], "round": index}
-            # An optional "name" on a history message marks a person (two-person chats such as
-            # LoCoMo); assistant event names travel inside the serialized events.
+            # An optional "name" on a user message names that person. Assistant event names
+            # travel inside the serialized events and count only with "assistant_is_human".
             first = session["messages"][indices[0]] if indices else {}
             name = first.get("name") if first.get("role") == "user" else None
             receipt = system.record_turn(
