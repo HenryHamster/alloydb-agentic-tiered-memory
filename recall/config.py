@@ -28,6 +28,7 @@ class MemoryType(StrEnum):
     OBSERVATION = "observation"  # observations
     EPISODE = "episode"  # documents grouped by episode_id
     MENTAL_MODEL = "mental_model"  # Reflect macro_memories
+    MESSAGE = "message"  # one original message, quoted by Recall (documents.embedding)
 
 
 DEFAULT_TYPES = (MemoryType.FACT, MemoryType.OBSERVATION)
@@ -66,6 +67,8 @@ class RecallConfig:
     # empty, so the count, not the score, is the main limit. Results with no positive score
     # still abstain. TODO(recall): confirm both on the full 10-question set.
     max_items: int = 10
+    # List and count questions ("what events has Caroline attended?") need room for every item.
+    list_max_items: int = 15
     min_relevance: float = 0.1
     # Reranker scores are not calibrated across questions: a vague back-reference ("the film
     # we picked") scores its own evidence 0.06-0.08. Keep this many best positive results even
@@ -79,8 +82,19 @@ class RecallConfig:
     # verbatim source rounds of the top kept facts: they keep exact IDs and turn order that
     # extracted facts can paraphrase away.
     source_rounds: int = 2
-    source_round_below: float = 0.3
+    # Calibrated so about the same share of questions count as weak as before: searching with
+    # the bare question (not its answer instructions) raised scores by ~0.05-0.1, and at 0.3 no
+    # LoCoMo question got its raw rounds any more, losing "grandma ... my home country, Sweden".
+    source_round_below: float = 0.4
     source_round_chars: int = 2400
+    # Facts keep the gist of a message and can drop the detail asked about ("the worst was
+    # self-doubt"). The automatic context also searches original messages by meaning and quotes
+    # up to `quote_messages` that the reranker scores at least `quote_min_relevance` on their
+    # own, after the facts and without taking a fact's slot. Date questions skip them: facts
+    # carry the resolved date, a message only "last Friday". 0 turns quotes off.
+    quote_messages: int = 2
+    quote_min_relevance: float = 0.5
+    quote_pool: int = 20
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
     recency_boost: float = 0.10
@@ -89,6 +103,10 @@ class RecallConfig:
     # For questions that point back at earlier talk ("that server"), the user's own earlier
     # requests are the facts that name the thing.
     user_request_boost: float = 0.05
+    # A person's verbatim turn kept by Retain's fallback ("Melanie said: Absolutely! So glad we
+    # can always be there") is a reaction, not a fact; the answer once quoted one over the fact
+    # it reacted to. It ranks lower unless the question points back at the talk itself.
+    said_penalty: float = 0.25
     # TODO(recall): tune once real fact ages are available.
     recency_half_life_days: float = 90.0
     # With Reflect enabled, widen from hot to warm/archived until this many results are kept.

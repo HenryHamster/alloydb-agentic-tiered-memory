@@ -171,7 +171,7 @@ def test_extractor_discards_rows_with_unknown_chunks_or_invalid_fields():
     assert facts[0].key == 0
 
 
-def test_relative_dates_must_be_in_the_cited_evidence_and_match_the_source_time():
+def test_relative_dates_come_from_the_quote_and_never_drop_the_fact():
     selected = chunks()
     unsupported = fact_row(
         selected[0],
@@ -179,6 +179,8 @@ def test_relative_dates_must_be_in_the_cited_evidence_and_match_the_source_time(
     )
     conflict = fact_row(
         selected[0],
+        key=8,
+        text="The project started yesterday.",
         evidence="The project starts yesterday.",
         occurred_at="2026-10-26T00:00:00Z",
         category="event",
@@ -186,7 +188,13 @@ def test_relative_dates_must_be_in_the_cited_evidence_and_match_the_source_time(
     )
     extractor, _ = extractor_for([unsupported, conflict])
 
-    assert extractor.extract(selected) == []
+    kept, dated = extractor.extract(selected)
+
+    # A relative "when" the quote doesn't contain is dropped; the fact stays.
+    assert "when" not in kept.details and kept.occurred_at is None
+    # The code's date wins over the model's, and the text gets the absolute date.
+    assert dated.occurred_at == datetime(2026, 10, 24, tzinfo=timezone.utc)
+    assert dated.text == "The project started on 24 October 2026."
 
 
 @pytest.mark.parametrize("field", ["occurred_at", "valid_from"])
@@ -248,7 +256,8 @@ def test_invalid_dates_still_reject_the_row(field, value):
     ],
 )
 def test_complete_dates_keep_their_exact_timestamp(value, expected):
-    selected = chunks()
+    # The source states the date, so it is not mistaken for one the model made up.
+    selected = chunks(SOURCE + " That was on 29 February 2024.")
     extractor, _ = extractor_for([fact_row(selected[0], occurred_at=value)])
 
     (fact,) = extractor.extract(selected)
@@ -259,7 +268,7 @@ def test_complete_dates_keep_their_exact_timestamp(value, expected):
 
 @pytest.mark.parametrize("field", ["occurred_at", "valid_from"])
 @pytest.mark.parametrize("partial", ["2026", "2026-10", "2023", "2026-09"])
-def test_relative_dates_refine_only_compatible_partial_dates(field, partial):
+def test_relative_dates_override_any_model_partial_date(field, partial):
     selected = chunks()
     row = fact_row(
         selected[0],
@@ -272,12 +281,10 @@ def test_relative_dates_refine_only_compatible_partial_dates(field, partial):
 
     facts = extractor.extract(selected)
 
-    if partial in {"2026", "2026-10"}:
-        assert len(facts) == 1
-        assert getattr(facts[0], field) == datetime(2026, 10, 24, tzinfo=timezone.utc)
-        assert facts[0].details["when"] == "yesterday"
-    else:
-        assert facts == []
+    # The code's date replaces a conflicting model date instead of dropping the fact.
+    assert len(facts) == 1
+    assert getattr(facts[0], field) == datetime(2026, 10, 24, tzinfo=timezone.utc)
+    assert facts[0].details["when"] == "yesterday"
 
 
 @pytest.mark.parametrize("partial", [None, "2023", "2024-03"])

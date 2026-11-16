@@ -44,14 +44,32 @@ def serial(value):
 RETRIEVAL_QUERY_CHARS = 300
 
 
-def retrieval_query(question):
-    """What Recall searches with: the question plus a short hint naming each tool.
+def answer_query(question):
+    """What the answer prompt asks: the question, then its answer instructions, then any tool
+    schemas and the tool-call output rule, each part after one blank line."""
+    prompt = question["question"]
+    if question.get("instructions"):
+        prompt += "\n\n" + question["instructions"].strip()
+    if question.get("tools"):
+        prompt += "\n\nAvailable tool schemas:\n" + json.dumps(
+            question["tools"], ensure_ascii=False
+        )
+        prompt += (
+            "\nReturn only one JSON object with keys name and arguments describing the tool call. "
+            "Do not execute the tool. Fill arguments from stored history and the schemas."
+        )
+    return prompt
 
-    The answer prompt gets the full tool schemas and output rules; in a search they would
-    outweigh the question itself. Returns None for questions without tools.
+
+def retrieval_query(question):
+    """What Recall searches with: the question, plus a short hint naming each tool.
+
+    The answer prompt gets the full tool schemas, output rules and answer instructions; in a
+    search they would outweigh the question itself. Returns None when the prompt is the
+    question alone.
     """
     if not question.get("tools"):
-        return None
+        return question["question"] if question.get("instructions") else None
     hints = "; ".join(f"{t['name']}: {t.get('description', '')}" for t in question["tools"])
     return (question["question"] + "\nTools: " + hints)[:RETRIEVAL_QUERY_CHARS]
 
@@ -81,6 +99,10 @@ def ingest(system, history, logical, clock, usage, output):
     # Session-only extraction must not make earlier sessions invisible to the question.
     extractor = system.retainer.extractor
     system.retainer.extractor = HistoryVisibility(extractor)
+    # A two-person history says so explicitly; names alone never make the assistant a person.
+    system.retainer.config = dataclasses.replace(
+        system.retainer.config, assistant_is_human=history.get("assistant_is_human", False)
+    )
     mapping = []
     ordinal = 0
     for session in history["sessions"]:
@@ -96,8 +118,17 @@ def ingest(system, history, logical, clock, usage, output):
                 - timedelta(seconds=sum(len(s["messages"]) for s in history["sessions"]) - ordinal)
             )
             usage.context = {"stage": "retain", "session": session["id"], "round": index}
+            # An optional "name" on a user message names that person. Assistant event names
+            # travel inside the serialized events and count only with "assistant_is_human".
+            first = session["messages"][indices[0]] if indices else {}
+            name = first.get("name") if first.get("role") == "user" else None
             receipt = system.record_turn(
-                scope, user, events, timestamp=at, episode_id=f"{logical}:{session['id']}:{index}"
+                scope,
+                user,
+                events,
+                timestamp=at,
+                episode_id=f"{logical}:{session['id']}:{index}",
+                user_name=name if isinstance(name, str) and name.strip() else None,
             )
             save_json(output / "retention" / f"{ordinal:05d}.json", serial(receipt))
             mapping.append({"session": session["id"], "round": index, "messages": indices})
@@ -230,18 +261,9 @@ def run_job(
                 schema.create()
                 schema.restore(snapshot)  # Includes tiers, access counts and Reflect state.
                 system = backend.system(schema)
-                prompt = question["question"]
-                if question.get("tools"):
-                    prompt += "\n\nAvailable tool schemas:\n" + json.dumps(
-                        question["tools"], ensure_ascii=False
-                    )
-                    prompt += (
-                        "\nReturn only one JSON object with keys name and arguments describing the tool call. "
-                        "Do not execute the tool. Fill arguments from stored history and the schemas."
-                    )
                 answer = system.answer(
                     Scope(logical, logical, logical + ":query:" + question["id"]),
-                    prompt,
+                    answer_query(question),
                     record=False,
                     query_time=clock,
                     retrieval_query=retrieval_query(question),

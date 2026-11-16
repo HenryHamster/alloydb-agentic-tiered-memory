@@ -19,6 +19,19 @@ TABLES = (
 )
 
 
+MIGRATIONS = ("004_retain_schema.sql", "005_reflect_schema.sql", "006_document_embeddings.sql")
+
+
+def schema_ddl(source):
+    """The Retain/Reflect migrations, adapted to build a fresh schema in one transaction."""
+    for name in MIGRATIONS:
+        ddl = (Path(source) / "sql" / name).read_text(encoding="utf8")
+        # Extensions are an admin prerequisite, not something a developer worker installs.
+        ddl = re.sub(r"CREATE EXTENSION IF NOT EXISTS [A-Za-z0-9_]+;", "", ddl)
+        # CONCURRENTLY cannot run in a transaction; a fresh schema has no writers to block.
+        yield re.sub(r"\bCREATE INDEX CONCURRENTLY\b", "CREATE INDEX", ddl)
+
+
 class RunSchema:
     def __init__(self, connect, run_id, source):
         if not re.fullmatch(r"[0-9a-f]{32}", run_id):
@@ -47,10 +60,7 @@ class RunSchema:
                 cur.execute(
                     sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.name))
                 )
-                for name in ("004_retain_schema.sql", "005_reflect_schema.sql"):
-                    ddl = (self.source / "sql" / name).read_text(encoding="utf8")
-                    # Extensions are an admin prerequisite, not something a developer worker installs.
-                    ddl = re.sub(r"CREATE EXTENSION IF NOT EXISTS [A-Za-z0-9_]+;", "", ddl)
+                for ddl in schema_ddl(self.source):
                     cur.execute(ddl)
                 # Snapshot restore includes cyclic/self-referencing fact relationships.
                 cur.execute(

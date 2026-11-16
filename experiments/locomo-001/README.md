@@ -119,7 +119,13 @@ CC BY-NC 4.0. Join on `question_id` (`conv-26-qNNN` is item NNN, counting from 0
 `data/locomo10.json` to see them.
 
 The harness is kept as a record of what ran. Its scripts expect the benchmark kit's directory
-layout and the shared dev VM, so they won't run from this folder as is. To redraw the figures:
+layout and the shared dev VM, so they won't run from this folder as is. One change since this
+run: `prepare_locomo.py` now emits each question as `{"id", "question", "instructions"}`, with
+the question text alone and a fixed instruction that adds a "most likely answer for would/might
+questions" sentence to the one above; this run appended only that instruction to the question
+(`results/inputs-manifest.json`). Prepare another conversation with
+`python prepare_locomo.py <locomo10.json> <out_dir> conv-41` (any `sample_id`, or a 0-based
+index). To redraw the figures:
 
 ```bash
 uv run --with matplotlib python experiments/locomo-001/plots.py

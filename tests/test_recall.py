@@ -2,7 +2,7 @@
 
 import inspect
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,7 +13,7 @@ from test_retain_extraction import gemini_returning
 from recall import MemoryType, RecallConfig, RecallDepth, TimeWindow, make_recall_tool_functions
 from recall.config import ROUND_RELATIONS
 from recall.models import Memory, Scored
-from recall.query import analyze_query, parse_time_phrase
+from recall.query import analyze_query, parse_time_phrase, points_back, said_on_day
 from recall.ranking import apply_boosts, fuse_rrf
 from retain import Retainer, Scope
 from retain.extraction import GeminiFactExtractor
@@ -558,3 +558,241 @@ def test_adk_tool_wrappers_build():
 
     tools = make_recall_tools(Memories().recaller(), SCOPE)
     assert {tool.name for tool in tools} == {"search_memory", "get_episode", "get_supporting"}
+
+
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        # Third-person questions about what someone said or did need a pointing word.
+        ("How did Melanie's son handle the accident?", False),
+        ("What did Caroline research?", False),
+        ("What did Caroline do this year?", False),
+        ("What did Melanie paint that summer?", False),
+        ("When did Caroline go to the LGBTQ support group?", False),
+        ("What did Caroline say about the book we discussed?", True),
+        ("What did Melanie think of that painting?", True),
+        # Agent requests and first/second-person questions keep the model's judgement.
+        ("Restart the database server", True),
+        ("Check the status of the server from yesterday", True),
+        ("Restart that database server.", True),
+        ("Which movie did we pick?", True),
+        ("Book the hotel I mentioned earlier.", True),
+        ("What is the status of the server?", True),
+    ],
+)
+def test_a_back_reference_needs_a_word_that_points_at_earlier_talk(question, expected):
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": true}'
+    plan = analyze_query(question, NOW, generate=lambda p: reply)
+    assert plan.refers_back is expected
+    # The plan decides the user-request boost and the said penalty.
+    request = Memory("u", MemoryType.FACT, "The user said: restart psql-001", speaker=Speaker.USER)
+    said = Memory("s", MemoryType.FACT, "Melanie said: Absolutely! So glad we can always be there.")
+    scored = [Scored(request, 0.5), Scored(said, 0.5)]
+    boosts = {
+        s.memory.id: s.boost
+        for s in apply_boosts(scored, NOW, None, RecallConfig(), refers_back=plan.refers_back)
+    }
+    assert (boosts["u"] > 0) is expected and (boosts["s"] < 0) is not expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["What did Caroline do this year?", "Restart the database server", "How is Melanie?"],
+)
+def test_a_back_reference_still_needs_the_model_to_flag_it(question):
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false}'
+    assert analyze_query(question, NOW, generate=lambda p: reply).refers_back is False
+
+
+def test_period_phrases_do_not_point_back():
+    assert not points_back("What did Caroline do this year?")
+    assert not points_back("Where did Melanie camp that summer?")
+    assert points_back("What did Caroline say about this?")
+    assert points_back("What did Caroline say about this book?")
+
+
+def test_query_analysis_retries_a_rate_limit(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: None)
+    replies = iter([RuntimeError("429 RESOURCE_EXHAUSTED"), '{"sub_queries": ["x"]}'])
+
+    def generate(prompt):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    plan = analyze_query("what did Caroline research?", NOW, generate=generate, strict=True)
+    assert plan.sub_queries[-1] == "x"
+
+
+@pytest.mark.parametrize(
+    "error,retry",
+    [
+        ("429 RESOURCE_EXHAUSTED. Resource exhausted.", True),
+        ("504 DEADLINE_EXCEEDED. Deadline expired before operation could complete.", True),
+        ("503 UNAVAILABLE. The service is currently unavailable.", True),
+        ("400 INVALID_ARGUMENT. Request contains an invalid argument.", False),
+        ("403 PERMISSION_DENIED.", False),
+        # Digits or status words inside the details don't count.
+        ("400 INVALID_ARGUMENT. Field max_tokens=1504 is out of range.", False),
+        ("400 INVALID_ARGUMENT. Model UNAVAILABLE for this region; retry with 503 later.", False),
+        ("RESOURCE_EXHAUSTED: quota", True),
+        ("storage unavailable 504", False),
+    ],
+)
+def test_only_temporary_provider_errors_are_retried(error, retry):
+    from shared.llm import is_rate_limited
+
+    assert is_rate_limited(RuntimeError(error)) is retry
+
+
+@pytest.mark.parametrize("code,retry", [(429, True), (503, True), (504, True), (400, False)])
+def test_retries_are_decided_by_the_genai_status_code(code, retry):
+    from google.genai import errors
+
+    from shared.llm import is_rate_limited
+
+    error = errors.APIError(code, {"error": {"code": code, "message": "x 1504 504 429"}})
+    assert is_rate_limited(error) is retry
+
+
+def test_query_analysis_retries_a_deadline_error_only_once(monkeypatch):
+    sleeps, calls = [], []
+    monkeypatch.setattr("shared.llm.time.sleep", sleeps.append)
+
+    def generate(prompt):
+        calls.append(prompt)
+        raise RuntimeError("504 DEADLINE_EXCEEDED. Deadline expired.")
+
+    plan = analyze_query("what did Caroline research?", NOW, generate=generate)
+    assert len(calls) == 2 and sleeps == [3]
+    assert plan.sub_queries == ["what did Caroline research?"] and not plan.llm_used
+
+
+def test_query_analysis_does_not_retry_a_bad_request(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: pytest.fail("slept"))
+    calls = []
+
+    def generate(prompt):
+        calls.append(prompt)
+        raise RuntimeError("400 INVALID_ARGUMENT. max_output_tokens 1504 too small")
+
+    analyze_query("what did Caroline research?", NOW, generate=generate)
+    assert len(calls) == 1
+
+
+def test_list_questions_are_flagged_by_query_analysis():
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false, "list": true}'
+    assert analyze_query(
+        "What events has Caroline attended?", NOW, generate=lambda p: reply
+    ).wants_list
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false}'
+    assert not analyze_query("Where is Caroline from?", NOW, generate=lambda p: reply).wants_list
+
+
+def test_a_persons_verbatim_turn_ranks_below_facts_unless_the_question_refers_back():
+    said = Memory(
+        "s", MemoryType.FACT, "Melanie said: Absolutely! So glad we can always be there.",
+        occurred_at=NOW,
+    )  # fmt: skip
+    request = Memory("u", MemoryType.FACT, "The user said: restart psql-001", occurred_at=NOW)
+    scored = [Scored(said, 0.6), Scored(request, 0.6)]
+    plain = {s.memory.id: s.boost for s in apply_boosts(scored, NOW, None, RecallConfig())}
+    back = {
+        s.memory.id: s.boost
+        for s in apply_boosts(scored, NOW, None, RecallConfig(), refers_back=True)
+    }
+    assert plain["s"] < plain["u"]
+    assert back["s"] >= plain["u"]
+
+
+def test_an_original_message_matching_the_question_is_quoted_after_the_facts(memories):
+    # The fact keeps the gist; the detail asked about lives only in the original message.
+    retainer = Retainer(
+        store=memories.retain_store,
+        extractor=ScriptedExtractor(
+            {"text": "John got promoted to assistant manager", "evidence": "promotion"}
+        ),
+        entity_resolver=ExactResolver(),
+        embedder=embed,
+        linker=NoLinks(),
+        clock=lambda: NOW,
+    )
+    said = "The promotion was hard: the worst hurdle was self-doubt."
+    retainer.retain_turn(SCOPE, "How did the promotion go?", said, episode_id="round-1")
+    assert all(d.embedding for d in memories.retain_store.documents.values())
+
+    def scores(query, texts):
+        return [0.9 if "self-doubt" in t else 0.6 if "promoted" in t else 0.0 for t in texts]
+
+    recaller = memories.recaller(reranker=scores)
+    result = recaller.recall(SCOPE, "What hurdle did John face in his promotion?")
+    types = [item.memory.type for item in result.items]
+    assert types[0] == MemoryType.FACT and MemoryType.MESSAGE in types
+    assert any("self-doubt" in i.memory.text for i in result.items if i.memory.type == "message")
+    assert "(message" in result.context
+    # Quotes come after the facts, under their own heading.
+    heading = result.context.index("Original wording")
+    assert heading > result.context.index("(fact") and heading < result.context.index("(message")
+    assert result.context.count("Original wording") == 1
+
+    # A list question gets no quotes: it needs every matching fact, not exact wording.
+    lister = memories.recaller(
+        reranker=scores,
+        generate=lambda prompt: '{"sub_queries": [], "time_window": null, "list": true}',
+    )
+    listed = lister.recall(SCOPE, "What hurdles did John face in his promotion?")
+    assert listed.items and all(i.memory.type != MemoryType.MESSAGE for i in listed.items)
+
+    when = recaller.recall(SCOPE, "When was John promoted?")
+    assert all(i.memory.type != MemoryType.MESSAGE for i in when.items)
+    tool = recaller.recall(SCOPE, "What hurdle did John face?", depth="mid")
+    assert all(i.memory.type != MemoryType.MESSAGE for i in tool.items)
+    off = memories.recaller(reranker=scores, config=RecallConfig(quote_messages=0))
+    plain = off.recall(SCOPE, "What hurdle did John face in his promotion?")
+    assert all(i.memory.type != MemoryType.MESSAGE for i in plain.items)
+
+
+def test_said_on_day_reads_the_exact_day_a_question_names():
+    assert said_on_day("What news did Maria share on 16 June, 2023?") == date(2023, 6, 16)
+    assert said_on_day("Who did Maria have dinner with on May 3, 2023?") == date(2023, 5, 3)
+    assert said_on_day("What painting did she show on October 13th 2023?") == date(2023, 10, 13)
+    assert said_on_day("What happened in June 2023?") is None
+    assert said_on_day("When did she move on 31 February, 2023?") is None
+
+
+def test_a_question_about_a_named_day_quotes_only_that_days_messages(memories):
+    retainer = Retainer(
+        store=memories.retain_store,
+        extractor=ScriptedExtractor({"text": "Maria shared some news", "evidence": "news"}),
+        entity_resolver=ExactResolver(),
+        embedder=embed,
+        linker=NoLinks(),
+        clock=lambda: NOW,
+    )
+    early, late = (
+        datetime(2023, 6, 9, 18, tzinfo=timezone.utc),
+        datetime(2023, 6, 16, 19, tzinfo=timezone.utc),
+    )
+    retainer.retain_turn(
+        SCOPE, "Any news?", "Great news: I adopted a puppy!", timestamp=early, episode_id="r1"
+    )
+    retainer.retain_turn(
+        SCOPE, "Any news?", "Great news: I joined a gym!", timestamp=late, episode_id="r2"
+    )
+
+    def scores(query, texts):
+        return [
+            0.9 if "puppy" in t else 0.7 if "gym" in t else 0.6 if "news" in t else 0.0
+            for t in texts
+        ]
+
+    recaller = memories.recaller(reranker=scores)
+    dated = recaller.recall(SCOPE, "What great news did Maria share on 16 June, 2023?")
+    quoted = [i.memory.text for i in dated.items if i.memory.type == MemoryType.MESSAGE]
+    assert any("gym" in t for t in quoted) and not any("puppy" in t for t in quoted)
+
+    undated = recaller.recall(SCOPE, "What great news did Maria share?")
+    assert any(
+        "puppy" in i.memory.text for i in undated.items if i.memory.type == MemoryType.MESSAGE
+    )

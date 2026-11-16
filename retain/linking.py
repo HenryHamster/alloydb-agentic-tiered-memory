@@ -338,7 +338,16 @@ class GeminiSupersedeClassifier:
             "supersede has one or more listed target IDs. Never invent IDs.\nINPUT:\n"
             + json.dumps(payload, ensure_ascii=False)
         )
-        rows = _decision_rows(self._generate(prompt))
+        try:
+            response = self._generate(prompt)
+        except Exception as error:  # noqa: BLE001 - the model call only; store errors still raise
+            # Deduplication is an optimisation: when the model call fails after its retries
+            # (Gemini answered one 4-fact LoCoMo request with 429 on every attempt), the facts
+            # are kept as new rather than losing the whole round.
+            logger.warning("Supersede classifier failed; keeping %d facts as new: %s",
+                           len(facts), str(error)[:200])  # fmt: skip
+            return [UpdateDecision(fact.fact_id) for fact in facts]
+        rows = _decision_rows(response)
         new_by_id = {fact.fact_id: fact for fact in facts}
         decisions = {}
         for row in rows:

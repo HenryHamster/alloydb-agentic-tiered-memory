@@ -435,3 +435,17 @@ def test_concept_and_technology_share_an_exact_name_but_other_types_stay_apart()
     place = EntityMention("Mercury", EntityType.PLACE)
     resolution = FuzzyEntityResolver(EntityStore([company])).resolve(SCOPE.user_id, [place])
     assert resolution.entity_ids[mention_key(place)] != company.entity_id
+
+
+def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch):
+    monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
+    old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
+    new = fact("The system uses one database.", fact_id="new", category=Category.DECISION)
+    client = Mock()
+    client.models.generate_content.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+    store = ClassifierStore(similar=[(old, 0.99)])
+
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new])
+
+    assert decision.action == UpdateAction.ADD
+    assert client.models.generate_content.call_count == 4  # retried before giving up

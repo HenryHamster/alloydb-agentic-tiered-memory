@@ -1,5 +1,9 @@
 """Pin one LoCoMo conversation as identical runtime inputs for PR13 and the original codelab.
 
+Usage: python prepare_locomo.py <locomo10.json> <out_dir> [conversation]
+where conversation is a sample_id such as conv-26 or conv-41, or a 0-based index in file
+order (default conv-26, the first).
+
 Runtime files contain only the conversation and question text. Gold answers, evidence ids and
 category labels go to references.json, which is read only by scoring.
 
@@ -8,8 +12,11 @@ Mapping (declared in RECORD.md):
   in released order, untruncated.
 - content = "<Speaker>: <text>", plus " [shares a photo: <blip_caption>]" when the turn has one.
 - timestamp = the session's LoCoMo date_time, parsed as UTC (the source gives no zone).
-- questions: categories 1-4 only (category 5 excluded, as in Mem0's J score), in file order,
-  with one short-answer instruction identical for both systems.
+- questions: categories 1-4 only (category 5 excluded, as in Mem0's J score), in file order.
+  "question" is the LoCoMo question alone; "instructions" is one fixed answer instruction,
+  identical for every question and both systems. PR13's runner searches memory with the
+  question only and appends the instructions to the answer prompt after one blank line; the
+  original codelab gets the same text, question + "\n\n" + instructions, as its query.
 """
 
 import hashlib
@@ -18,10 +25,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-INSTRUCTION = (
-    "\n\nAnswer with a short phrase of at most 6 words, based only on what was said in the "
-    "conversation. If the answer is a time, give the specific date, month or year."
+# LoCoMo's answer format. The last sentence was a shared answer rule in PR #19; it belongs to
+# this benchmark only (agents in general should say when memory doesn't cover something).
+INSTRUCTIONS = (
+    "Answer with a short phrase of at most 6 words, based only on what was said in the "
+    "conversation. If the answer is a time, give the specific date, month or year. "
+    "When the question asks what would or might likely be true, give the most likely answer "
+    "the memory supports instead of saying it is not mentioned."
 )
+DEFAULT_CONVERSATION = "conv-26"
 CATEGORY_NAMES = {
     1: "multi-hop",
     2: "temporal",
@@ -59,7 +71,12 @@ def build(sample):
         for turn in conv[key]:
             dia_ids[turn["dia_id"]] = (key, len(messages))
             messages.append(
-                {"role": roles[turn["speaker"]], "content": content(turn), "timestamp": when}
+                {
+                    "role": roles[turn["speaker"]],
+                    "name": turn["speaker"],
+                    "content": content(turn),
+                    "timestamp": when,
+                }
             )
         sessions.append({"id": key, "date_time": conv[key + "_date_time"], "messages": messages})
     questions, references = [], {}
@@ -67,7 +84,7 @@ def build(sample):
         if qa["category"] == 5:
             continue
         qid = f"{sample['sample_id']}-q{index:03d}"
-        questions.append({"id": qid, "question": qa["question"] + INSTRUCTION})
+        questions.append({"id": qid, "question": qa["question"], "instructions": INSTRUCTIONS})
         references[qid] = {
             "question": qa["question"],
             "answer": str(qa["answer"]),
@@ -78,17 +95,31 @@ def build(sample):
     return sessions, questions, references, dia_ids
 
 
-def main(dataset, out_dir, sample_index="0"):
+def select(data, conversation=DEFAULT_CONVERSATION):
+    """(index, sample) for a sample_id ("conv-41") or a 0-based index in file order ("1")."""
+    ids = [sample["sample_id"] for sample in data]
+    if conversation in ids:
+        index = ids.index(conversation)
+    elif str(conversation).isdigit() and int(conversation) < len(data):
+        index = int(conversation)
+    else:
+        raise SystemExit(f"Unknown conversation {conversation!r}; choose one of {ids}")
+    return index, data[index]
+
+
+def main(dataset, out_dir, conversation=DEFAULT_CONVERSATION):
     dataset, out = Path(dataset), Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     data = json.loads(dataset.read_text(encoding="utf-8"))
-    sample = data[int(sample_index)]
+    sample_index, sample = select(data, conversation)
+    out.mkdir(parents=True, exist_ok=True)
     sid = sample["sample_id"]
     sessions, questions, references, _ = build(sample)
     files = {
         # PR13 developer CLI format (devtools/inputs.py).
         f"history-{sid}.json": {
             "id": sid,
+            # Both LoCoMo speakers are people: the assistant role is a second human.
+            "assistant_is_human": True,
             "sessions": [{"id": s["id"], "messages": s["messages"]} for s in sessions],
         },
         f"questions-{sid}.json": {"questions": questions},
@@ -106,10 +137,10 @@ def main(dataset, out_dir, sample_index="0"):
     manifest = {
         "dataset": str(dataset),
         "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
-        "sample_index": int(sample_index),
+        "sample_index": sample_index,
         "sample_id": sid,
-        "selection_rule": "first conversation in locomo10.json file order, fixed before any run",
-        "instruction": INSTRUCTION,
+        "selection_rule": f"conversation {conversation!r} of locomo10.json, fixed before any run",
+        "instructions": INSTRUCTIONS,
         "sessions": len(sessions),
         "messages": sum(len(s["messages"]) for s in sessions),
         "questions": len(questions),
