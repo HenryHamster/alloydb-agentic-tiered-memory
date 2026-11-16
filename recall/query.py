@@ -10,6 +10,9 @@ from shared.llm import Generate, generate_with_retry
 
 logger = logging.getLogger(__name__)
 
+# Retry a temporary provider error at most once in query analysis (see analyze_query).
+QUERY_ANALYSIS_ATTEMPTS = 2
+
 _MONTHS = [
     "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november", "december",
@@ -218,8 +221,12 @@ def analyze_query(
 
     try:
         prompt = _decomposition_prompt(query, query_time, max_sub_queries)
-        # Rate limits are retried like every other Gemini call; one 429 used to end the answer.
-        data = json.loads(_strip_fences(generate_with_retry(generate, prompt)))
+        # Query analysis is on the answer path: retry a temporary error once (one 429 used to
+        # end the answer), but not four times, which after deadline errors cost 4 timeouts
+        # plus 21 s of backoff before falling back to the original query.
+        data = json.loads(
+            _strip_fences(generate_with_retry(generate, prompt, attempts=QUERY_ANALYSIS_ATTEMPTS))
+        )
         plan.llm_used = True
         seen = {query.lower()}
         for sub_query in [str(q).strip() for q in data.get("sub_queries") or []][:max_sub_queries]:

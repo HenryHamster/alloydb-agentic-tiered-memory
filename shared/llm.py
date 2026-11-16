@@ -1,6 +1,7 @@
 """Text generation boundary shared by the summarizer and Recall's query analysis."""
 
 import json
+import re
 import time
 from collections.abc import Callable
 
@@ -49,14 +50,38 @@ def thinking(level: str | None) -> dict:
 # Temporary provider errors worth another try: rate limits, and the server being busy or timing
 # out. On LoCoMo runs a single 504 or 429 from one of ~800 calls otherwise ended the whole run;
 # the same request then succeeded on replay.
-_RETRYABLE = ("429", "RESOURCE_EXHAUSTED", "500 INTERNAL", "503", "UNAVAILABLE", "504",
-              "DEADLINE_EXCEEDED")  # fmt: skip
+_RETRYABLE_CODES = frozenset({429, 500, 503, 504})
+_RETRYABLE_STATUSES = frozenset(
+    {"RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"}
+)
+# google-genai formats errors as "<code> <STATUS>. <details>"; the details can hold any digits
+# or words ("... 1504 ..."), so only the leading code or status counts.
+_LEADING_CODE = re.compile(r"\s*(\d{3})\b")
+_LEADING_STATUS = re.compile(r"\s*([A-Z][A-Z_]+)\b")
+
+
+def _status_code(error: Exception) -> int | None:
+    code = getattr(error, "code", None)  # google.genai.errors.APIError
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code
+    status_code = getattr(getattr(error, "response", None), "status_code", None)  # httpx
+    if isinstance(status_code, int) and not isinstance(status_code, bool):
+        return status_code
+    match = _LEADING_CODE.match(str(error))
+    return int(match.group(1)) if match else None
 
 
 def is_rate_limited(error: Exception) -> bool:
-    """True for errors a retry can fix: rate limits and temporary server failures."""
-    text = str(error)
-    return any(marker in text for marker in _RETRYABLE)
+    """True for errors a retry can fix: rate limits and temporary server failures, judged by
+    the HTTP status code (or, without one, the leading gRPC status name)."""
+    code = _status_code(error)
+    if code is not None:
+        return code in _RETRYABLE_CODES
+    status = getattr(error, "status", None)
+    if not isinstance(status, str):
+        match = _LEADING_STATUS.match(str(error))
+        status = match.group(1) if match else None
+    return status in _RETRYABLE_STATUSES
 
 
 def generate_with_retry(generate: Generate, prompt: str, attempts: int = 4) -> str:

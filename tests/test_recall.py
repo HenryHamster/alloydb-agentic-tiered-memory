@@ -633,12 +633,52 @@ def test_query_analysis_retries_a_rate_limit(monkeypatch):
         ("503 UNAVAILABLE. The service is currently unavailable.", True),
         ("400 INVALID_ARGUMENT. Request contains an invalid argument.", False),
         ("403 PERMISSION_DENIED.", False),
+        # Digits or status words inside the details don't count.
+        ("400 INVALID_ARGUMENT. Field max_tokens=1504 is out of range.", False),
+        ("400 INVALID_ARGUMENT. Model UNAVAILABLE for this region; retry with 503 later.", False),
+        ("RESOURCE_EXHAUSTED: quota", True),
+        ("storage unavailable 504", False),
     ],
 )
 def test_only_temporary_provider_errors_are_retried(error, retry):
     from shared.llm import is_rate_limited
 
     assert is_rate_limited(RuntimeError(error)) is retry
+
+
+@pytest.mark.parametrize("code,retry", [(429, True), (503, True), (504, True), (400, False)])
+def test_retries_are_decided_by_the_genai_status_code(code, retry):
+    from google.genai import errors
+
+    from shared.llm import is_rate_limited
+
+    error = errors.APIError(code, {"error": {"code": code, "message": "x 1504 504 429"}})
+    assert is_rate_limited(error) is retry
+
+
+def test_query_analysis_retries_a_deadline_error_only_once(monkeypatch):
+    sleeps, calls = [], []
+    monkeypatch.setattr("shared.llm.time.sleep", sleeps.append)
+
+    def generate(prompt):
+        calls.append(prompt)
+        raise RuntimeError("504 DEADLINE_EXCEEDED. Deadline expired.")
+
+    plan = analyze_query("what did Caroline research?", NOW, generate=generate)
+    assert len(calls) == 2 and sleeps == [3]
+    assert plan.sub_queries == ["what did Caroline research?"] and not plan.llm_used
+
+
+def test_query_analysis_does_not_retry_a_bad_request(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: pytest.fail("slept"))
+    calls = []
+
+    def generate(prompt):
+        calls.append(prompt)
+        raise RuntimeError("400 INVALID_ARGUMENT. max_output_tokens 1504 too small")
+
+    analyze_query("what did Caroline research?", NOW, generate=generate)
+    assert len(calls) == 1
 
 
 def test_list_questions_are_flagged_by_query_analysis():
