@@ -140,6 +140,39 @@ _POINTING = re.compile(
     r"last time|we|us|our|you|your|i|me|my)\b",
     re.IGNORECASE,
 )
+# "this year", "that week", "these days" name a period, not earlier talk.
+_PERIOD = re.compile(
+    r"\b(?:this|that|these|those)\s+(?:year|month|week|weekend|day|morning|afternoon|evening|"
+    r"night|summer|winter|spring|autumn|fall|season|time|days|weeks|months|years)\b",
+    re.IGNORECASE,
+)
+_WH_START = re.compile(r"\s*(?:what|which|who|whom|whose|when|where|why|how)\b", re.IGNORECASE)
+
+
+def points_back(query: str) -> bool:
+    """True when the query has a word pointing at earlier talk (that, earlier, we, my...),
+    not counting period phrases such as "this year"."""
+    return bool(_POINTING.search(_PERIOD.sub(" ", query)))
+
+
+def _is_third_person_question(query: str) -> bool:
+    """A wh-question naming someone after its first word: "What did Caroline research?"."""
+    words = re.findall(r"[A-Za-z][A-Za-z']*", query)
+    return bool(_WH_START.match(query)) and any(w[0].isupper() and w != "I" for w in words[1:])
+
+
+def confirm_refers_back(query: str, llm_refers_back: bool) -> bool:
+    """Whether a query the model flagged as a back-reference really is one.
+
+    The model also flags plain third-person questions ("How did Melanie's son handle the
+    accident?"), which pulls raw rounds over specific facts; those count only with a word
+    pointing at the talk itself. Agent requests ("Restart the database server", "Check the
+    status of the server from yesterday") keep the model's judgement: they often name what
+    the user asked about before without any pointing word.
+    """
+    if not llm_refers_back:
+        return False
+    return points_back(query) if _is_third_person_question(query) else True
 
 
 def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int) -> str:
@@ -193,10 +226,7 @@ def analyze_query(
             if sub_query and sub_query.lower() not in seen:
                 seen.add(sub_query.lower())
                 plan.sub_queries.append(sub_query)
-        # The model also flags plain questions about other people ("How did Melanie's son
-        # handle the accident?"), which pulls raw rounds over specific facts. A real
-        # back-reference points at the talk itself: that, those, earlier, we, you, my.
-        plan.refers_back = data.get("refers_back") is True and bool(_POINTING.search(query))
+        plan.refers_back = confirm_refers_back(query, data.get("refers_back") is True)
         plan.wants_list = data.get("list") is True
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")

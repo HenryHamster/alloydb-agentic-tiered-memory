@@ -13,7 +13,7 @@ from test_retain_extraction import gemini_returning
 from recall import MemoryType, RecallConfig, RecallDepth, TimeWindow, make_recall_tool_functions
 from recall.config import ROUND_RELATIONS
 from recall.models import Memory, Scored
-from recall.query import analyze_query, parse_time_phrase, said_on_day
+from recall.query import analyze_query, parse_time_phrase, points_back, said_on_day
 from recall.ranking import apply_boosts, fuse_rrf
 from retain import Retainer, Scope
 from retain.extraction import GeminiFactExtractor
@@ -563,16 +563,52 @@ def test_adk_tool_wrappers_build():
 @pytest.mark.parametrize(
     "question,expected",
     [
+        # Third-person questions about what someone said or did need a pointing word.
         ("How did Melanie's son handle the accident?", False),
         ("What did Caroline research?", False),
+        ("What did Caroline do this year?", False),
+        ("What did Melanie paint that summer?", False),
+        ("When did Caroline go to the LGBTQ support group?", False),
+        ("What did Caroline say about the book we discussed?", True),
+        ("What did Melanie think of that painting?", True),
+        # Agent requests and first/second-person questions keep the model's judgement.
+        ("Restart the database server", True),
+        ("Check the status of the server from yesterday", True),
         ("Restart that database server.", True),
         ("Which movie did we pick?", True),
         ("Book the hotel I mentioned earlier.", True),
+        ("What is the status of the server?", True),
     ],
 )
 def test_a_back_reference_needs_a_word_that_points_at_earlier_talk(question, expected):
     reply = '{"sub_queries": [], "time_window": null, "refers_back": true}'
-    assert analyze_query(question, NOW, generate=lambda p: reply).refers_back is expected
+    plan = analyze_query(question, NOW, generate=lambda p: reply)
+    assert plan.refers_back is expected
+    # The plan decides the user-request boost and the said penalty.
+    request = Memory("u", MemoryType.FACT, "The user said: restart psql-001", speaker=Speaker.USER)
+    said = Memory("s", MemoryType.FACT, "Melanie said: Absolutely! So glad we can always be there.")
+    scored = [Scored(request, 0.5), Scored(said, 0.5)]
+    boosts = {
+        s.memory.id: s.boost
+        for s in apply_boosts(scored, NOW, None, RecallConfig(), refers_back=plan.refers_back)
+    }
+    assert (boosts["u"] > 0) is expected and (boosts["s"] < 0) is not expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["What did Caroline do this year?", "Restart the database server", "How is Melanie?"],
+)
+def test_a_back_reference_still_needs_the_model_to_flag_it(question):
+    reply = '{"sub_queries": [], "time_window": null, "refers_back": false}'
+    assert analyze_query(question, NOW, generate=lambda p: reply).refers_back is False
+
+
+def test_period_phrases_do_not_point_back():
+    assert not points_back("What did Caroline do this year?")
+    assert not points_back("Where did Melanie camp that summer?")
+    assert points_back("What did Caroline say about this?")
+    assert points_back("What did Caroline say about this book?")
 
 
 def test_query_analysis_retries_a_rate_limit(monkeypatch):
