@@ -70,10 +70,13 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   from it twice; "ten years ago" keeps the duration and adds "(around 2013)". The model is told to
   copy relative words as said rather than compute dates. The phrase is looked for in the quote,
   then the sentence around it (short quotes drop "last week" said a few words later), then the
-  fact text. A day the model wrote into the text anyway is replaced when it is the only date
+  fact text. In the quote and the sentence a phrase counts only in a clause about this fact (one
+  sharing a content word with it): in "My sister arrived on Tuesday and I fly out next Friday",
+  "next Friday" does not date the sister's arrival. A day the model wrote into the text anyway is replaced when it is the only date
   there and within two weeks of the code's date; a date already present is never written twice;
   an event whose text has no date gets one. Failing all of that, a model date within two weeks
-  of the chunk's only day phrase is corrected to it. A full date more than a month from the day said is dropped
+  of the chunk's only day phrase, on the same side of the day said, is corrected to it when that
+  phrase's clause is about the fact. A full date more than a month from the day said is dropped
   only on evidence that the model counted it from a duration: the turn states one ("for 4
   years", "5 years already!") and has no month, year, season, holiday or nearby relative phrase
   it could come from ("known them for 4 years" once came back dated 2019). Without a duration

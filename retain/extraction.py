@@ -1094,6 +1094,47 @@ def _sentence_of(text, quote):
     return text[left:right]
 
 
+# Clause boundaries: sentence ends, semicolons and joining conjunctions ("... and I fly out").
+_CLAUSE_BREAK = re.compile(r"(?<=[.!?])\s+|\s*;\s*|,?\s+(?:and|but|while|whereas)\s+", re.I)
+_TIME_WORDS = frozenset(
+    """last next past ago week weeks weekend weekends month months year years day days yesterday
+    today tomorrow tonight night morning afternoon evening earlier couple several monday tuesday
+    wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun""".split()
+)
+
+
+def _content_words(text, skip):
+    return {
+        word[:5]
+        for word in re.findall(r"[^\W\d_]{3,}", text.casefold())
+        if word not in _FILLER and word not in _TIME_WORDS and word not in skip
+    }
+
+
+def _own_relative_dates(source, fact_text, said_on, skip=frozenset()):
+    """The relative date phrases of `source` that belong to this fact.
+
+    A phrase in another clause dates another event: in "My sister arrived on Tuesday and I fly
+    out next Friday", "next Friday" is not when the sister arrived. A source of one clause
+    keeps every phrase; otherwise a phrase counts only when its clause shares a content word
+    with the fact text.
+    """
+    found = _relative_dates(source, said_on)
+    bounds = [0, *(m.end() for m in _CLAUSE_BREAK.finditer(source)), len(source) + 1]
+    if len(bounds) <= 2 or not found:
+        return found
+    fact_words = _content_words(fact_text, skip)
+    owned = []
+    for item in found:
+        start = item[0].start()
+        left = max(b for b in bounds if b <= start)
+        right = min(b for b in bounds if b > start)
+        clause = source[left:right].replace(item[0][0], " ")
+        if fact_words & _content_words(clause, skip):
+            owned.append(item)
+    return owned
+
+
 def _model_day(row, field):
     value = row[field]
     if not value or _partial_date_parts(value) is not None:
@@ -1107,9 +1148,11 @@ def _model_day(row, field):
 def _resolve_relative_dates(row, chunk):
     """Date a fact from a relative phrase in what was said, overriding the model's date.
 
-    The phrase is looked for in the quote, then the sentence around it, then the fact text.
-    Failing those, a model date a few days off the chunk's only day phrase is replaced: the
-    model computed it from that phrase (often a week early), and code does it reliably.
+    The phrase is looked for in the quote, then the sentence around it, then the fact text;
+    in the quote and the sentence it must sit in a clause about this fact. Failing those, a
+    model date a few days off the chunk's only day phrase, on the same side of the day said,
+    is replaced when that phrase's clause is about this fact: the model computed it from that
+    phrase (often a week early), and code does it reliably.
     A disagreement never drops the fact: the code's date wins. The fact text gets the
     absolute date, so an answer never counts back from it a second time.
     """
@@ -1120,20 +1163,29 @@ def _resolve_relative_dates(row, chunk):
         if row["category"] == Category.EVENT or row["fact_type"] == FactType.EXPERIENCE
         else "valid_from"
     )
+    skip = frozenset({chunk.document.name.casefold()} if chunk.document.name else ())
     found = None
-    for source in (row["evidence"], _sentence_of(chunk.text, row["evidence"]), row["text"]):
-        found = _relative_date(source, said_on)
-        if found:
+    for source in (row["evidence"], _sentence_of(chunk.text, row["evidence"])):
+        owned = _own_relative_dates(source, row["text"], said_on, skip)
+        if owned:
+            found = owned[0]
             break
+    else:
+        found = _relative_date(row["text"], said_on)
     when = details.get("when")
     if found is None:
         supplied = _model_day(row, field) or _model_day(row, "occurred_at")
         candidates = [f for f in _relative_dates(chunk.text, said_on) if f[1] == "day"]
+        owned = [
+            f for f in _own_relative_dates(chunk.text, row["text"], said_on, skip) if f[1] == "day"
+        ]
         day = supplied.astimezone(said_on.tzinfo).date() if supplied is not None else None
         if (
             day is not None
             and day != said_on.date()
             and len({f[2] for f in candidates}) == 1
+            and owned
+            and (day < said_on.date()) == (candidates[0][2] < said_on.date())
             and 0 < abs((day - candidates[0][2]).days) <= 14  # the model's off-by-a-week date
             and not _ABSOLUTE_DAY.search(chunk.text)
         ):

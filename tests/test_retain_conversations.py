@@ -446,6 +446,38 @@ def test_a_model_date_off_the_chunks_only_day_phrase_is_corrected():
     )
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "My sister arrived on Tuesday",
+        "sister arrived",
+        "My sister arrived on Tuesday and I fly out next Friday",
+    ],
+)
+def test_a_phrase_in_another_clause_does_not_move_the_fact(evidence):
+    row = resolve_in(
+        "Melanie: My sister arrived on Tuesday and I fly out next Friday.",
+        "Melanie's sister arrived on Tuesday.",
+        evidence,
+        MONDAY,
+        occurred_at="2023-05-16",
+    )
+
+    assert row["occurred_at"] == "2023-05-16"
+    assert row["text"] == "Melanie's sister arrived on Tuesday."
+
+
+def test_a_phrase_in_the_facts_own_clause_still_dates_it():
+    row = resolve_in(
+        "Melanie: My sister arrived on Tuesday and I fly out next Friday.",
+        "Melanie flies out next Friday.",
+        "I fly out next Friday",
+        MONDAY,
+    )
+
+    assert row["occurred_at"] == "2023-05-26T00:00:00+00:00"
+
+
 def test_the_quote_has_the_phrase_and_the_text_a_computed_date():
     row = resolve_in(
         "Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday!",
