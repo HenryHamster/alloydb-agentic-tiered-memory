@@ -738,9 +738,23 @@ def test_social_question_filter_preserves_following_detail():
         "Cool! What did it look like?",
         "How was it?",
         "Wow, what a fun moment! What's the band?",
+        "Can you tell me more about it?",
+        "Would you do it again?",
+        "No way, really?",
+        "That's so cool, right?",
     ],
 )
 def test_named_conversational_questions_do_not_create_fallbacks(body):
     doc = document("Alex: " + body, name="Alex")
     extractor, _ = extractor_returning([])
     assert extractor.extract(chunk_documents([doc])) == []
+
+
+@pytest.mark.parametrize("body", ["No, that is it.", "Yes, I did.", "I can't do that."])
+def test_a_short_yes_no_or_cant_answer_is_not_chit_chat(body):
+    doc = document("Alex: " + body, name="Alex")
+    extractor, _ = extractor_returning([])
+
+    (fact,) = extractor.extract(chunk_documents([doc]))
+
+    assert fact.text == "Alex said: " + body

@@ -659,34 +659,40 @@ _FILLER = frozenset(
     """a an the and or but so to of for in on at with about it its it's this that that's these
     those is am are was were be been being do does did have has had i i'm i've i'll i'd me my
     you you're your yours we we're our us he she they them their his her him just really very
-    too also all much more such what how oh aw aww awww ah ahh ooh hmm wow yay yes yeah yep no nope ok okay haha lol omg
+    too also all much more such what how oh aw aww awww ah ahh ooh hmm wow yay yeah yep nope ok okay haha lol omg
     hey hi hello thanks thank great awesome amazing cool nice lovely beautiful wonderful
     fantastic incredible brilliant sweet good glad happy proud congrats congratulations
-    sounds sound looks look seems totally definitely absolutely agree true right same love
-    can't wait hear means mean lot always here there know fun moment day time experience pic
+    sounds sound looks seems totally definitely absolutely agree true right same love
+    wait hear means mean lot always here there know fun moment day time experience pic
     picture photo stuff thing things""".split()
 )
+# Reactions that only read as filler together ("No way!", "Can't wait!"); "no", "yes" and
+# "can't" alone can answer or refuse something ("No, keep db-7.").
+_REACTION_PHRASES = re.compile(r"\b(?:no way|can't wait)\b", re.IGNORECASE)
+# Words that are filler only in a small-talk question ("Would you do it again?").
+_QUESTION_FILLER = frozenset("can could would will tell again way ever".split())
 
 
 def _is_chit_chat(text, names=(), person=False):
     """A short turn with nothing to look up later: only function words and reactions.
 
-    Any number, question, request, name or other content word keeps the turn ("I was so
-    scared.", "Bailey is so sweet!", "The necklace stands for love, faith and strength").
-    Conversational questions are filtered separately. Remaining questions are kept even
-    for named people: they may contain requests, constraints, or confirmations.
+    Any number, request, name or other content word keeps the turn ("I was so scared.",
+    "Bailey is so sweet!", "The necklace stands for love, faith and strength"). A question
+    is judged by the same words ("Can you help?" is kept, "No way, really?" is not), so a
+    named person's requests, constraints and confirmations survive but small talk does not.
     """
     words = text.split()
-    if len(words) > 12 or re.search(r"\d", text) or "?" in text:
+    if len(words) > 12 or re.search(r"\d", text):
         return False
-    body = _without_speaker(text)
+    body = _without_speaker(text).replace("’", "'")
     if not person and _REQUEST_START.match(body.strip()):
         return False
+    filler = _FILLER | _QUESTION_FILLER if body.rstrip().endswith("?") else _FILLER
     skip = {name.casefold() for name in names}
-    for word in body.split():
+    for word in _REACTION_PHRASES.sub(" ", body).split():
         folded = word.strip(".,;:!?()[]{}\"'").casefold()
         nickname = len(folded) >= 3 and any(name.startswith(folded) for name in skip)
-        if folded and folded not in skip and not nickname and folded not in _FILLER:
+        if folded and folded not in skip and not nickname and folded not in filler:
             return False
     return True
 
