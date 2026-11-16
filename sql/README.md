@@ -11,6 +11,9 @@ database user described in the setup guide.
 4. Run `004_retain_schema.sql` for the Retain tables. It is additive and needs `pg_trgm`.
 5. Run `005_reflect_schema.sql` for Reflect: tier/access columns on `memory_facts`,
    `memory_conflict_reviews` and `macro_memories`. It is additive.
+6. Run `006_document_embeddings.sql` by itself, outside a transaction, before deploying Retain
+   code that stores message vectors (`documents.embedding`). It is additive, and its index is
+   built `CONCURRENTLY` so Retain writes are not blocked while it builds.
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine

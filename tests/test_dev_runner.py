@@ -579,3 +579,18 @@ def test_real_sql_pipeline_preparation_restore_answer_replay(tmp_path, extension
     assert second["status"] == "completed", second
     assert not read_json(tmp_path / "second/usage.json")["calls"]
     assert len(fixture.requests) == count
+
+
+def test_schema_ddl_applies_the_document_embedding_migration_in_one_transaction():
+    from devtools.state import schema_ddl
+
+    root = Path(__file__).resolve().parents[1]
+    original = (root / "sql" / "004_retain_schema.sql").read_text(encoding="utf8")
+    documents = original.split("CREATE TABLE IF NOT EXISTS documents", 1)[1].split(");", 1)[0]
+    assert "embedding" not in documents  # 004 is unchanged for databases that already ran it
+    ddl = list(schema_ddl(root))
+    assert len(ddl) == 3
+    assert "ADD COLUMN IF NOT EXISTS embedding VECTOR(768)" in ddl[2]
+    assert "documents_embedding_idx" in ddl[2]
+    assert not any("CONCURRENTLY" in part for part in ddl)
+    assert not any("CREATE EXTENSION" in part for part in ddl)
