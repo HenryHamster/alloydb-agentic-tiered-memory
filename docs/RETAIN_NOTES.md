@@ -73,9 +73,11 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   fact text. A day the model wrote into the text anyway is replaced when it is the only date
   there and within two weeks of the code's date; a date already present is never written twice;
   an event whose text has no date gets one. Failing all of that, a model date within two weeks
-  of the chunk's only day phrase is corrected to it. A full date more than a month from the day said, in a turn
-  with no date words at all (no phrase, month, year, season or holiday), is dropped: it can only
-  be the model's arithmetic ("known them for 4 years" once came back dated 2019). A "shared a
+  of the chunk's only day phrase is corrected to it. A full date more than a month from the day said is dropped
+  only on evidence that the model counted it from a duration: the turn states one ("for 4
+  years", "5 years already!") and has no month, year, season, holiday or nearby relative phrase
+  it could come from ("known them for 4 years" once came back dated 2019). Without a duration
+  the date stands, so "Book my flight for Dec 20" and "invoice 12/30" keep theirs. A "shared a
   photo" fact keeps the day it was shared: in "a painting I did last week" the phrase dates the
   painting, so only the text gets that date (moving the fact a week back lost "what painting did
   Melanie show on 13 October").

@@ -1184,15 +1184,17 @@ _SHARED_MEDIA = re.compile(
 
 
 def _drop_invented_dates(row, source, said_on):
-    """A full date far from the day said, which nothing in the source supports, was made up.
+    """Drop a full date far from the day said when the turn shows it was counted from a duration.
 
     "I've known them for 4 years" once came back dated 2019, and the answer then counted back
     four more years; "5 years already!" came back as 2018 although the only date phrase in
-    the turn was a figurative "feels like just yesterday". A month, year, season or holiday
-    may be where the date came from, so it stands; a relative phrase supports it only if it
-    resolves to about that date. Otherwise the message time stands instead.
+    the turn was a figurative "feels like just yesterday". Only such a duration is evidence
+    against the date: "Book my flight for Dec 20" and "invoice 12/30" keep theirs. Even then a
+    month, year, season or holiday may be where the date came from, so it stands, and a
+    relative phrase supports it if it resolves to about that date. Otherwise the message time
+    stands instead.
     """
-    if _DATE_WORDS.search(source):
+    if not _DURATION.search(source) or _DATE_WORDS.search(source):
         return row
     phrases = [found[2] for found in _relative_dates(source, said_on) if found[1] == "day"]
     for field in ("occurred_at", "valid_from"):
@@ -1220,6 +1222,13 @@ _ABSOLUTE_DAY = re.compile(
 _DATE_WORDS = re.compile(
     rf"\b(?:{_MONTH_NAME}|(?:19|20)\d{{2}}|spring|summer|fall|autumn|winter|christmas|"
     r"thanksgiving|easter|halloween|new year)\b",
+    re.IGNORECASE,
+)
+# A length of time ("for 4 years", "5 years already!"), not a point in time ("in 2 years",
+# "3 years ago", "a 5 year old").
+_DURATION = re.compile(
+    rf"(?<![\w-])(?<!\bin ){_NUMBER} (?:years?|months?|weeks?|decades?)(?![\w-])"
+    r"(?! (?:ago|from now|later|earlier|before|after|old)\b)(?![ -]old\b)",
     re.IGNORECASE,
 )
 _MONTH_YEAR = re.compile(rf"\b(?:{_MONTH_NAME}) \d{{4}}\b|\b(?:19|20)\d{{2}}\b", re.IGNORECASE)

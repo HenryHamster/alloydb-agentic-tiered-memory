@@ -634,6 +634,21 @@ def test_a_shared_photo_keeps_the_day_it_was_shared_and_the_text_dates_its_subje
     )
 
 
+@pytest.mark.parametrize(
+    ("source", "day"),
+    [
+        ("Alex: Book my flight for Dec 20.", "2026-12-20"),
+        ("Alex: Please pay invoice 12/30 before the holidays.", "2026-12-30"),
+        ("Alex: The lease runs until 3/1/27.", "2027-03-01"),
+    ],
+)
+def test_a_far_date_is_kept_without_a_duration_against_it(source, day):
+    said = datetime(2026, 11, 15, 9, 0, tzinfo=timezone.utc)
+    row = resolve_in(source, "Alex has a date.", source.split(": ", 1)[1], said, occurred_at=day)
+
+    assert row["occurred_at"] == day
+
+
 def test_a_figurative_yesterday_does_not_support_a_date_years_back():
     row = resolve_in(
         "Melanie: 5 years already! Time flies- feels like just yesterday I put this dress on!",
