@@ -44,6 +44,23 @@ def serial(value):
 RETRIEVAL_QUERY_CHARS = 300
 
 
+def answer_query(question):
+    """What the answer prompt asks: the question, then its answer instructions, then any tool
+    schemas and the tool-call output rule, each part after one blank line."""
+    prompt = question["question"]
+    if question.get("instructions"):
+        prompt += "\n\n" + question["instructions"].strip()
+    if question.get("tools"):
+        prompt += "\n\nAvailable tool schemas:\n" + json.dumps(
+            question["tools"], ensure_ascii=False
+        )
+        prompt += (
+            "\nReturn only one JSON object with keys name and arguments describing the tool call. "
+            "Do not execute the tool. Fill arguments from stored history and the schemas."
+        )
+    return prompt
+
+
 def retrieval_query(question):
     """What Recall searches with: the question, plus a short hint naming each tool.
 
@@ -240,20 +257,9 @@ def run_job(
                 schema.create()
                 schema.restore(snapshot)  # Includes tiers, access counts and Reflect state.
                 system = backend.system(schema)
-                prompt = question["question"]
-                if question.get("instructions"):
-                    prompt += "\n\n" + question["instructions"]
-                if question.get("tools"):
-                    prompt += "\n\nAvailable tool schemas:\n" + json.dumps(
-                        question["tools"], ensure_ascii=False
-                    )
-                    prompt += (
-                        "\nReturn only one JSON object with keys name and arguments describing the tool call. "
-                        "Do not execute the tool. Fill arguments from stored history and the schemas."
-                    )
                 answer = system.answer(
                     Scope(logical, logical, logical + ":query:" + question["id"]),
-                    prompt,
+                    answer_query(question),
                     record=False,
                     query_time=clock,
                     retrieval_query=retrieval_query(question),

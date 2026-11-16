@@ -22,15 +22,14 @@ from valkey_buffer import SessionBuffer
 
 # How to read memory when answering. Each rule comes from a LoCoMo answer that had the evidence
 # in memory and still went wrong: a similar event instead of the one asked about, a "usually
-# twice a year" statement instead of a count, a vague raw turn over a specific fact, and
-# "not mentioned" for a question asking what would likely be true.
+# twice a year" statement instead of a count, and a vague raw turn over a specific fact.
+# Every agent gets these, so they must not make it guess: LoCoMo's "give the most likely answer
+# to would/might questions" rule is part of that benchmark's per-question instructions instead.
 ANSWER_RULES = (
     "Answer about the exact person and event the question asks about, not a similar one. "
     "For how many times something happened, count the distinct dated events in memory; a "
     "general statement such as 'usually twice a year' is not a count. Prefer the most "
-    "specific memory over a general one. When the question asks what would or might likely "
-    "be true, give the most likely answer the memory supports instead of saying it is not "
-    "mentioned."
+    "specific memory over a general one."
 )
 # Recall quotes a few original messages next to the facts it found; facts are summaries.
 MESSAGE_RULE = (
