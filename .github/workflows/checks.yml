@@ -33,7 +33,7 @@ jobs:
         with:
           version: "0.11.3"
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked --extra adk --extra dev
-      - run: uv run --frozen --extra adk --extra dev ruff check .
-      - run: uv run --frozen --extra adk --extra dev ruff format --check .
-      - run: uv run --frozen --extra adk --extra dev pytest
+      - run: uv sync --locked --extra adk --extra mcp --extra dev
+      - run: uv run --frozen --extra adk --extra mcp --extra dev ruff check .
+      - run: uv run --frozen --extra adk --extra mcp --extra dev ruff format --check .
+      - run: uv run --frozen --extra adk --extra mcp --extra dev pytest

@@ -24,6 +24,16 @@ uv sync --extra adk --extra dev
 
 Alternatively, create a virtual environment and run `python -m pip install -r requirements.txt`. Development tools are available through `python -m pip install -e '.[adk,dev]'`.
 
+## Use it from your agent
+
+The memory is also an MCP server and a Claude Code plugin with a skill. After the cloud setup below:
+
+```
+/plugin install tiered-memory --marketplace HenryHamster/alloydb-agentic-tiered-memory
+```
+
+Configuration, the tool list and other MCP clients: [docs/MCP.md](docs/MCP.md).
+
 ## Run your own questions
 
 Use the [developer runner](docs/DEV_RUNNER.md) to start the shared VM/AlloyDB, run one question or a fixture file from your current checkout, and stop them afterward. It supports cached/replay/fresh execution, isolated memory snapshots, token/latency receipts and local scoring. One-time VM/IAM setup is documented in that guide.
