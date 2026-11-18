@@ -17,14 +17,14 @@ from typing import Any, Dict, List, Optional
 
 import redis
 
-from shared.llm import GeminiGenerator, Generate, generate_with_retry
+from shared.llm import DEFAULT_MODEL, GeminiGenerator, Generate, generate_with_retry
 from shared.tokens import TokenCounter, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
 IN_MEMORY_VALKEY_FALLBACK: Dict[str, Any] = {}
 VALKEY_COMPACTION_TOKENS = 0
-SUMMARY_MODEL = "gemini-3.5-flash"
+SUMMARY_MODEL = DEFAULT_MODEL
 TRIGGER_LIMIT = 10
 WINDOW_SIZE = 4
 STORAGE_ERRORS = (redis.exceptions.RedisError, OSError)

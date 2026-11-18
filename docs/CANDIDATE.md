@@ -24,9 +24,9 @@ Source dates in this dataset are unknown. Extraction receives null source dates;
 processing timestamps are bookkeeping, not asserted historical dates.
 
 The serial ledger reserves before each paid request and includes failed/uncertain
-calls, schema input, all thinking tokens and SQL ranking retries. Generation rates
-verified 2026-10-26: global Gemini 3.5 Flash USD 1.50/M input and USD 9/M output,
-including reasoning. Embeddings conservatively reserve USD .25/M UTF-8 bytes.
+calls, schema input, all thinking tokens and SQL ranking retries. Generation rates are
+per model in `bench/metering.PRICES` (verified 2026-11-18, output including reasoning); the
+default `gemini-4-hydrogen` is USD 1.50/M input and USD 7.50/M output. Embeddings conservatively reserve USD .25/M UTF-8 bytes.
 Ranking reserves USD .001 per 100 documents or fraction. Infrastructure is reserved
 separately and requires an external runtime/shutdown bound. The ledger is an
 application spending guard, not a Google Cloud billing cap.

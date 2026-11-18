@@ -19,6 +19,7 @@ from bench.longmemeval import (
 from bench.qa import judge_prompt
 from recall import InMemoryRecallStore
 from retain import InMemoryRetainStore
+from tests.extraction_requests import sent_chunks
 
 
 def session(user, assistant, has_answer=False):
@@ -126,19 +127,18 @@ class ScriptedGemini:
             return SimpleNamespace(
                 text=json.dumps({"summary": text, "fact_ids": [f["fact_id"] for f in facts]})
             )
-        if "chunk_id" not in schema["items"]["properties"]:
+        if "chunk" not in schema["items"]["properties"]:
             self.calls["classifier"] += 1
             return SimpleNamespace(text="[]")
         self.calls["extraction"] += 1
-        chunks = json.loads(contents[contents.rindex('{"chunks"') :])["chunks"]
-        return SimpleNamespace(text=json.dumps([self._fact(i, c) for i, c in enumerate(chunks)]))
+        chunks = sent_chunks(contents)
+        return SimpleNamespace(text=json.dumps([self._fact(c) for c in chunks]))
 
     @staticmethod
-    def _fact(key, chunk):
+    def _fact(chunk):
         about_max = any(word in chunk["text"] for word in ("Max", "dog", "He "))
         return {
-            "key": key,
-            "chunk_id": chunk["chunk_id"],
+            "chunk": chunk["chunk"],
             "text": chunk["text"],
             "evidence": chunk["text"],
             "fact_type": "world" if chunk["speaker"] == "user" else "experience",
@@ -147,13 +147,12 @@ class ScriptedGemini:
             "visibility": "global",
             "occurred_at": None,
             "valid_from": None,
-            "details": {"who": None, "what": None, "when": None, "where": None, "why": None},
+            "when": None,
             "entities": (
                 [{"name": "Max", "entity_type": "other", "role": "subject"}] if about_max else []
             ),
-            "relations": [],
+            "updates": False,
             "caused_by": [],
-            "evidenced_by": [],
         }
 
 

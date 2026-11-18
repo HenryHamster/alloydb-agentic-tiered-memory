@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from retain.models import ClaimType, Observation, Scope, Visibility, stable_id
-from shared.llm import is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
 
 
 class ObservationBuilder(Protocol):
@@ -30,7 +30,7 @@ class GeminiObservationBuilder:
         store,
         embedder,
         *,
-        model="gemini-3.5-flash",
+        model=DEFAULT_MODEL,
         min_facts=3,
         thinking_level="low",
     ):

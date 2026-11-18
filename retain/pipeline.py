@@ -120,21 +120,45 @@ class Retainer:
         Model or store errors propagate and leave the episode unretained, so a retry
         reprocesses it.
         """
-        if not messages:
-            raise ValueError("retain needs at least one message")
-        now = self.clock()
-        episode_id = episode_id or _episode_id(scope, messages)
-        documents = self._documents(scope, messages, episode_id, now)
-        document_ids = [document.document_id for document in documents]
-        validate_documents = getattr(self.store, "validate_documents", None)
-        if validate_documents is not None:
-            validate_documents(documents)
-        if self.store.retained_document_ids(document_ids) == set(document_ids):
-            return RetainResult(episode_id, None)
+        return self.retain_many([(scope, messages, episode_id)])[0]
 
-        chunks = chunk_documents(documents, self.config.max_chunk_chars)
+    def retain_many(self, episodes) -> list[RetainResult]:
+        """Retain several episodes, oldest first, with one shared extraction pass.
+
+        `episodes` holds (scope, messages, episode_id) tuples of one user. Short sessions loaded
+        in bulk then share extraction requests, so the fixed prompt is sent once per request
+        rather than once per session. Facts are still classified and written episode by
+        episode, in order, so a later session is compared with the earlier ones it follows.
+        """
+        now = self.clock()
+        pending, results = [], {}
+        for index, (scope, messages, episode_id) in enumerate(episodes):
+            if not messages:
+                raise ValueError("retain needs at least one message")
+            episode_id = episode_id or _episode_id(scope, messages)
+            documents = self._documents(scope, messages, episode_id, now)
+            document_ids = [document.document_id for document in documents]
+            validate_documents = getattr(self.store, "validate_documents", None)
+            if validate_documents is not None:
+                validate_documents(documents)
+            if self.store.retained_document_ids(document_ids) == set(document_ids):
+                results[index] = RetainResult(episode_id, None)
+                continue
+            chunks = chunk_documents(documents, self.config.max_chunk_chars)
+            pending.append((index, scope, episode_id, documents, chunks))
+        if len({scope.user_id for _, scope, *_ in pending}) > 1:
+            raise ValueError("retain_many takes episodes of one user")
+
+        all_chunks = [chunk for *_, chunks in pending for chunk in chunks]
+        extracted_all = self.extractor.extract(all_chunks) if all_chunks else []
+        for index, scope, episode_id, documents, chunks in pending:
+            ids = {chunk.chunk_id for chunk in chunks}
+            extracted = [fact for fact in extracted_all if fact.chunk_id in ids]
+            results[index] = self._commit(scope, episode_id, documents, chunks, extracted, now)
+        return [results[index] for index in range(len(episodes))]
+
+    def _commit(self, scope, episode_id, documents, chunks, extracted, now) -> RetainResult:
         documents_by_chunk = {chunk.chunk_id: chunk.document for chunk in chunks}
-        extracted = [f for f in self.extractor.extract(chunks) if f.chunk_id in documents_by_chunk]
         mentions = [mention for fact in extracted for mention in fact.entities]
         resolution = (
             self.entity_resolver.resolve(scope.user_id, mentions)
@@ -146,6 +170,7 @@ class Retainer:
             fact.key: _build_fact(fact, documents_by_chunk[fact.chunk_id], resolution, now)
             for fact in extracted
         }  # key -> (fact, entity rows, relation rows)
+        by_key = {fact.key: fact for fact in extracted}
         new_facts = list({fact.fact_id: fact for fact, _, _ in built.values()}.values())
         if new_facts:
             vectors = self.embedder([fact.text for fact in new_facts])
@@ -153,8 +178,11 @@ class Retainer:
                 raise ValueError("Embedder must return one vector per fact")
             new_facts = [replace(f, embedding=tuple(v)) for f, v in zip(new_facts, vectors)]
 
+        # The extractor marks facts that change something said before; only those may
+        # supersede, so only those can need the classifier's model call.
+        updating = frozenset(f.fact_id for k, (f, _, _) in built.items() if by_key[k].updates)
         kept, reinforced, supersessions, redirect = _apply_decisions(
-            new_facts, self._decide(new_facts)
+            new_facts, self._decide(new_facts, updating)
         )
         stored_id = {key: redirect.get(f.fact_id, f.fact_id) for key, (f, _, _) in built.items()}
         kept_ids = {fact.fact_id for fact in kept}
@@ -276,17 +304,20 @@ class Retainer:
             return True
         return message.speaker == Speaker.ASSISTANT and self.config.assistant_is_human
 
-    def _decide(self, facts: list[MemoryFact]) -> list[UpdateDecision]:
+    def _decide(
+        self, facts: list[MemoryFact], updating: frozenset[str] = frozenset()
+    ) -> list[UpdateDecision]:
         """Classify new facts, then enforce the trust boundary on the model's targets.
 
         One decision per new fact. A missing, repeated or invalid decision becomes ADD
         (see _target_problem), so one bad model answer never loses the rest of the turn.
+        `updating` names the facts the extractor marked as changing an earlier statement.
         """
         if self.classifier is None or not facts:
             return [UpdateDecision(fact.fact_id) for fact in facts]
         by_id = {fact.fact_id: fact for fact in facts}
         proposed = {}
-        for decision in self.classifier.classify(facts):
+        for decision in self.classifier.classify(facts, updating=updating):
             if decision.fact_id not in by_id or decision.fact_id in proposed:
                 logger.warning("Ignoring classifier decision for unknown or repeated fact")
                 continue
@@ -470,13 +501,11 @@ def build_retainer(
     embedder = GeminiEmbedder(embedding_client or genai_client)
     return Retainer(
         store=store,
-        # Low thinking with the lean schema; tool results are recorded by code, since low thinking
-        # tends to skip them. About 87% cheaper than medium with the same key facts (Mem2Act A/B).
-        # Round links join each request, tool call, tool result and answer exactly.
+        # Low thinking; tool results are recorded by code, since low thinking tends to skip
+        # them. Round links join each request, tool call, tool result and answer exactly.
         extractor=GeminiFactExtractor(
             genai_client,
             thinking_level="low",
-            lean=True,
             tool_result_facts=True,
             link_rounds=True,
         ),

@@ -25,6 +25,7 @@ from devtools.inputs import (
     validate_history,
     validate_questions,
 )
+from shared.llm import DEFAULT_MODEL
 
 
 def serial(value):
@@ -105,36 +106,47 @@ def ingest(system, history, logical, clock, usage, output):
     )
     mapping = []
     ordinal = 0
+    total = sum(len(s["messages"]) for s in history["sessions"])
+    # Loaded sessions are retained together (record_sessions): extraction requests may cover
+    # several sessions. Sessions are grouped while they agree on whether dates are known.
+    groups = []
     for session in history["sessions"]:
         scope = Scope(logical, logical, f"{logical}:{session['id']}")
+        rounds = []
+        known = all(m.get("timestamp") for m in session["messages"])
         for index, (user, events, indices) in enumerate(exchanges(session["messages"])):
             selected = [session["messages"][i] for i in indices]
-            known = all(m.get("timestamp") for m in selected)
-            extractor.source_dates_known = known
             at = (
                 timestamp(selected[0]["timestamp"])
                 if known
-                else clock
-                - timedelta(seconds=sum(len(s["messages"]) for s in history["sessions"]) - ordinal)
+                else clock - timedelta(seconds=total - ordinal)
             )
-            usage.context = {"stage": "retain", "session": session["id"], "round": index}
             # An optional "name" on a user message names that person. Assistant event names
             # travel inside the serialized events and count only with "assistant_is_human".
             first = session["messages"][indices[0]] if indices else {}
             name = first.get("name") if first.get("role") == "user" else None
-            receipt = system.record_turn(
-                scope,
-                user,
-                events,
-                timestamp=at,
-                episode_id=f"{logical}:{session['id']}:{index}",
-                user_name=name if isinstance(name, str) and name.strip() else None,
+            rounds.append(
+                (user, events, at, name if isinstance(name, str) and name.strip() else None)
             )
-            save_json(output / "retention" / f"{ordinal:05d}.json", serial(receipt))
             mapping.append({"session": session["id"], "round": index, "messages": indices})
             ordinal += 1
-        usage.context = {"stage": "reflect", "session": session["id"]}
-        save_json(output / f"reflect-{session['id']}.json", serial(system.finish_session(scope)))
+        entry = (session, scope, rounds)
+        if groups and groups[-1][0] == known:
+            groups[-1][1].append(entry)
+        else:
+            groups.append((known, [entry]))
+    for known, entries in groups:
+        extractor.source_dates_known = known
+        usage.context = {"stage": "retain", "sessions": [e[0]["id"] for e in entries]}
+        receipts = system.record_sessions(
+            [(scope, rounds, f"{logical}:{session['id']}") for session, scope, rounds in entries]
+        )
+        for (session, scope, _), receipt in zip(entries, receipts, strict=True):
+            save_json(output / "retention" / f"{session['id']}.json", serial(receipt))
+            usage.context = {"stage": "reflect", "session": session["id"]}
+            save_json(
+                output / f"reflect-{session['id']}.json", serial(system.finish_session(scope))
+            )
     save_json(output / "message-mapping.json", mapping)
 
 
@@ -150,6 +162,7 @@ class CloudBackend:
         self.valkey = PrefixedValkey(get_valkey_client(), run_id)
         self.valkey.client.ping()
         self.cache, self.models, self.source, self.clock = cache, models, source, clock
+        self.model = config.get("model", DEFAULT_MODEL)
 
     def schema(self):
         from devtools.state import RunSchema
@@ -161,7 +174,11 @@ class CloudBackend:
 
         client = SimpleNamespace(models=self.models)
         system = build_memory_system(
-            lambda: CachedConnection(schema.connection(), self.cache), self.valkey, client, client
+            lambda: CachedConnection(schema.connection(), self.cache),
+            self.valkey,
+            client,
+            client,
+            model=self.model,
         )
         for component in (system.retainer, system.reflector, system.recaller):
             component.clock = lambda: self.clock
@@ -182,7 +199,7 @@ def run_job(
         raise ValueError("Scoring labels must not be sent to the worker")
     save_json(output / "job.json", job)
     usage = Usage(output)
-    config = job["config"]
+    config = {**job["config"], "model": job.get("model", DEFAULT_MODEL)}
     cache = RequestCache(
         Path(cache_folder) / "requests",
         usage,

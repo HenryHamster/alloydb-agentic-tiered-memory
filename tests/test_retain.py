@@ -104,7 +104,7 @@ class ScriptedClassifier:
     def __init__(self, decide):
         self.decide = decide
 
-    def classify(self, facts):
+    def classify(self, facts, updating=frozenset()):
         return [self.decide(fact) for fact in facts]
 
 
