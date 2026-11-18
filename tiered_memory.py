@@ -107,15 +107,16 @@ class TieredMemory:
             assistant_name=assistant_name,
         )
 
-    def record_session(self, scope, rounds, *, episode_id):
+    def record_session(self, scope, rounds, *, episode_id, assistant_name=None):
         """Retain many rounds of one session in a single pass; see record_sessions."""
-        return self.record_sessions([(scope, rounds, episode_id)])[0]
+        return self.record_sessions([(scope, rounds, episode_id)], assistant_name=assistant_name)[0]
 
-    def record_sessions(self, sessions):
-        """Retain whole sessions loaded in bulk, oldest first, sharing extraction requests.
+    def record_sessions(self, sessions, *, assistant_name=None):
+        """Retain whole sessions loaded in bulk, oldest first, one episode at a time.
 
         `sessions` holds (scope, rounds, episode_id) with rounds as (user_text,
-        assistant_text, timestamp, user_name) tuples. Long-term memory receives every round.
+        assistant_text, timestamp, user_name) tuples; `assistant_name` names the assistant
+        in every round. Long-term memory receives every round.
         The session window gets only each session's last `window_size` rounds, which is what
         it would hold after compaction; the older rounds are not summarized again, since they
         are already in long-term memory."""
@@ -136,7 +137,7 @@ class TieredMemory:
                     )
                 messages += [
                     Message(Speaker.USER, user_text, at, user_name),
-                    Message(Speaker.ASSISTANT, assistant_text, at),
+                    Message(Speaker.ASSISTANT, assistant_text, at, assistant_name),
                 ]
             episodes.append((scope, messages, episode_id))
         return self.retainer.retain_many(episodes)

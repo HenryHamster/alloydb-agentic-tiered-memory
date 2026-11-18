@@ -442,6 +442,20 @@ def test_concept_and_technology_share_an_exact_name_but_other_types_stay_apart()
 def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch):
     monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
     old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
+    new = fact("The system uses two databases.", fact_id="new", category=Category.DECISION)
+    client = Mock()
+    client.models.generate_content.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+    store = ClassifierStore(similar=[(old, 0.85)])
+
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
+
+    assert decision.action == UpdateAction.ADD
+    assert client.models.generate_content.call_count == 4  # retried before giving up
+
+
+def test_a_failed_classifier_call_still_merges_same_day_copies(monkeypatch):
+    monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
+    old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
     new = fact("The system uses one database.", fact_id="new", category=Category.DECISION)
     client = Mock()
     client.models.generate_content.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
@@ -449,8 +463,8 @@ def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch
 
     (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
 
-    assert decision.action == UpdateAction.ADD
-    assert client.models.generate_content.call_count == 4  # retried before giving up
+    assert decision.action == UpdateAction.DUPLICATE
+    assert decision.target_ids == ("old",)
 
 
 def test_a_fact_that_updates_nothing_is_decided_without_the_model():

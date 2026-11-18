@@ -309,16 +309,19 @@ class GeminiSupersedeClassifier:
 
         scored = {fact.fact_id: self._candidates(fact) for fact in facts}
         candidate_map = {key: [c for _, c in rows] for key, rows in scored.items()}
-        decisions = {}
+        # Same-day near-copies decide every fact the model is not asked about, and the asked
+        # ones too when the model call fails.
+        local = {}
         for fact in facts:
             rows = scored[fact.fact_id]
-            if fact.fact_id in updating or not rows:
+            if not rows:
                 continue
             score, closest = rows[0]
             if score >= SAME_SIMILARITY and _day(closest) == _day(fact):
-                decisions[fact.fact_id] = UpdateDecision(
+                local[fact.fact_id] = UpdateDecision(
                     fact.fact_id, UpdateAction.DUPLICATE, (closest.fact_id,)
                 )
+        decisions = {key: value for key, value in local.items() if key not in updating}
         asked = [fact for fact in facts if fact.fact_id in updating and candidate_map[fact.fact_id]]
         if not asked:
             return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
@@ -359,7 +362,7 @@ class GeminiSupersedeClassifier:
             # are kept as new rather than losing the whole round.
             logger.warning("Supersede classifier failed; keeping %d facts as new: %s",
                            len(asked), str(error)[:200])  # fmt: skip
-            return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
+            return [local.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
         rows = _decision_rows(response)
         new_by_id = {fact.fact_id: fact for fact in asked}
         for row in rows:
