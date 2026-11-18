@@ -16,6 +16,7 @@ from reflect import build_reflector
 from reflect.models import ReflectTrigger
 from retain import RetainConfig, Scope, build_retainer
 from retain.embeddings import GeminiEmbedder
+from retain.models import Message, Speaker
 from shared.llm import GeminiGenerator, GeminiStructuredGenerator, generate_with_retry
 from turn_context import TurnContext, build_turn_context
 from valkey_buffer import SessionBuffer
@@ -100,6 +101,25 @@ class TieredMemory:
             user_name=user_name,
             assistant_name=assistant_name,
         )
+
+    def record_session(self, scope, rounds, *, episode_id):
+        """Retain many rounds of one session in a single pass, for history loaded in bulk.
+
+        `rounds` holds (user_text, assistant_text, timestamp, user_name) tuples. Each round
+        still enters the session buffer; extraction sees the rounds together, so one request
+        covers what record_turn would send as one request per round."""
+        if not scope.session_id:
+            raise ValueError("record_session requires a session_id")
+        messages = []
+        for index, (user_text, assistant_text, at, user_name) in enumerate(rounds):
+            self.buffer.append(
+                scope.session_id, user_text, assistant_text, at, round_id=f"{episode_id}:{index}"
+            )
+            messages += [
+                Message(Speaker.USER, user_text, at, user_name),
+                Message(Speaker.ASSISTANT, assistant_text, at),
+            ]
+        return self.retainer.retain(scope, messages, episode_id=episode_id)
 
     def context(
         self,

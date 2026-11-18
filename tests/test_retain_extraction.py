@@ -38,10 +38,10 @@ def chunks(text=SOURCE, *, timestamp=STAMP, max_chars=700):
     return chunk_documents([document], max_chars)
 
 
-def fact_row(chunk, **overrides):
+def fact_row(chunk=0, **overrides):
+    """A model row citing the request's chunk at index `chunk`."""
     row = {
-        "key": 7,
-        "chunk_id": chunk.chunk_id,
+        "chunk": chunk,
         "text": "Python only for embedded tasks.",
         "evidence": "I prefer Python only for embedded tasks.",
         "fact_type": "world",
@@ -50,17 +50,10 @@ def fact_row(chunk, **overrides):
         "visibility": "project",
         "occurred_at": None,
         "valid_from": None,
-        "details": {
-            "who": "user",
-            "what": "Python preference",
-            "when": None,
-            "where": None,
-            "why": None,
-        },
+        "when": None,
         "entities": [{"name": "Python", "entity_type": "technology", "role": "object"}],
         "relations": [],
         "caused_by": [],
-        "evidenced_by": [],
     }
     row.update(overrides)
     return row
@@ -80,25 +73,17 @@ def extractor_for(rows):
 
 def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date():
     selected = chunks()
-    preference = fact_row(selected[0])
+    preference = fact_row()
     event = fact_row(
-        selected[0],
-        key=8,
         text="The project started yesterday.",
         evidence="The project starts yesterday.",
         fact_type="experience",
         category="event",
         claim_type="hypothetical",
         visibility="session",
-        details={
-            "who": "project",
-            "what": "start",
-            "when": "yesterday",
-            "where": None,
-            "why": None,
-        },
+        when="yesterday",
         entities=[],
-        caused_by=[7],
+        caused_by=[0],
     )
     extractor, client = extractor_for([preference, event])
 
@@ -108,7 +93,6 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     assert facts[0].key == 0 and facts[1].key == 1
     assert facts[0].chunk_id == selected[0].chunk_id
     assert facts[0].evidence == preference["evidence"]
-    assert facts[0].details["what"] == "Python preference"
     assert facts[0].entities[0].entity_type == EntityType.TECHNOLOGY
     assert facts[0].entities[0].role == EntityRole.OBJECT
     assert facts[0].visibility == Visibility.PROJECT
@@ -120,7 +104,7 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     assert call["model"] == "gemini-3.5-flash"
     assert call["config"]["response_mime_type"] == "application/json"
     assert SOURCE in call["contents"]
-    assert selected[0].chunk_id in call["contents"]
+    assert '"chunk": 0' in call["contents"]
     assert "document-a" not in call["contents"]
 
 
@@ -128,13 +112,13 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     "source,evidence",
     [
         (SOURCE, "A fabricated statement."),
-        ("repeated quote; repeated quote", "repeated quote"),
+        ("Python is fine.", "Python is fine for embedded tasks."),
     ],
-    ids=["not-in-source", "ambiguous"],
+    ids=["not-in-source", "longer-than-source"],
 )
-def test_extractor_discards_unsupported_or_ambiguous_evidence(source, evidence):
+def test_extractor_discards_evidence_the_chunk_does_not_contain(source, evidence):
     selected = chunks(source)
-    row = fact_row(selected[0], evidence=evidence)
+    row = fact_row(evidence=evidence)
     extractor, _ = extractor_for([row])
 
     assert extractor.extract(selected) == []
@@ -147,22 +131,22 @@ def test_extractor_rejects_malformed_provider_responses(response):
         GeminiFactExtractor(gemini_returning(response)).extract(chunks())
 
 
-def test_extractor_drops_non_object_and_repeated_key_rows():
+def test_extractor_drops_non_object_rows_and_keeps_causal_indexes():
     selected = chunks()
-    first = fact_row(selected[0], key=4)
-    repeated = fact_row(selected[0], key=4, text="A different claim.")
-    extractor, _ = extractor_for([None, first, repeated])
+    first = fact_row()
+    second = fact_row(text="A different claim.", caused_by=[1])
+    extractor, _ = extractor_for([None, first, second])
 
-    (fact,) = extractor.extract(selected)
+    one, two = extractor.extract(selected)
 
-    assert fact.text == first["text"]
+    assert one.text == first["text"] and two.caused_by == (one.key,)
 
 
 def test_extractor_discards_rows_with_unknown_chunks_or_invalid_fields():
     selected = chunks()
-    invalid_chunk = fact_row(selected[0], chunk_id="unknown")
-    invalid_details = fact_row(selected[0], key=8, details={"who": 4})
-    valid = fact_row(selected[0], key=9)
+    invalid_chunk = fact_row(5)
+    invalid_details = fact_row(when=4)
+    valid = fact_row()
     extractor, _ = extractor_for([invalid_chunk, invalid_details, valid])
 
     facts = extractor.extract(selected)
@@ -174,17 +158,14 @@ def test_extractor_discards_rows_with_unknown_chunks_or_invalid_fields():
 def test_relative_dates_come_from_the_quote_and_never_drop_the_fact():
     selected = chunks()
     unsupported = fact_row(
-        selected[0],
-        details={"who": None, "what": None, "when": "tomorrow", "where": None, "why": None},
+        when="tomorrow",
     )
     conflict = fact_row(
-        selected[0],
-        key=8,
         text="The project started yesterday.",
         evidence="The project starts yesterday.",
         occurred_at="2026-10-26T00:00:00Z",
         category="event",
-        details={"who": None, "what": None, "when": "yesterday", "where": None, "why": None},
+        when="yesterday",
     )
     extractor, _ = extractor_for([unsupported, conflict])
 
@@ -205,7 +186,7 @@ def test_partial_dates_preserve_facts_without_inventing_exact_dates(
 ):
     source = f"Jakarta has 4,237 schools according to {partial} data."
     selected = chunks(source)
-    row = fact_row(selected[0], text=source, evidence=source, entities=[], **{field: partial})
+    row = fact_row(text=source, evidence=source, entities=[], **{field: partial})
     extractor, _ = extractor_for([row])
     extractor.source_dates_known = source_dates_known
 
@@ -218,8 +199,8 @@ def test_partial_dates_preserve_facts_without_inventing_exact_dates(
 
 def test_partial_dates_preserve_existing_when_and_both_date_fields():
     selected = chunks()
-    row = fact_row(selected[0], occurred_at="2023", valid_from="2024-03")
-    row["details"]["when"] = "during the annual survey"
+    row = fact_row(occurred_at="2023", valid_from="2024-03")
+    row["when"] = "during the annual survey"
     extractor, _ = extractor_for([row])
 
     (fact,) = extractor.extract(selected)
@@ -232,8 +213,8 @@ def test_partial_dates_preserve_existing_when_and_both_date_fields():
 
 def test_partial_date_already_in_when_is_not_duplicated():
     selected = chunks()
-    row = fact_row(selected[0], occurred_at=" 2023 ")
-    row["details"]["when"] = "2023"
+    row = fact_row(occurred_at=" 2023 ")
+    row["when"] = "2023"
     extractor, _ = extractor_for([row])
 
     assert extractor.extract(selected)[0].details["when"] == "2023"
@@ -243,7 +224,7 @@ def test_partial_date_already_in_when_is_not_duplicated():
 @pytest.mark.parametrize("value", ["0000", "2024-00", "2024-13", "2023-02-29", "not a date"])
 def test_invalid_dates_still_reject_the_row(field, value):
     selected = chunks()
-    extractor, _ = extractor_for([fact_row(selected[0], **{field: value})])
+    extractor, _ = extractor_for([fact_row(**{field: value})])
 
     assert extractor.extract(selected) == []
 
@@ -258,7 +239,7 @@ def test_invalid_dates_still_reject_the_row(field, value):
 def test_complete_dates_keep_their_exact_timestamp(value, expected):
     # The source states the date, so it is not mistaken for one the model made up.
     selected = chunks(SOURCE + " That was on 29 February 2024.")
-    extractor, _ = extractor_for([fact_row(selected[0], occurred_at=value)])
+    extractor, _ = extractor_for([fact_row(occurred_at=value)])
 
     (fact,) = extractor.extract(selected)
 
@@ -271,12 +252,11 @@ def test_complete_dates_keep_their_exact_timestamp(value, expected):
 def test_relative_dates_override_any_model_partial_date(field, partial):
     selected = chunks()
     row = fact_row(
-        selected[0],
         evidence="The project starts yesterday.",
         category="event" if field == "occurred_at" else "preference",
         **{field: partial},
     )
-    row["details"]["when"] = "yesterday"
+    row["when"] = "yesterday"
     extractor, _ = extractor_for([row])
 
     facts = extractor.extract(selected)
@@ -293,11 +273,9 @@ def test_extracted_fact_keeps_pipeline_document_scope_and_provenance(partial):
     message = Message(Speaker.USER, SOURCE, STAMP)
 
     def generate(*, contents, **kwargs):
-        # Cite whichever chunk the pipeline sent, so its real chunk IDs are exercised.
-        chunk_id = json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"][0]["chunk_id"]
-        row = fact_row(
-            chunks()[0], chunk_id=chunk_id, entities=[], occurred_at=partial, valid_from=partial
-        )
+        # Cite the first chunk the pipeline sent, so its real chunks are exercised.
+        assert json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"][0]["chunk"] == 0
+        row = fact_row(entities=[], occurred_at=partial, valid_from=partial)
         return SimpleNamespace(text=json.dumps([row]))
 
     client = Mock()
@@ -341,7 +319,7 @@ def test_extractor_retries_retryable_gemini_failure(monkeypatch):
     client = Mock()
     client.models.generate_content.side_effect = [
         RuntimeError("429 RESOURCE_EXHAUSTED"),
-        SimpleNamespace(text=json.dumps([fact_row(selected[0])])),
+        SimpleNamespace(text=json.dumps([fact_row()])),
     ]
     sleep = Mock()
     monkeypatch.setattr("retain.extraction.time.sleep", sleep)
@@ -455,7 +433,7 @@ def test_user_message_is_kept_verbatim_only_when_extraction_recorded_nothing():
     assert fact.text == "The user said: " + request
     assert fact.evidence == request
 
-    row = fact_row(selected[0], text="The user asked about psql-001.", evidence=request)
+    row = fact_row(text="The user asked about psql-001.", evidence=request)
     covered = GeminiFactExtractor(gemini_returning(json.dumps([row]))).extract(selected)
     assert [f.text for f in covered] == ["The user asked about psql-001."]
 
@@ -470,13 +448,13 @@ def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
         {"name": "Assistant", "entity_type": "person", "role": "mentioned"},
         {"name": "Python", "entity_type": "technology", "role": "object"},
     ]
-    extractor, _ = extractor_for([fact_row(chunks()[0], entities=people)])
+    extractor, _ = extractor_for([fact_row(entities=people)])
     (fact,) = extractor.extract(chunks())
     assert [e.name for e in fact.entities] == ["Python"]
 
 
 def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
-    extractor, client = extractor_for([fact_row(chunks()[0])])
+    extractor, client = extractor_for([fact_row()])
     extractor.extract(chunks())
     config = client.models.generate_content.call_args.kwargs["config"]
     assert config["thinking_config"] == {"thinking_level": "medium"}
@@ -486,19 +464,12 @@ def test_retain_calls_request_a_thinking_level_and_none_keeps_the_default():
     assert "thinking_config" not in client.models.generate_content.call_args.kwargs["config"]
 
 
-def lean_row(chunk, **overrides):
-    row = fact_row(chunk)
-    row["when"] = row.pop("details")["when"]
-    row.update(overrides)
-    return row
-
-
-def test_lean_mode_asks_for_less_and_finds_requoted_or_repeated_evidence():
+def test_extraction_asks_for_one_slim_row_and_finds_requoted_or_repeated_evidence():
     selected = chunks("I prefer Python   only for embedded tasks. More embedded tasks soon.")
-    respaced = lean_row(selected[0], when="2026-03")
-    repeated = lean_row(selected[0], key=8, evidence="embedded tasks")
+    respaced = fact_row(when="2026-03")
+    repeated = fact_row(evidence="embedded tasks")
     client = gemini_returning(json.dumps([respaced, repeated]))
-    extractor = GeminiFactExtractor(client, lean=True, keep_unrecorded_user_messages=False)
+    extractor = GeminiFactExtractor(client, keep_unrecorded_user_messages=False)
 
     first, second = extractor.extract(selected)
 
@@ -509,11 +480,7 @@ def test_lean_mode_asks_for_less_and_finds_requoted_or_repeated_evidence():
     config = client.models.generate_content.call_args.kwargs["config"]
     properties = config["response_json_schema"]["items"]["properties"]
     assert "details" not in properties and "when" in properties
-    # The default keeps the strict single-occurrence rule.
-    strict, _ = extractor_for(
-        [fact_row(selected[0]), fact_row(selected[0], key=8, **{"evidence": "embedded tasks"})]
-    )
-    assert strict.extract(selected) == []
+    assert "chunk_id" not in properties and "key" not in properties
 
 
 def test_tool_results_become_exact_facts_only_when_enabled():
@@ -535,18 +502,18 @@ def test_tool_results_become_exact_facts_only_when_enabled():
     assert GeminiFactExtractor(gemini_returning("[]")).extract(selected) == []
 
 
-def test_lean_mode_matches_quotes_of_serialized_multiline_replies():
+def test_evidence_matches_quotes_of_serialized_multiline_replies():
     reply = 'Here\'s the summary for store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
     selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
     quoted = 'store ID 157:\n\n- Last week: $54,841.75 total "net" sales'
     respaced = "store ID 157: - Last week: $54,841.75"
     rows = [
-        lean_row(selected[0], evidence=quoted),
-        lean_row(selected[0], key=8, evidence=respaced),
-        lean_row(selected[0], key=9, evidence="Last week: $99"),
+        fact_row(evidence=quoted),
+        fact_row(evidence=respaced),
+        fact_row(evidence="Last week: $99"),
     ]
     extractor = GeminiFactExtractor(
-        gemini_returning(json.dumps(rows)), lean=True, keep_unrecorded_user_messages=False
+        gemini_returning(json.dumps(rows)), keep_unrecorded_user_messages=False
     )
 
     first, second = extractor.extract(selected)
@@ -556,17 +523,15 @@ def test_lean_mode_matches_quotes_of_serialized_multiline_replies():
     assert all(fact.evidence in selected[0].text for fact in (first, second))
 
 
-def test_strict_mode_accepts_a_unique_quote_of_a_serialized_reply():
+def test_a_quote_of_a_serialized_reply_keeps_the_serialized_wording():
     reply = "Summary:\n- Last week: $54,841.75\n- Previous week: $48,001.50"
     selected = assistant_chunks(json.dumps([{"role": "assistant", "content": reply}]))
-    extractor, _ = extractor_for([fact_row(selected[0], evidence="- Last week: $54,841.75\n")])
+    extractor, _ = extractor_for([fact_row(evidence="- Last week: $54,841.75\n")])
 
     (fact,) = extractor.extract(selected)
 
     assert fact.evidence == r"- Last week: $54,841.75\n"
     assert fact.evidence in selected[0].text
-    repeated, _ = extractor_for([fact_row(selected[0], evidence="week: $")])
-    assert repeated.extract(selected) == []
 
 
 def round_chunks(user_text, events):
@@ -600,15 +565,12 @@ def test_round_links_join_request_tool_call_result_and_answer():
     user, assistant = selected
     rows = [
         fact_row(
-            user,
-            key=0,
             text="The user asked to check server psql-001.",
             evidence="Check the status of server psql-001.",
             category="goal",
         ),
         fact_row(
-            assistant,
-            key=1,
+            1,
             text="Server psql-001 is running.",
             evidence="Server psql-001 is running.",
             fact_type="experience",
@@ -639,15 +601,12 @@ def test_round_links_tie_an_answer_without_tools_to_the_request():
     )
     rows = [
         fact_row(
-            selected[0],
-            key=0,
             text="The user asked how to reduce AI job losses.",
             evidence="How can AI job losses be reduced?",
             category="goal",
         ),
         fact_row(
-            selected[1],
-            key=1,
+            1,
             text="Retraining programs reduce AI job losses.",
             evidence="Retraining programs reduce AI job losses.",
             category="attribute",

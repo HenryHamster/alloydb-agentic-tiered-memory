@@ -59,21 +59,18 @@ class FixtureModels:
         self.requests.append(request)
         prompt = request["contents"]
         schema = request.get("config", {}).get("response_json_schema", {})
-        if prompt.startswith("Extract useful"):
+        if prompt.startswith("Extract memories"):
             payload = json.loads(prompt.split("SOURCE JSON:\n", 1)[1])
             chunk = payload["chunks"][0]
             rows = []
-            for key, text in enumerate(
-                (
-                    "The club picked Inception.",
-                    "Inception's movie ID is tt1375666.",
-                    "The club will watch Inception on Saturday.",
-                )
+            for text in (
+                "The club picked Inception.",
+                "Inception's movie ID is tt1375666.",
+                "The club will watch Inception on Saturday.",
             ):
                 rows.append(
                     {
-                        "key": key,
-                        "chunk_id": chunk["chunk_id"],
+                        "chunk": chunk["chunk"],
                         "text": text,
                         "evidence": chunk["text"],
                         "fact_type": "world",
@@ -82,13 +79,12 @@ class FixtureModels:
                         "visibility": "session",
                         "occurred_at": None,
                         "valid_from": None,
-                        "details": {k: None for k in ("who", "what", "when", "where", "why")},
+                        "when": None,
                         "entities": [
                             {"name": "Inception", "entity_type": "other", "role": "subject"}
                         ],
                         "relations": [],
                         "caused_by": [],
-                        "evidenced_by": [],
                     }
                 )
             text = json.dumps(rows)
@@ -258,7 +254,7 @@ def test_history_flag_makes_the_assistant_a_person_only_when_set(tmp_path):
             self.retainer = SimpleNamespace(extractor=Mock(), config=RetainConfig())
             self.seen = []
 
-        def record_turn(self, *args, **kwargs):
+        def record_session(self, *args, **kwargs):
             self.seen.append(self.retainer.config.assistant_is_human)
             return {}
 
@@ -489,7 +485,7 @@ def test_changed_retain_source_reexecutes_pipeline_but_reuses_identical_provider
     assert second["status"] == "completed", second
     assert not second["prepared_cache_hit"]
     assert not read_json(tmp_path / "changed/usage.json")["calls"]
-    assert (tmp_path / "changed/retention/00000.json").exists()
+    assert (tmp_path / "changed/retention/planning.json").exists()
     assert len(fixture.requests) == count
 
 

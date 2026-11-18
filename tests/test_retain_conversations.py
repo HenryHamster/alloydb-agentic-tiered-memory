@@ -11,7 +11,7 @@ from retain.entities import normalize_name
 from retain.extraction import (
     GeminiFactExtractor,
     _is_chit_chat,
-    _preceding_contexts,
+    _pack_chunks,
     _relative_date,
     _resolve_relative_dates,
     _tool_call_facts,
@@ -59,9 +59,9 @@ def document(text, *, speaker=Speaker.ASSISTANT, name=None, position=0, at=MONDA
 
 
 def model_row(chunk, text, evidence, **overrides):
+    """A model row citing `chunk`, sent alone as chunk 0 of its request."""
     row = {
-        "key": 0,
-        "chunk_id": chunk.chunk_id,
+        "chunk": 0,
         "text": text,
         "evidence": evidence,
         "fact_type": "experience",
@@ -70,11 +70,10 @@ def model_row(chunk, text, evidence, **overrides):
         "visibility": "session",
         "occurred_at": None,
         "valid_from": None,
-        "details": {"who": None, "what": None, "when": None, "where": None, "why": None},
+        "when": None,
         "entities": [],
         "relations": [],
         "caused_by": [],
-        "evidenced_by": [],
     }
     row.update(overrides)
     return row
@@ -570,9 +569,9 @@ def test_the_previous_turn_is_context_for_the_next_round_and_a_retry():
     assert [d.context for d in docs] == [photo, None]
     assert [d.context for d in retry] == [photo, None]
     chunks = chunk_documents(docs)
-    contexts = _preceding_contexts(chunks, 600)
-    assert contexts[chunks[1].chunk_id].startswith(photo)
-    assert "trail" in contexts[chunks[0].chunk_id]
+    # Both chunks go in one request; the earlier turn is its context.
+    ((request, context),) = _pack_chunks(chunks, 600, 16000)
+    assert request == chunks and context == photo
 
 
 def test_the_text_may_word_the_phrase_differently_from_the_quote():
@@ -591,15 +590,14 @@ def test_a_named_speakers_fact_that_says_the_assistant_gets_their_name():
                    name="Melanie")  # fmt: skip
     (chunk,) = chunk_documents([doc])
     rows = [
-        {"key": 0, "chunk_id": chunk.chunk_id, "text": text, "evidence": "a stained glass window",
+        {"chunk": 0, "text": text, "evidence": "a stained glass window",
          "fact_type": "experience", "category": "event", "claim_type": "asserted",
          "visibility": "session", "occurred_at": None, "valid_from": None, "when": None,
-         "entities": [], "relations": [], "caused_by": [], "evidenced_by": []}
+         "entities": [], "relations": [], "caused_by": []}
         for text in ("The assistant shared a photo of a stained glass window.",
                      "The assistant's photo shows a stained glass window.")
     ]  # fmt: skip
-    rows[1]["key"] = 1
-    extractor, _ = extractor_returning(rows, lean=True)
+    extractor, _ = extractor_returning(rows)
 
     facts = extractor.extract([chunk])
 

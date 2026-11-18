@@ -174,8 +174,8 @@ def test_reflect_enabled_sql_binds_tiers_and_includes_macros():
 @pytest.mark.parametrize("known", [True, False])
 def test_relative_day_counts_and_unknown_source_dates(known):
     chunk = chunks("The project starts in 3 days.")[0]
-    row = fact_row(chunk, text=chunk.text, evidence=chunk.text, category="event", entities=[])
-    row["details"]["when"] = "in 3 days"
+    row = fact_row(text=chunk.text, evidence=chunk.text, category="event", entities=[])
+    row["when"] = "in 3 days"
     client = gemini_returning(json.dumps([row]))
     result = GeminiFactExtractor(client, source_dates_known=known).extract([chunk])
     assert len(result) == 1
