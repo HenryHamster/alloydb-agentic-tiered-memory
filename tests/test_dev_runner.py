@@ -83,7 +83,7 @@ class FixtureModels:
                         "entities": [
                             {"name": "Inception", "entity_type": "other", "role": "subject"}
                         ],
-                        "relations": [],
+                        "updates": False,
                         "caused_by": [],
                     }
                 )
@@ -254,9 +254,9 @@ def test_history_flag_makes_the_assistant_a_person_only_when_set(tmp_path):
             self.retainer = SimpleNamespace(extractor=Mock(), config=RetainConfig())
             self.seen = []
 
-        def record_session(self, *args, **kwargs):
+        def record_sessions(self, sessions):
             self.seen.append(self.retainer.config.assistant_is_human)
-            return {}
+            return [{} for _ in sessions]
 
         def finish_session(self, scope):
             return {}

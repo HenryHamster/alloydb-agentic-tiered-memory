@@ -106,12 +106,13 @@ def ingest(system, history, logical, clock, usage, output):
     mapping = []
     ordinal = 0
     total = sum(len(s["messages"]) for s in history["sessions"])
+    # Loaded sessions are retained together (record_sessions): extraction requests may cover
+    # several sessions. Sessions are grouped while they agree on whether dates are known.
+    groups = []
     for session in history["sessions"]:
         scope = Scope(logical, logical, f"{logical}:{session['id']}")
         rounds = []
-        # A loaded session is retained in one pass (record_session), not one call per round.
         known = all(m.get("timestamp") for m in session["messages"])
-        extractor.source_dates_known = known
         for index, (user, events, indices) in enumerate(exchanges(session["messages"])):
             selected = [session["messages"][i] for i in indices]
             at = (
@@ -128,11 +129,23 @@ def ingest(system, history, logical, clock, usage, output):
             )
             mapping.append({"session": session["id"], "round": index, "messages": indices})
             ordinal += 1
-        usage.context = {"stage": "retain", "session": session["id"]}
-        receipt = system.record_session(scope, rounds, episode_id=f"{logical}:{session['id']}")
-        save_json(output / "retention" / f"{session['id']}.json", serial(receipt))
-        usage.context = {"stage": "reflect", "session": session["id"]}
-        save_json(output / f"reflect-{session['id']}.json", serial(system.finish_session(scope)))
+        entry = (session, scope, rounds)
+        if groups and groups[-1][0] == known:
+            groups[-1][1].append(entry)
+        else:
+            groups.append((known, [entry]))
+    for known, entries in groups:
+        extractor.source_dates_known = known
+        usage.context = {"stage": "retain", "sessions": [e[0]["id"] for e in entries]}
+        receipts = system.record_sessions(
+            [(scope, rounds, f"{logical}:{session['id']}") for session, scope, rounds in entries]
+        )
+        for (session, scope, _), receipt in zip(entries, receipts, strict=True):
+            save_json(output / "retention" / f"{session['id']}.json", serial(receipt))
+            usage.context = {"stage": "reflect", "session": session["id"]}
+            save_json(
+                output / f"reflect-{session['id']}.json", serial(system.finish_session(scope))
+            )
     save_json(output / "message-mapping.json", mapping)
 
 

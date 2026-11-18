@@ -150,7 +150,7 @@ class ScriptedGemini:
             "entities": (
                 [{"name": "Max", "entity_type": "other", "role": "subject"}] if about_max else []
             ),
-            "relations": [],
+            "updates": False,
             "caused_by": [],
         }
 

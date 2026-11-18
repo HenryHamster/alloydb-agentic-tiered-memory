@@ -52,7 +52,7 @@ def fact_row(chunk=0, **overrides):
         "valid_from": None,
         "when": None,
         "entities": [{"name": "Python", "entity_type": "technology", "role": "object"}],
-        "relations": [],
+        "updates": False,
         "caused_by": [],
     }
     row.update(overrides)

@@ -249,22 +249,32 @@ def causal_links(
 
 
 class SupersedeClassifier(Protocol):
-    def classify(self, facts: Sequence[MemoryFact]) -> list[UpdateDecision]:
-        """One decision per new fact: add, duplicate of one stored fact, or supersede some."""
+    def classify(
+        self, facts: Sequence[MemoryFact], updating: frozenset[str] = frozenset()
+    ) -> list[UpdateDecision]:
+        """One decision per new fact: add, duplicate of one stored fact, or supersede some.
+
+        Only facts in `updating` (marked by the extractor as changing an earlier statement)
+        may supersede."""
         ...
 
 
-# A stored fact is worth asking about only when it says nearly the same thing: below this
-# cosine a new fact is simply added, without a model call. Paraphrases score above it.
+# A stored fact is worth comparing only when it says nearly the same thing: below this
+# cosine a new fact is simply added. Paraphrases score above it.
 DUPLICATE_SIMILARITY = 0.8
+# A fact that changes nothing earlier is a duplicate, without a model call, when a stored fact
+# on the same day scores at least this; restatements of one event do, separate events don't.
+SAME_SIMILARITY = 0.95
 
 
 class GeminiSupersedeClassifier:
-    """LLM decides whether new facts repeat or replace stored ones.
+    """Decides whether new facts repeat or replace stored ones.
 
     Candidates per new fact: current facts visible to its scope, same speaker, claim type and
-    category, with cosine >= DUPLICATE_SIMILARITY; at most `candidates_k`. Only facts with
-    candidates are sent, as short texts with dates. A new fact may supersede only facts whose
+    category, with cosine >= DUPLICATE_SIMILARITY; at most `candidates_k`. Only facts the
+    extractor marked as changing an earlier statement (`updating`) can supersede, so only those
+    with candidates go to the model, as short texts with dates. Every other fact is a duplicate
+    of its closest candidate when that scores >= SAME_SIMILARITY on the same day, else an add. A new fact may supersede only facts whose
     visibility is no broader than its own (a project rule never closes a global preference);
     Retainer re-checks both rules. Invalid or missing decisions leave that fact as add.
     """
@@ -286,7 +296,9 @@ class GeminiSupersedeClassifier:
         self.candidates_k = candidates_k
         self.thinking_level = thinking_level
 
-    def classify(self, facts: Sequence[MemoryFact]) -> list[UpdateDecision]:
+    def classify(
+        self, facts: Sequence[MemoryFact], updating: frozenset[str] = frozenset()
+    ) -> list[UpdateDecision]:
         facts = tuple(facts)
         if not facts:
             return []
@@ -295,10 +307,21 @@ class GeminiSupersedeClassifier:
         if self.candidates_k <= 0:
             return [UpdateDecision(fact.fact_id) for fact in facts]
 
-        candidate_map = {fact.fact_id: self._candidates(fact) for fact in facts}
-        asked = [fact for fact in facts if candidate_map[fact.fact_id]]
+        scored = {fact.fact_id: self._candidates(fact) for fact in facts}
+        candidate_map = {key: [c for _, c in rows] for key, rows in scored.items()}
+        decisions = {}
+        for fact in facts:
+            rows = scored[fact.fact_id]
+            if fact.fact_id in updating or not rows:
+                continue
+            score, closest = rows[0]
+            if score >= SAME_SIMILARITY and _day(closest) == _day(fact):
+                decisions[fact.fact_id] = UpdateDecision(
+                    fact.fact_id, UpdateAction.DUPLICATE, (closest.fact_id,)
+                )
+        asked = [fact for fact in facts if fact.fact_id in updating and candidate_map[fact.fact_id]]
         if not asked:
-            return [UpdateDecision(fact.fact_id) for fact in facts]
+            return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
 
         # Short IDs keep UUIDs out of the prompt and the answer.
         new_ids = {f"n{index}": fact.fact_id for index, fact in enumerate(asked)}
@@ -335,11 +358,10 @@ class GeminiSupersedeClassifier:
             # (Gemini answered one 4-fact LoCoMo request with 429 on every attempt), the facts
             # are kept as new rather than losing the whole round.
             logger.warning("Supersede classifier failed; keeping %d facts as new: %s",
-                           len(facts), str(error)[:200])  # fmt: skip
-            return [UpdateDecision(fact.fact_id) for fact in facts]
+                           len(asked), str(error)[:200])  # fmt: skip
+            return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
         rows = _decision_rows(response)
-        new_by_id = {fact.fact_id: fact for fact in facts}
-        decisions = {}
+        new_by_id = {fact.fact_id: fact for fact in asked}
         for row in rows:
             try:
                 row = _full_ids(row, new_ids, stored_ids)
@@ -366,7 +388,7 @@ class GeminiSupersedeClassifier:
             if self._eligible(fact, candidate) and score >= DUPLICATE_SIMILARITY:
                 candidates[candidate.fact_id] = (float(score), candidate)
         ranked = sorted(candidates.values(), key=lambda row: (-row[0], row[1].fact_id))
-        return [candidate for _, candidate in ranked[: self.candidates_k]]
+        return ranked[: self.candidates_k]
 
     @staticmethod
     def _eligible(fact, candidate):

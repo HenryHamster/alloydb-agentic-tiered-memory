@@ -103,23 +103,38 @@ class TieredMemory:
         )
 
     def record_session(self, scope, rounds, *, episode_id):
-        """Retain many rounds of one session in a single pass, for history loaded in bulk.
+        """Retain many rounds of one session in a single pass; see record_sessions."""
+        return self.record_sessions([(scope, rounds, episode_id)])[0]
 
-        `rounds` holds (user_text, assistant_text, timestamp, user_name) tuples. Each round
-        still enters the session buffer; extraction sees the rounds together, so one request
-        covers what record_turn would send as one request per round."""
-        if not scope.session_id:
-            raise ValueError("record_session requires a session_id")
-        messages = []
-        for index, (user_text, assistant_text, at, user_name) in enumerate(rounds):
-            self.buffer.append(
-                scope.session_id, user_text, assistant_text, at, round_id=f"{episode_id}:{index}"
-            )
-            messages += [
-                Message(Speaker.USER, user_text, at, user_name),
-                Message(Speaker.ASSISTANT, assistant_text, at),
-            ]
-        return self.retainer.retain(scope, messages, episode_id=episode_id)
+    def record_sessions(self, sessions):
+        """Retain whole sessions loaded in bulk, oldest first, sharing extraction requests.
+
+        `sessions` holds (scope, rounds, episode_id) with rounds as (user_text,
+        assistant_text, timestamp, user_name) tuples. Long-term memory receives every round.
+        The session window gets only each session's last `window_size` rounds, which is what
+        it would hold after compaction; the older rounds are not summarized again, since they
+        are already in long-term memory."""
+        episodes = []
+        for scope, rounds, episode_id in sessions:
+            if not scope.session_id:
+                raise ValueError("record_sessions requires a session_id")
+            messages = []
+            recent = len(rounds) - self.buffer.window_size
+            for index, (user_text, assistant_text, at, user_name) in enumerate(rounds):
+                if index >= recent:
+                    self.buffer.append(
+                        scope.session_id,
+                        user_text,
+                        assistant_text,
+                        at,
+                        round_id=f"{episode_id}:{index}",
+                    )
+                messages += [
+                    Message(Speaker.USER, user_text, at, user_name),
+                    Message(Speaker.ASSISTANT, assistant_text, at),
+                ]
+            episodes.append((scope, messages, episode_id))
+        return self.retainer.retain_many(episodes)
 
     def context(
         self,

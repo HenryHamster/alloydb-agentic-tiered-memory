@@ -20,7 +20,6 @@ from retain.models import (
     EntityType,
     ExtractedFact,
     FactType,
-    RelationMention,
     Speaker,
     Visibility,
     stable_id,
@@ -52,7 +51,7 @@ negation and uncertainty. Record each distinct event, person, pet, object, opini
 separately (a view phrased as a question is still a view); keep a detail in the fact it describes
 (a gift and what it means). Name what "it", "that" or "there" refers to, from earlier chunks or
 `context` (never "did an activity"). `chunk` is the index of the chunk holding `evidence`, a
-short verbatim quote; `context` is not citable. A chunk with speaker_name is a person: name them
+verbatim quote of at most 8 words; `context` is not citable. A chunk with speaker_name is a person: name them
 in every fact, never "the user"; state what they say as asserted world facts about the person
 they concern. [shares a photo: ...] is what the speaker showed: record what it shows. Copy
 relative time words ("yesterday", "last Friday", "two weekends ago") exactly into text and
@@ -61,7 +60,8 @@ evidence; the caller dates them, so never compute a date yourself. Set occurred_
 names, URLs and numbers exactly. Record what the user asked for. Assistant suggestions are
 proposed; tool output is attributed to the tool. fact_type: world for the user or world,
 experience for what the agent did or said. Entities are what the fact names, never the speakers;
-relations only when stated; caused_by holds indexes of other facts in this array.%s
+caused_by holds indexes of other facts in this array. `updates` is true only when the fact
+changes or corrects something said earlier in the conversation.%s
 SOURCE JSON:
 """
 _TOOL_RESULT_NOTE = """
@@ -107,7 +107,6 @@ def _schema():
             "role": string_enum(EntityRole),
         }
     )
-    relation = strict({name: {"type": "string"} for name in ("subject", "predicate", "object")})
     return {
         "type": "array",
         "items": strict(
@@ -123,8 +122,8 @@ def _schema():
                 "valid_from": _nullable_string(),
                 "when": _nullable_string(),
                 "entities": {"type": "array", "items": entity},
-                "relations": {"type": "array", "items": relation},
                 "caused_by": {"type": "array", "items": {"type": "integer"}},
+                "updates": {"type": "boolean"},
             }
         ),
     }
@@ -722,19 +721,21 @@ def _round_numbers(documents):
 
 
 def _group_chunks(chunks):
+    """Chunks per user and project, episodes in the order given, each in reading order.
+
+    Episodes of one project may share a request: short sessions loaded together then pay for
+    the prompt once. Every chunk keeps its own timestamp and speaker."""
     groups = defaultdict(list)
+    episodes = {}
     for chunk in chunks:
         document = chunk.document
-        scope = document.scope
-        key = (
-            scope.user_id,
-            scope.project_id,
-            scope.session_id,
-            document.episode_id,
-        )
-        groups[key].append(chunk)
+        groups[(document.scope.user_id, document.scope.project_id)].append(chunk)
+        episodes.setdefault(document.episode_id, len(episodes))
     return [
-        sorted(rows, key=lambda chunk: (chunk.document.position, chunk.start, chunk.end))
+        sorted(
+            rows,
+            key=lambda c: (episodes[c.document.episode_id], c.document.position, c.start, c.end),
+        )
         for rows in groups.values()
     ]
 
@@ -743,8 +744,12 @@ def _preceding_context(chunk, group, limit):
     """Up to `limit` characters said before `chunk` in its episode, after the earlier turn."""
     if not limit:
         return ""
+    episode = chunk.document.episode_id
     documents = sorted(
-        {c.document.document_id: c.document for c in group}.values(), key=lambda d: d.position
+        {
+            c.document.document_id: c.document for c in group if c.document.episode_id == episode
+        }.values(),
+        key=lambda d: d.position,
     )
     earlier = next((d.context for d in documents if d.context), None)
     prefix = [earlier] if earlier else []
@@ -1240,8 +1245,10 @@ def _parse_row(row, key, chunks, *, source_dates_known=True):
     when = row["when"]
     if when is not None and (not isinstance(when, str) or not when.strip()):
         raise ValueError("Fact when must be nonempty text or null")
-    if not isinstance(row["entities"], list) or not isinstance(row["relations"], list):
-        raise ValueError("Entities and relations must be arrays")
+    if not isinstance(row["entities"], list):
+        raise ValueError("Entities must be an array")
+    if not isinstance(row["updates"], bool):
+        raise ValueError("updates must be true or false")
     if not isinstance(row["caused_by"], list) or any(
         isinstance(value, bool) or not isinstance(value, int) or value < 0
         for value in row["caused_by"]
@@ -1278,14 +1285,6 @@ def _parse_row(row, key, chunks, *, source_dates_known=True):
                 entity["name"], EntityType(entity["entity_type"]), EntityRole(entity["role"])
             )
         )
-    relations = []
-    for relation in row["relations"]:
-        if not isinstance(relation, dict) or set(relation) != {"subject", "predicate", "object"}:
-            raise ValueError("Relation fields do not match the schema")
-        if any(not isinstance(value, str) or not value.strip() for value in relation.values()):
-            raise ValueError("Relations need subject, predicate, and object")
-        relations.append(RelationMention(**relation))
-
     return ExtractedFact(
         key=key,
         chunk_id=chunk.chunk_id,
@@ -1299,6 +1298,6 @@ def _parse_row(row, key, chunks, *, source_dates_known=True):
         valid_from=parsed["valid_from"],
         details={name: value for name, value in details.items() if value is not None},
         entities=tuple(entities),
-        relations=tuple(relations),
         caused_by=tuple(row["caused_by"]),
+        updates=row["updates"],
     )

@@ -72,7 +72,7 @@ def model_row(chunk, text, evidence, **overrides):
         "valid_from": None,
         "when": None,
         "entities": [],
-        "relations": [],
+        "updates": False,
         "caused_by": [],
     }
     row.update(overrides)
@@ -593,7 +593,7 @@ def test_a_named_speakers_fact_that_says_the_assistant_gets_their_name():
         {"chunk": 0, "text": text, "evidence": "a stained glass window",
          "fact_type": "experience", "category": "event", "claim_type": "asserted",
          "visibility": "session", "occurred_at": None, "valid_from": None, "when": None,
-         "entities": [], "relations": [], "caused_by": []}
+         "entities": [], "updates": False, "caused_by": []}
         for text in ("The assistant shared a photo of a stained glass window.",
                      "The assistant's photo shows a stained glass window.")
     ]  # fmt: skip
