@@ -134,7 +134,7 @@ def test_named_speaker_is_sent_to_the_model_and_recorded_as_a_person():
     (fact,) = extractor.extract([chunk])
 
     payload = client.models.generate_content.call_args.kwargs["contents"]
-    assert '"speaker_name": "Melanie"' in payload
+    assert "[0] Melanie (assistant): " in payload
     assert fact.claim_type == ClaimType.ASSERTED and fact.fact_type == FactType.WORLD
 
 
@@ -145,7 +145,7 @@ def test_an_unnamed_agent_keeps_proposed_claims():
 
     (fact,) = extractor.extract([chunk])
 
-    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert "(assistant)" not in client.models.generate_content.call_args.kwargs["contents"]
     assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
 
 
@@ -198,7 +198,7 @@ def test_a_named_agent_is_still_an_agent_unless_the_assistant_is_human():
     row = model_row(chunk, "The assistant suggested Python 3.12.", "You should use Python 3.12.")
     extractor, client = extractor_returning([row], keep_unrecorded_user_messages=False)
     (fact,) = extractor.extract([chunk])
-    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert "(assistant)" not in client.models.generate_content.call_args.kwargs["contents"]
     assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
     preference = dataclasses.replace(
         fact, category=Category.PREFERENCE, claim_type=ClaimType.ASSERTED

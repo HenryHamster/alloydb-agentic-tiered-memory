@@ -19,6 +19,7 @@ from bench.longmemeval import (
 from bench.qa import judge_prompt
 from recall import InMemoryRecallStore
 from retain import InMemoryRetainStore
+from tests.extraction_requests import sent_chunks
 
 
 def session(user, assistant, has_answer=False):
@@ -130,7 +131,7 @@ class ScriptedGemini:
             self.calls["classifier"] += 1
             return SimpleNamespace(text="[]")
         self.calls["extraction"] += 1
-        chunks = json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"]
+        chunks = sent_chunks(contents)
         return SimpleNamespace(text=json.dumps([self._fact(c) for c in chunks]))
 
     @staticmethod

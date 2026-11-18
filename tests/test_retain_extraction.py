@@ -8,6 +8,7 @@ import pytest
 from retain.embeddings import EMBEDDING_DIMENSIONS, GeminiEmbedder
 from retain.extraction import GeminiFactExtractor, chunk_documents
 from retain.models import (
+    ClaimType,
     Document,
     EntityRole,
     EntityType,
@@ -19,6 +20,7 @@ from retain.models import (
 )
 from retain.pipeline import Retainer
 from retain.store import InMemoryRetainStore
+from tests.extraction_requests import sent_chunks
 
 STAMP = datetime(2026, 10, 25, 12, 30, tzinfo=timezone.utc)
 SOURCE = "I prefer Python only for embedded tasks. The project starts yesterday."
@@ -104,7 +106,7 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     assert call["model"] == "gemini-3.5-flash"
     assert call["config"]["response_mime_type"] == "application/json"
     assert SOURCE in call["contents"]
-    assert '"chunk": 0' in call["contents"]
+    assert "[0] user: " in call["contents"]
     assert "document-a" not in call["contents"]
 
 
@@ -274,7 +276,7 @@ def test_extracted_fact_keeps_pipeline_document_scope_and_provenance(partial):
 
     def generate(*, contents, **kwargs):
         # Cite the first chunk the pipeline sent, so its real chunks are exercised.
-        assert json.loads(contents.split("SOURCE JSON:\n", 1)[1])["chunks"][0]["chunk"] == 0
+        assert sent_chunks(contents)[0]["chunk"] == 0
         row = fact_row(entities=[], occurred_at=partial, valid_from=partial)
         return SimpleNamespace(text=json.dumps([row]))
 
@@ -481,6 +483,45 @@ def test_extraction_asks_for_one_slim_row_and_finds_requoted_or_repeated_evidenc
     properties = config["response_json_schema"]["items"]["properties"]
     assert "details" not in properties and "when" in properties
     assert "chunk_id" not in properties and "key" not in properties
+
+
+def test_fields_left_out_take_their_defaults_but_required_ones_reject_the_row():
+    defaults = {"fact_type", "claim_type", "visibility", "occurred_at", "caused_by", "updates"}
+    slim = {key: value for key, value in fact_row().items() if key not in defaults}
+    uncategorized = {key: value for key, value in fact_row().items() if key != "category"}
+    extractor, client = extractor_for([slim, uncategorized])
+
+    (fact,) = extractor.extract(chunks())
+
+    assert fact.fact_type == FactType.WORLD and fact.claim_type == ClaimType.ASSERTED
+    assert fact.visibility == Visibility.GLOBAL and fact.occurred_at is None
+    assert fact.caused_by == () and fact.updates is False
+    schema = client.models.generate_content.call_args.kwargs["config"]["response_json_schema"]
+    assert defaults.isdisjoint(schema["items"]["required"])
+    assert "category" in schema["items"]["required"]
+
+
+def test_each_session_is_its_own_request_and_states_its_date_once():
+    def session(episode, day):
+        at = datetime(2026, 10, day, 9, tzinfo=timezone.utc)
+        return [
+            Document(f"{episode}-{position}", episode, position, Scope("user-a", "project-a",
+                     "session-a"), Speaker.USER, text, at, at)
+            for position, text in enumerate(["I adopted a cat.", "She is called Mochi."])
+        ]  # fmt: skip
+
+    client = gemini_returning("[]")
+    extractor = GeminiFactExtractor(client, keep_unrecorded_user_messages=False)
+
+    extractor.extract(chunk_documents(session("episode-a", 1) + session("episode-b", 2)))
+
+    prompts = [call.kwargs["contents"] for call in client.models.generate_content.call_args_list]
+    assert len(prompts) == 2
+    assert [prompt.count("Date: ") for prompt in prompts] == [1, 1]
+    assert [chunk["text"] for chunk in sent_chunks(prompts[1])] == [
+        "I adopted a cat.",
+        "She is called Mochi.",
+    ]
 
 
 def test_tool_results_become_exact_facts_only_when_enabled():

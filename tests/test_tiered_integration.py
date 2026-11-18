@@ -181,7 +181,7 @@ def test_relative_day_counts_and_unknown_source_dates(known):
     assert len(result) == 1
     assert (result[0].occurred_at is not None) == known
     prompt = client.models.generate_content.call_args.kwargs["contents"]
-    assert ('"timestamp": null' in prompt) != known
+    assert ("Date: " in prompt) == known
 
 
 def test_budget_counts_schema_before_provider_call_and_survives_restart(tmp_path):

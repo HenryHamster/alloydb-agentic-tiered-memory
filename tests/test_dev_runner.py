@@ -44,6 +44,7 @@ from retain.observations import GeminiObservationBuilder
 from retain.pipeline import Retainer
 from retain.store import InMemoryRetainStore
 from shared.llm import GeminiGenerator, GeminiStructuredGenerator
+from tests.extraction_requests import sent_chunks
 from tiered_memory import TieredMemory, build_memory_system
 from valkey_buffer import SessionBuffer
 
@@ -60,8 +61,8 @@ class FixtureModels:
         prompt = request["contents"]
         schema = request.get("config", {}).get("response_json_schema", {})
         if prompt.startswith("Extract memories"):
-            payload = json.loads(prompt.split("SOURCE JSON:\n", 1)[1])
-            chunk = payload["chunks"][0]
+            chunks = sent_chunks(prompt)
+            chunk = chunks[0]
             rows = []
             for text in (
                 "The club picked Inception.",
