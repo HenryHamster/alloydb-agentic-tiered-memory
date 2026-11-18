@@ -20,6 +20,7 @@ from retain.models import (
 )
 from retain.pipeline import Retainer
 from retain.store import InMemoryRetainStore
+from shared.llm import DEFAULT_MODEL
 from tests.extraction_requests import sent_chunks
 
 STAMP = datetime(2026, 10, 25, 12, 30, tzinfo=timezone.utc)
@@ -103,7 +104,7 @@ def test_gemini_extractor_preserves_structured_fact_and_resolves_relative_date()
     assert facts[1].occurred_at == datetime(2026, 10, 24, tzinfo=timezone.utc)
     assert facts[1].caused_by == (0,)
     call = client.models.generate_content.call_args.kwargs
-    assert call["model"] == "gemini-3.5-flash"
+    assert call["model"] == DEFAULT_MODEL
     assert call["config"]["response_mime_type"] == "application/json"
     assert SOURCE in call["contents"]
     assert "[0] user: " in call["contents"]

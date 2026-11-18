@@ -17,7 +17,12 @@ from reflect.models import ReflectTrigger
 from retain import RetainConfig, Scope, build_retainer
 from retain.embeddings import GeminiEmbedder
 from retain.models import Message, Speaker
-from shared.llm import GeminiGenerator, GeminiStructuredGenerator, generate_with_retry
+from shared.llm import (
+    DEFAULT_MODEL,
+    GeminiGenerator,
+    GeminiStructuredGenerator,
+    generate_with_retry,
+)
 from turn_context import TurnContext, build_turn_context
 from valkey_buffer import SessionBuffer
 
@@ -233,7 +238,7 @@ def build_memory_system(
     generation_client,
     embedding_client,
     *,
-    model="gemini-3.5-flash",
+    model=DEFAULT_MODEL,
     strict=True,
     retain_config=RetainConfig(maintenance_every=0),
     recall_config=RecallConfig(),

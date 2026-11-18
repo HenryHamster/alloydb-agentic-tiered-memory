@@ -25,7 +25,7 @@ from retain.models import (
     stable_id,
 )
 from shared.chunking import chunk_spans
-from shared.llm import is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
@@ -155,7 +155,7 @@ class GeminiFactExtractor:
         self,
         client,
         *,
-        model: str = "gemini-3.5-flash",
+        model: str = DEFAULT_MODEL,
         max_request_chars: int = 16000,
         context_chars: int = 600,
         source_dates_known: bool = True,

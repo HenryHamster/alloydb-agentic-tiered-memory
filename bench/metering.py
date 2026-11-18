@@ -1,7 +1,7 @@
 """Serial paid-call accounting for the bounded candidate pilot.
 
-Rates verified 2026-10-26; reserves persist across failed attempts. This is an
-application guard, not a Google Cloud billing cap.
+Rates verified 2026-11-18 (ai.google.dev pricing, standard tier); reserves persist
+across failed attempts. This is an application guard, not a Google Cloud billing cap.
 """
 
 import contextlib
@@ -10,11 +10,30 @@ import json
 import math
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
-INPUT_RATE = 1.5 / 1_000_000
-OUTPUT_RATE = 9.0 / 1_000_000
+# USD per million tokens: (input, output including thinking).
+PRICES = {
+    "gemini-3.5-flash": (1.5, 9.0),
+    "gemini-3.8-flash": (1.5, 7.5),
+    "gemini-4-hydrogen": (1.5, 7.5),
+}
+# Temporary list prices: model -> (first day the regular price applies, promotional price).
+PROMOTIONS = {"gemini-3.8-flash": (date(2027, 1, 1), (0.75, 3.75))}
 MAX_OUTPUT = 65536
+
+
+def rates(model, today=None):
+    """Per-token USD (input, output) for a priced model on `today`; unpriced models raise."""
+    if model not in PRICES:
+        raise ValueError(f"No price recorded for model {model!r}")
+    usd = PRICES[model]
+    if model in PROMOTIONS:
+        ends, promotional = PROMOTIONS[model]
+        if (today or date.today()) < ends:
+            usd = promotional
+    return usd[0] / 1_000_000, usd[1] / 1_000_000
 
 
 class BudgetStop(BaseException):
@@ -116,8 +135,7 @@ class Models:
         self.generation, self.embedding, self.ledger = generation, embedding, ledger
 
     def generate_content(self, **kwargs):
-        if kwargs["model"] != "gemini-3.5-flash":
-            raise ValueError("Unexpected baseline model")
+        input_rate, output_rate = rates(kwargs["model"])
         contents = kwargs["contents"]
         assert isinstance(contents, str)
         config = kwargs.get("config", {})
@@ -134,7 +152,7 @@ class Models:
         input_bound = (
             len(contents.encode("utf-8")) + len(json.dumps(encoded_config).encode("utf-8")) + 1024
         )
-        reserve = input_bound * INPUT_RATE + maximum * OUTPUT_RATE
+        reserve = input_bound * input_rate + maximum * output_rate
         call = self.ledger.reserve(
             "sdk_generate", reserve, model=kwargs["model"], input_chars=len(contents)
         )
@@ -169,9 +187,9 @@ class Models:
         details = usage.model_dump(mode="json") if usage is not None else None
         if usage is not None and usage.prompt_token_count is not None:
             actual = (
-                usage.prompt_token_count * INPUT_RATE
+                usage.prompt_token_count * input_rate
                 + ((usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0))
-                * OUTPUT_RATE
+                * output_rate
             )
         else:
             raise UsageFailure("Missing generation usage; full reservation retained")

@@ -7,11 +7,15 @@ from collections.abc import Callable
 
 Generate = Callable[[str], str]
 
+# The one Gemini model every stage uses unless a caller passes another. Benchmark
+# metering prices it in bench/metering.py.
+DEFAULT_MODEL = "gemini-4-hydrogen"
+
 
 class GeminiGenerator:
     """Plain-text Gemini call: prompt in, response text out."""
 
-    def __init__(self, client, *, model: str = "gemini-3.5-flash"):
+    def __init__(self, client, *, model: str = DEFAULT_MODEL):
         self.client = client
         self.model = model
 

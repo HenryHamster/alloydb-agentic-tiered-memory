@@ -17,6 +17,7 @@ from pathlib import Path
 
 from devtools.files import private_dir, read_json, safe_name, save_json
 from devtools.inputs import inference_questions, score, validate_history, validate_questions
+from shared.llm import DEFAULT_MODEL
 
 TARGETS = ("project", "zone", "vm", "region", "db_cluster", "db_instance")
 DEFAULTS = {"generation_location": "global", "idle_minutes": 30, "max_hours": 4}
@@ -340,6 +341,7 @@ def run_remote(cloud, args, source):
         "questions": inference_questions(questions),
         "mode": args.mode,
         "max_output_tokens": args.max_output_tokens,
+        "model": args.model,
         "cache_epoch": args.cache_epoch,
         "shared_cache": True,
         "config": cloud.config,
@@ -461,6 +463,7 @@ def main(argv=None):
     run.add_argument("--name")
     run.add_argument("--mode", choices=["cached", "replay", "fresh"], default="cached")
     run.add_argument("--max-output-tokens", type=int, default=65536)
+    run.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model for every stage")
     run.add_argument("--cache-epoch", default="1")
     run.add_argument("--output", type=Path, default=Path("dev_runs"))
     args = parser.parse_args(argv)

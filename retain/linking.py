@@ -20,7 +20,7 @@ from retain.models import (
     is_broader,
     is_code_built,
 )
-from shared.llm import is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +284,7 @@ class GeminiSupersedeClassifier:
         client,
         store,
         *,
-        model: str = "gemini-3.5-flash",
+        model: str = DEFAULT_MODEL,
         candidates_k: int = 6,
         thinking_level: str | None = "low",
     ):

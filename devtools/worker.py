@@ -25,6 +25,7 @@ from devtools.inputs import (
     validate_history,
     validate_questions,
 )
+from shared.llm import DEFAULT_MODEL
 
 
 def serial(value):
@@ -161,6 +162,7 @@ class CloudBackend:
         self.valkey = PrefixedValkey(get_valkey_client(), run_id)
         self.valkey.client.ping()
         self.cache, self.models, self.source, self.clock = cache, models, source, clock
+        self.model = config.get("model", DEFAULT_MODEL)
 
     def schema(self):
         from devtools.state import RunSchema
@@ -172,7 +174,11 @@ class CloudBackend:
 
         client = SimpleNamespace(models=self.models)
         system = build_memory_system(
-            lambda: CachedConnection(schema.connection(), self.cache), self.valkey, client, client
+            lambda: CachedConnection(schema.connection(), self.cache),
+            self.valkey,
+            client,
+            client,
+            model=self.model,
         )
         for component in (system.retainer, system.reflector, system.recaller):
             component.clock = lambda: self.clock
@@ -193,7 +199,7 @@ def run_job(
         raise ValueError("Scoring labels must not be sent to the worker")
     save_json(output / "job.json", job)
     usage = Usage(output)
-    config = job["config"]
+    config = {**job["config"], "model": job.get("model", DEFAULT_MODEL)}
     cache = RequestCache(
         Path(cache_folder) / "requests",
         usage,

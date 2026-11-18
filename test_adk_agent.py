@@ -13,18 +13,19 @@ from adk_memory_provider import ADKTieredMemoryProvider
 from adk_memory_tools import make_long_term_memory_tool
 from db_clients import get_db_connection, get_valkey_client
 from enterprise_engine import AgentMemoryEngine
+from shared.llm import DEFAULT_MODEL
 from valkey_buffer import get_session_context_buffer
 
 # Configuration & clients
 PROJECT_ID = os.environ["PROJECT_ID"]
 REGION = os.getenv("REGION", "us-east1")
 GENAI_LOCATION = os.getenv("GENAI_LOCATION", "us")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
 USER_ID, SESSION_1, SESSION_2 = "user_adk_dev", "sess_adk_001", "sess_adk_002"
 
 db_conn = get_db_connection()
 valkey_client = get_valkey_client()
-# LLM client for Gemini 3.5 Flash via global multi-region
+# LLM client via global multi-region
 genai_client = genai.Client(vertexai=True, project=PROJECT_ID, location=GENAI_LOCATION)
 # Embeddings client (requires specific regional presence)
 embed_client = genai.Client(vertexai=True, project=PROJECT_ID, location=REGION)

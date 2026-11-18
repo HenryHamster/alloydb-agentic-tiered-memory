@@ -425,6 +425,7 @@ def test_collect_worker_pipeline_and_local_scoring_protocol(tmp_path, capsys):
         output=tmp_path / "results",
         mode="cached",
         max_output_tokens=1024,
+        model="gemini-4-hydrogen",
         cache_epoch="1",
         assistant_is_human=True,
     )

@@ -52,6 +52,7 @@ from retain.models import (
     Visibility,
 )
 from shared.chunking import chunk_spans
+from shared.llm import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -653,7 +654,7 @@ def parse_args(argv=None):
     parser.add_argument("--reranker", choices=["none", "alloydb"], default="none")
     parser.add_argument("--decompose", action="store_true", help="LLM query analysis (Gemini)")
     parser.add_argument("--qa", action="store_true", help="answer and judge with Gemini")
-    parser.add_argument("--gemini-model", default=os.getenv("GEMINI_MODEL", "gemini-3.5-flash"))
+    parser.add_argument("--gemini-model", default=os.getenv("GEMINI_MODEL", DEFAULT_MODEL))
     parser.add_argument("--depth", choices=[d.value for d in RecallDepth], default="mid")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--chunk-chars", type=int, default=700)

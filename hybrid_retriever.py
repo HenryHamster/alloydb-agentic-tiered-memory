@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from psycopg2.extras import RealDictCursor
 
 from async_worker import build_temporal_rules_prompt
+from shared.llm import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ JSON Output:"""
         with conn.cursor() as cur:
             cur.execute("SET google_ml_integration.enable_preview_ai_functions = true;")
             cur.execute(
-                "SELECT ai.generate(prompt => %s::text, model_id => 'gemini-3.5-flash'::varchar(100));",
-                (prompt,),
+                "SELECT ai.generate(prompt => %s::text, model_id => %s::varchar(100));",
+                (prompt, DEFAULT_MODEL),
             )
             row = cur.fetchone()
             if row and row[0]:

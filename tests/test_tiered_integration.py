@@ -24,7 +24,7 @@ from test_reflect import (
 from test_retain_extraction import chunks, fact_row, gemini_returning
 
 from bench.mem2act import verify_retained_history
-from bench.metering import BudgetStop, Ledger, Models
+from bench.metering import PRICES, BudgetStop, Ledger, Models, rates
 from devtools.worker import RETRIEVAL_QUERY_CHARS, answer_query, retrieval_query
 from recall import InMemoryRecallStore, Recaller
 from recall.alloydb_store import AlloyDBRecallStore
@@ -220,6 +220,19 @@ def test_budget_settles_thinking_and_persists_provider_receipt(tmp_path):
     Models(client, client, ledger).generate_content(model="gemini-3.5-flash", contents="hello")
     assert ledger.state["accounted_usd"] == pytest.approx(0.0024)
     assert (tmp_path / "calls/00001.json").exists()
+
+
+def test_rates_follow_promotions_and_reject_unpriced_models():
+    from datetime import date
+
+    from shared.llm import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL in PRICES
+    assert rates("gemini-3.8-flash", date(2026, 12, 31)) == pytest.approx((0.75e-6, 3.75e-6))
+    assert rates("gemini-3.8-flash", date(2027, 1, 1)) == pytest.approx((1.5e-6, 7.5e-6))
+    assert rates("gemini-3.5-flash") == pytest.approx((1.5e-6, 9e-6))
+    with pytest.raises(ValueError):
+        rates("gemini-unpriced")
 
 
 def test_recovery_rejects_changed_or_uncommitted_source(tmp_path):
