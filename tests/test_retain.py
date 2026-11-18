@@ -2,6 +2,7 @@
 
 import hashlib
 import math
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -25,6 +26,7 @@ from retain.models import (
     LinkType,
     MemoryFact,
     MemoryLink,
+    Message,
     Observation,
     Relation,
     RelationMention,
@@ -522,3 +524,84 @@ def test_observation_versions_compare_by_content_not_closure_or_embedding():
     )
     assert version.same_version(replace(version, valid_to=T0, embedding=(0.5,)))
     assert not version.same_version(replace(version, text="Uses Rust."))
+
+
+# Concurrent extraction --------------------------------------------------------------------
+
+
+class EpisodeExtractor:
+    """One fact per episode (its first chunk's text); `wait` gates chosen chunk texts."""
+
+    def __init__(self, gate=None, fail=None):
+        self.gate, self.fail = gate, fail
+
+    def extract(self, chunks):
+        text = chunks[0].text
+        if self.gate is not None:
+            self.gate(text)
+        if text == self.fail:
+            raise RuntimeError("extraction failed")
+        return [
+            ExtractedFact(
+                key=0,
+                chunk_id=chunks[0].chunk_id,
+                text=f"User said {text}",
+                evidence=text,
+                fact_type=FactType.WORLD,
+                category=Category.PREFERENCE,
+                claim_type=ClaimType.ASSERTED,
+                visibility=Visibility.GLOBAL,
+            )
+        ]
+
+
+class OrderedStore(InMemoryRetainStore):
+    def __init__(self):
+        super().__init__()
+        self.committed = []
+
+    def write(self, batch):
+        self.committed.append(batch.documents[0].episode_id)
+        return super().write(batch)
+
+
+def episodes(*texts):
+    return [(SCOPE, [Message(Speaker.USER, text, T0)], f"ep-{i}") for i, text in enumerate(texts)]
+
+
+def test_episodes_are_extracted_together_and_committed_in_order():
+    # The first episode's extraction waits until the second is running too, so a sequential
+    # implementation would time out.
+    both = threading.Barrier(2, timeout=5)
+
+    def gate(text):
+        if text in ("alpha", "beta"):
+            both.wait()
+
+    store = OrderedStore()
+    results = retainer(
+        EpisodeExtractor(gate), store, config=RetainConfig(extract_workers=2)
+    ).retain_many(episodes("alpha", "beta", "gamma"))
+
+    assert store.committed == ["ep-0", "ep-1", "ep-2"]
+    assert [r.episode_id for r in results] == ["ep-0", "ep-1", "ep-2"]
+
+
+def test_a_failed_extraction_keeps_earlier_episodes_and_commits_nothing_after_it():
+    store = OrderedStore()
+    with pytest.raises(RuntimeError, match="extraction failed"):
+        retainer(
+            EpisodeExtractor(fail="beta"), store, config=RetainConfig(extract_workers=4)
+        ).retain_many(episodes("alpha", "beta", "gamma", "delta"))
+
+    assert store.committed == ["ep-0"]
+
+
+def test_one_worker_extracts_each_episode_before_the_next():
+    order = []
+    store = OrderedStore()
+    retainer(
+        EpisodeExtractor(order.append), store, config=RetainConfig(extract_workers=1)
+    ).retain_many(episodes("alpha", "beta"))
+
+    assert order == ["alpha", "beta"] and store.committed == ["ep-0", "ep-1"]

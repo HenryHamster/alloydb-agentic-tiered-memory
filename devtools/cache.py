@@ -1,5 +1,6 @@
 """Exact provider-response caching and usage receipts; no spending limits or rate cards."""
 
+import threading
 import time
 
 from devtools.files import fingerprint, locked, private_dir, read_json, save_json
@@ -13,6 +14,8 @@ class Usage:
     def __init__(self, folder):
         self.folder = private_dir(folder)
         self.calls, self.hits, self.context = [], [], {}
+        # Retain extracts several episodes at once; receipts are updated from those threads.
+        self.lock = threading.RLock()
         self.write()
 
     def report(self):
@@ -23,18 +26,20 @@ class Usage:
         }
 
     def write(self):
-        save_json(self.folder / "usage.json", self.report())
+        with self.lock:
+            save_json(self.folder / "usage.json", self.report())
 
     def hit(self, key, kind, response):
-        self.hits.append(
-            {
-                "kind": kind,
-                "cache_key": key,
-                "original_usage": response.get("usage_metadata"),
-                **self.context,
-            }
-        )
-        self.write()
+        with self.lock:
+            self.hits.append(
+                {
+                    "kind": kind,
+                    "cache_key": key,
+                    "original_usage": response.get("usage_metadata"),
+                    **self.context,
+                }
+            )
+            self.write()
 
 
 class RequestCache:
@@ -66,40 +71,44 @@ class RequestCache:
                 return entry["response"]
             if self.mode == "replay":
                 raise CacheMiss(f"No recorded {kind} response: {key}. Replay made no paid call.")
-            call = {
-                "id": len(self.usage.calls) + 1,
-                "kind": kind,
-                "cache_key": key,
-                "status": "started",
-                **self.usage.context,
-            }
-            self.usage.calls.append(call)
-            self.usage.write()
+            with self.usage.lock:
+                call = {
+                    "id": len(self.usage.calls) + 1,
+                    "kind": kind,
+                    "cache_key": key,
+                    "status": "started",
+                    **self.usage.context,
+                }
+                self.usage.calls.append(call)
+                self.usage.write()
             started = time.perf_counter()
             try:
                 response = invoke(key)
             except BaseException as error:
-                call.update(
-                    status="failed", error_type=type(error).__name__, error=str(error)[:1000]
-                )
+                with self.usage.lock:
+                    call.update(
+                        status="failed", error_type=type(error).__name__, error=str(error)[:1000]
+                    )
                 save_json(
                     self.usage.folder / "calls" / f"{call['id']:05d}.json",
                     {"request": request, "error": str(error)[:1000]},
                 )
                 raise
             else:
-                call.update(
-                    status="completed",
-                    usage_metadata=response.get("usage_metadata"),
-                    model_version=response.get("model_version"),
-                )
+                with self.usage.lock:
+                    call.update(
+                        status="completed",
+                        usage_metadata=response.get("usage_metadata"),
+                        model_version=response.get("model_version"),
+                    )
                 save_json(
                     self.usage.folder / "calls" / f"{call['id']:05d}.json",
                     {"request": request, "response": response},
                 )
             finally:
-                call["seconds"] = time.perf_counter() - started
-                self.usage.write()
+                with self.usage.lock:
+                    call["seconds"] = time.perf_counter() - started
+                    self.usage.write()
             # Fresh calls don't overwrite a previous experimental receipt.
             if not path.exists():
                 save_json(
