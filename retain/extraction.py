@@ -59,7 +59,9 @@ evidence; the caller dates them, so never compute a date yourself. Set occurred_
 (ISO) only from a date the source states; a year or month alone goes in `when`. Copy IDs, codes,
 names, URLs and numbers exactly. Record what the user asked for. Assistant suggestions are
 proposed; tool output is attributed to the tool. fact_type: world for the user or world,
-experience for what the agent did or said. Entities are what the fact names, never the speakers;
+experience for what the agent did or said. visibility: project for a rule or fact that
+holds only in the current project, session for one that holds only in this conversation,
+else global. Entities are what the fact names, never the speakers;
 caused_by holds indexes of other facts in this array. `updates` is true only when the fact
 changes or corrects something said earlier in the conversation. Omit a field whose value is its
 default: fact_type world, claim_type asserted, visibility global, occurred_at null, caused_by [],
@@ -760,20 +762,23 @@ def _preceding_context(chunk, group, limit):
 
 def _pack_chunks(chunks, context_chars, limit, prefix=_PROMPT % "", dates_known=True):
     """Consecutive chunks per request, each request with the context before its first chunk."""
-    batches, current, context = [], [], ""
-
-    def size(rows, text):
-        return len(prefix) + len(_request_source(rows, text, dates_known))
-
+    batches, current, context, used, date = [], [], "", 0, None
     for chunk in chunks:
-        if current and size([*current, chunk], context) > limit:
-            batches.append((current, context))
-            current = []
+        if current:
+            lines, _ = _chunk_lines(len(current), chunk, date, dates_known)
+            added = sum(len(line) + 1 for line in lines)  # each line follows a newline
+            if used + added > limit:
+                batches.append((current, context))
+                current = []
         if not current:
             context = _preceding_context(chunk, chunks, context_chars)
-            if size([chunk], context) > limit:
+            added = len(prefix) + len(_request_source([chunk], context, dates_known))
+            used = 0
+            if added > limit:
                 raise ValueError("Chunk and context exceed Gemini request character limit")
         current.append(chunk)
+        used += added
+        date = chunk.document.occurred_at
     if current:
         batches.append((current, context))
     return batches
@@ -795,13 +800,20 @@ def _request_source(chunks, context, dates_known=True):
         lines.append("Earlier: " + _indented(context))
     date = None
     for index, chunk in enumerate(chunks):
-        document = chunk.document
-        if dates_known and document.occurred_at != date:
-            date = document.occurred_at
-            lines.append("Date: " + date.isoformat())
-        speaker = f"{document.name} ({document.speaker})" if document.name else document.speaker
-        lines.append(f"[{index}] {speaker}: {_indented(chunk.text)}")
+        chunk_lines, date = _chunk_lines(index, chunk, date, dates_known)
+        lines += chunk_lines
     return "\n".join(lines)
+
+
+def _chunk_lines(index, chunk, date, dates_known):
+    """A chunk's source lines (a Date line when its timestamp differs from `date`), and its date."""
+    document = chunk.document
+    lines = []
+    if dates_known and document.occurred_at != date:
+        lines.append("Date: " + document.occurred_at.isoformat())
+    speaker = f"{document.name} ({document.speaker})" if document.name else document.speaker
+    lines.append(f"[{index}] {speaker}: {_indented(chunk.text)}")
+    return lines, document.occurred_at
 
 
 def _indented(text):

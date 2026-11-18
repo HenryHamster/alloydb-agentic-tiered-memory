@@ -123,12 +123,11 @@ class Retainer:
         return self.retain_many([(scope, messages, episode_id)])[0]
 
     def retain_many(self, episodes) -> list[RetainResult]:
-        """Retain several episodes, oldest first, with one shared extraction pass.
+        """Retain several episodes, oldest first, each extracted and committed before the next.
 
-        `episodes` holds (scope, messages, episode_id) tuples of one user. Short sessions loaded
-        in bulk then share extraction requests, so the fixed prompt is sent once per request
-        rather than once per session. Facts are still classified and written episode by
-        episode, in order, so a later session is compared with the earlier ones it follows.
+        `episodes` holds (scope, messages, episode_id) tuples of one user. A later session is
+        compared with the earlier ones it follows, and an error keeps the episodes already
+        committed, so a retry skips them.
         """
         now = self.clock()
         pending, results = [], {}
@@ -149,11 +148,9 @@ class Retainer:
         if len({scope.user_id for _, scope, *_ in pending}) > 1:
             raise ValueError("retain_many takes episodes of one user")
 
-        all_chunks = [chunk for *_, chunks in pending for chunk in chunks]
-        extracted_all = self.extractor.extract(all_chunks) if all_chunks else []
         for index, scope, episode_id, documents, chunks in pending:
             ids = {chunk.chunk_id for chunk in chunks}
-            extracted = [fact for fact in extracted_all if fact.chunk_id in ids]
+            extracted = [f for f in self.extractor.extract(chunks) if f.chunk_id in ids]
             results[index] = self._commit(scope, episode_id, documents, chunks, extracted, now)
         return [results[index] for index in range(len(episodes))]
 
