@@ -19,6 +19,7 @@ from bench.longmemeval import (
 from bench.qa import judge_prompt
 from recall import InMemoryRecallStore
 from retain import InMemoryRetainStore
+from tests.extraction_requests import sent_chunks
 
 
 def session(user, assistant, has_answer=False):
@@ -68,28 +69,23 @@ def test_dates_parse_as_utc():
         parse_date("yesterday")
 
 
-def test_sessions_split_into_rounds_at_each_user_turn():
+def test_each_conversation_is_one_episode():
     instance = Instance.from_json(record())
-    assert [(r.session_id, r.index) for r in instance.rounds] == [
-        ("s1", 0),
-        ("s2", 0),
-        ("s2", 1),
-        ("s3", 0),
-    ]
-    assert instance.answer_episode_ids == {"q1:s2:0"}
-    assert instance.rounds[1].messages[0].timestamp == datetime(
+    assert [s.episode_id for s in instance.sessions] == ["q1:s1", "q1:s2", "q1:s3"]
+    assert len(instance.sessions[1].messages) == 4
+    assert instance.sessions[1].messages[0].timestamp == datetime(
         2023, 5, 10, 12, 30, tzinfo=timezone.utc
     )
     assert instance.scope.user_id == "lme:q1"
 
 
-def test_a_repeated_haystack_session_is_ingested_once():
+def test_a_repeated_conversation_is_ingested_once():
     data = record()
     data["haystack_session_ids"].append("s1")
     data["haystack_dates"].append("2023/05/25 (Thu) 08:00")
     data["haystack_sessions"].append(data["haystack_sessions"][0])
     instance = Instance.from_json(data)
-    assert [r.session_id for r in instance.rounds] == ["s1", "s2", "s2", "s3"]
+    assert [s.session_id for s in instance.sessions] == ["s1", "s2", "s3"]
     assert harness().run(instance)["facts"] > 0
 
 
@@ -104,9 +100,8 @@ def test_retrieval_metrics():
 def test_a_question_finds_its_answer_session():
     result = harness().run(Instance.from_json(record()))
     assert result["facts"] > 0
-    assert result["recall"]["episodes"][0] == "q1:s2:0"
+    assert result["recall"]["episodes"][0] == "q1:s2"
     assert result["retrieval"]["session"]["recall_any@1"] == 1.0
-    assert result["retrieval"]["round"]["recall_all@1"] == 1.0
 
 
 class ScriptedGemini:
@@ -126,19 +121,18 @@ class ScriptedGemini:
             return SimpleNamespace(
                 text=json.dumps({"summary": text, "fact_ids": [f["fact_id"] for f in facts]})
             )
-        if "chunk_id" not in schema["items"]["properties"]:
+        if "chunk" not in schema["items"]["properties"]:
             self.calls["classifier"] += 1
             return SimpleNamespace(text="[]")
         self.calls["extraction"] += 1
-        chunks = json.loads(contents[contents.rindex('{"chunks"') :])["chunks"]
-        return SimpleNamespace(text=json.dumps([self._fact(i, c) for i, c in enumerate(chunks)]))
+        chunks = sent_chunks(contents)
+        return SimpleNamespace(text=json.dumps([self._fact(c) for c in chunks]))
 
     @staticmethod
-    def _fact(key, chunk):
+    def _fact(chunk):
         about_max = any(word in chunk["text"] for word in ("Max", "dog", "He "))
         return {
-            "key": key,
-            "chunk_id": chunk["chunk_id"],
+            "chunk": chunk["chunk"],
             "text": chunk["text"],
             "evidence": chunk["text"],
             "fact_type": "world" if chunk["speaker"] == "user" else "experience",
@@ -147,13 +141,12 @@ class ScriptedGemini:
             "visibility": "global",
             "occurred_at": None,
             "valid_from": None,
-            "details": {"who": None, "what": None, "when": None, "where": None, "why": None},
+            "when": None,
             "entities": (
                 [{"name": "Max", "entity_type": "other", "role": "subject"}] if about_max else []
             ),
-            "relations": [],
+            "updates": False,
             "caused_by": [],
-            "evidenced_by": [],
         }
 
 

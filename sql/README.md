@@ -24,4 +24,5 @@ agent. They do not target a generic local PostgreSQL installation.
 
 Embeddings use `text-embedding-005` with 768 dimensions. Keep the table dimension
 and all embedding call sites consistent if you adapt the model. The registered
-LLM is `gemini-3.5-flash`, matching the tutorial's Python examples.
+LLM is `gemini-4-hydrogen`, matching `shared.llm.DEFAULT_MODEL` (the tutorial used
+`gemini-3.5-flash`).

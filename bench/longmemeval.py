@@ -3,7 +3,7 @@
     python -m bench.longmemeval data/longmemeval_oracle.json --limit 20
     python -m bench.longmemeval data/longmemeval_s_cleaned.json --embedder vertex --qa
 
-Every question has its own haystack, ingested under its own Scope (user_id "lme:<question_id>")
+Every question has its own chat history, ingested under its own Scope (user_id "lme:<question_id>")
 through Retain's Retainer. By default (--retain verbatim) ingestion uses benchmark stages:
 VerbatimExtractor stores each 700-char chunk of each message as one fact (dated at its
 session), with no entities or links. That measures Recall's search, fusion, reranking and
@@ -11,11 +11,15 @@ packing on raw conversation. --retain gemini runs Retain's production stages ins
 extraction, entity resolution, linking, supersession and observations), so the entity, graph
 and observation channels are filled and the whole system is measured.
 
+Each conversation (a LongMemEval "session") in the history is one Retain episode, as an agent
+would retain a finished conversation, so extraction sees the whole conversation at once rather
+than one request per round.
+
 Retrieval is scored on Recall's packed items (what the agent would see): an item counts for the
-session and round its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k at
-session level (answer_session_ids) and round level (rounds with a has_answer turn); abstention
-questions are left out, as in LongMemEval. With --qa, Gemini answers from the packed context
-and judges with LongMemEval's prompts (bench/qa.py).
+conversation its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k are taken
+over the conversations that hold the answer (answer_session_ids); abstention questions are left
+out, as in LongMemEval. With --qa, Gemini answers from the packed context and judges with
+LongMemEval's prompts (bench/qa.py).
 
 Results go to a JSONL file (one line per question, resumable), a summary JSON and a
 hypotheses JSONL in the format LongMemEval's own evaluate_qa.py reads.
@@ -52,6 +56,7 @@ from retain.models import (
     Visibility,
 )
 from shared.chunking import chunk_spans
+from shared.llm import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +77,12 @@ def parse_date(text: str) -> datetime:
 
 
 @dataclass(frozen=True)
-class Round:
-    """One user turn and the replies to it: one Retain episode."""
+class Session:
+    """One conversation from a question's chat history: one Retain episode."""
 
     episode_id: str
     session_id: str
-    index: int
     messages: tuple[Message, ...]
-    has_answer: bool
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ class Instance:
     question_date: str
     question_time: datetime
     answer_session_ids: tuple[str, ...]
-    rounds: tuple[Round, ...]
+    sessions: tuple[Session, ...]
 
     @property
     def abstention(self) -> bool:
@@ -101,49 +104,38 @@ class Instance:
     def scope(self) -> Scope:
         return Scope(USER_PREFIX + self.question_id)
 
-    @property
-    def answer_episode_ids(self) -> set[str]:
-        return {r.episode_id for r in self.rounds if r.has_answer}
-
     @classmethod
     def from_json(cls, record: dict[str, Any]) -> "Instance":
         question_id = str(record["question_id"])
-        rounds: list[Round] = []
+        kept: list[Session] = []
         sessions = zip(
             record["haystack_session_ids"], record["haystack_dates"], record["haystack_sessions"]
         )
         seen = set()
         for session_id, date, turns in sessions:
-            # A few _s haystacks repeat a session verbatim under a later date. Its episode ids
+            # A few _s histories repeat a conversation verbatim under a later date. Its episode ids
             # would repeat with a different occurred_at, which Retain rejects as a conflicting
             # replay; keep the first copy.
             if session_id in seen:
                 continue
             seen.add(session_id)
             at = parse_date(date)
-            grouped: list[list[dict]] = []
-            for turn in turns:
-                if turn.get("role") == "user" or not grouped:
-                    grouped.append([])
-                grouped[-1].append(turn)
-            for index, group in enumerate(grouped):
-                messages = tuple(
-                    Message(
-                        Speaker.USER if t.get("role") == "user" else Speaker.ASSISTANT,
-                        str(t.get("content") or ""),
-                        at,
-                    )
-                    for t in group
+            messages = tuple(
+                Message(
+                    Speaker.USER if t.get("role") == "user" else Speaker.ASSISTANT,
+                    str(t.get("content") or ""),
+                    at,
                 )
-                rounds.append(
-                    Round(
+                for t in turns
+            )
+            if messages:
+                kept.append(
+                    Session(
                         # Includes the question id: document ids derive from episode ids and
-                        # haystack sessions repeat across questions sharing one database.
-                        episode_id=f"{question_id}:{session_id}:{index}",
+                        # conversations repeat across questions sharing one database.
+                        episode_id=f"{question_id}:{session_id}",
                         session_id=str(session_id),
-                        index=index,
                         messages=messages,
-                        has_answer=any(t.get("has_answer") for t in group),
                     )
                 )
         return cls(
@@ -154,7 +146,7 @@ class Instance:
             question_date=str(record["question_date"]),
             question_time=parse_date(record["question_date"]),
             answer_session_ids=tuple(str(s) for s in record.get("answer_session_ids") or ()),
-            rounds=tuple(rounds),
+            sessions=tuple(kept),
         )
 
 
@@ -241,8 +233,8 @@ class _Clock:
 def chunk_texts(instance: Instance, max_chars: int) -> list[str]:
     """The fact texts VerbatimExtractor will produce, for warming the embedding cache in bulk."""
     texts = []
-    for round_ in instance.rounds:
-        for message in round_.messages:
+    for session in instance.sessions:
+        for message in session.messages:
             for start, end in chunk_spans(message.text, max_chars):
                 if text := message.text[start:end].strip():
                     texts.append(text)
@@ -275,11 +267,10 @@ def summarize(records: Sequence[dict]) -> dict:
 
     def means(rows: Sequence[dict]) -> dict:
         out: dict[str, Any] = {"count": len(rows)}
-        for level in ("session", "round"):
-            scored = [r["retrieval"][level] for r in rows if r["retrieval"].get(level)]
-            if scored:
-                out[level] = {m: round(mean(s[m] for s in scored), 4) for m in scored[0]}
-                out[level]["count"] = len(scored)
+        scored = [r["retrieval"]["session"] for r in rows if r["retrieval"].get("session")]
+        if scored:
+            out["session"] = {m: round(mean(s[m] for s in scored), 4) for m in scored[0]}
+            out["session"]["count"] = len(scored)
         labels = [r["qa"]["correct"] for r in rows if r.get("qa")]
         if labels:
             out["qa_accuracy"] = round(mean(labels), 4)
@@ -346,7 +337,7 @@ class Harness:
             store=retain_store,
             embedder=self.doc_embedder,
             # No periodic maintenance: the observation builder closes versions at wall-clock
-            # time, which replayed haystacks would see as still open at the question date.
+            # time, which replayed histories would see as still open at the question date.
             config=RetainConfig(
                 max_chunk_chars=self.chunk_chars, document_ttl=None, maintenance_every=0
             ),
@@ -354,15 +345,17 @@ class Harness:
             **stages,
         )
         counts = dict.fromkeys(("facts", "entities", "links", "observations"), 0)
-        for round_ in instance.rounds:
-            clock.now = round_.messages[0].timestamp
-            result = retainer.retain(instance.scope, round_.messages, episode_id=round_.episode_id)
+        for session in instance.sessions:
+            clock.now = session.messages[0].timestamp
+            result = retainer.retain(
+                instance.scope, session.messages, episode_id=session.episode_id
+            )
             if result.batch:
                 counts["facts"] += len(result.batch.facts)
                 counts["entities"] += len(result.batch.entities)
                 counts["links"] += len(result.batch.links)
         if "observation_builder" in stages:
-            # One pass over the whole haystack, so each observation has a single version.
+            # One pass over the whole history, so each observation has a single version.
             counts["observations"] = len(retainer.consolidate(instance.scope))
         ingest_ms = (time.perf_counter() - started) * 1000
 
@@ -389,7 +382,7 @@ class Harness:
             "question_id": instance.question_id,
             "question_type": instance.question_type,
             "abstention": instance.abstention,
-            "rounds": len(instance.rounds),
+            "sessions": len(instance.sessions),
             **counts,
             "retrieval": self._retrieval(instance, result),
             "recall": self._recall_summary(result),
@@ -404,17 +397,13 @@ class Harness:
     def _retrieval(self, instance: Instance, result: RecallResult) -> dict:
         if instance.abstention:
             return {}
-        by_episode = {r.episode_id: r for r in instance.rounds}
+        by_episode = {s.episode_id: s.session_id for s in instance.sessions}
         episodes = [item.memory.source_episode_id for item in result.items]
-        sessions = [by_episode[e].session_id if e in by_episode else None for e in episodes]
+        sessions = [by_episode.get(e) for e in episodes]
         out = {}
         if instance.answer_session_ids:
             out["session"] = retrieval_metrics(
                 ranked_unique(sessions), set(instance.answer_session_ids), self.ks
-            )
-        if instance.answer_episode_ids:
-            out["round"] = retrieval_metrics(
-                ranked_unique(episodes), instance.answer_episode_ids, self.ks
             )
         return out
 
@@ -653,7 +642,7 @@ def parse_args(argv=None):
     parser.add_argument("--reranker", choices=["none", "alloydb"], default="none")
     parser.add_argument("--decompose", action="store_true", help="LLM query analysis (Gemini)")
     parser.add_argument("--qa", action="store_true", help="answer and judge with Gemini")
-    parser.add_argument("--gemini-model", default=os.getenv("GEMINI_MODEL", "gemini-3.5-flash"))
+    parser.add_argument("--gemini-model", default=os.getenv("GEMINI_MODEL", DEFAULT_MODEL))
     parser.add_argument("--depth", choices=[d.value for d in RecallDepth], default="mid")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--chunk-chars", type=int, default=700)

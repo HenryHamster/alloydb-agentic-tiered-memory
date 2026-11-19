@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from retain.models import Scope
+from shared.llm import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ Output (JSON array only):"""
         for attempt in range(4):
             try:
                 response = self.llm_client.models.generate_content(
-                    model="gemini-3.5-flash",
+                    model=DEFAULT_MODEL,
                     contents=prompt,
                     config={"response_mime_type": "application/json"},
                 )

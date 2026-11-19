@@ -306,7 +306,8 @@ def controlled_client(rows):
 
 
 def decision_row(new, action, targets=()):
-    return {"fact_id": new.fact_id, "action": action, "target_ids": list(targets)}
+    """A decision in the prompt's short IDs: the one new fact is n0, its candidates s0, s1..."""
+    return {"id": "n0", "action": action, "target_ids": [f"s{i}" for i, _ in enumerate(targets)]}
 
 
 def test_classifier_uses_relevant_candidates_and_accepts_supported_duplicate():
@@ -322,7 +323,7 @@ def test_classifier_uses_relevant_candidates_and_accepts_supported_duplicate():
     client = controlled_client([decision_row(new, "duplicate", [old.fact_id])])
     store = ClassifierStore(similar=[(old, 0.99), (unrelated_scope, 1.0)])
 
-    (decision,) = GeminiSupersedeClassifier(client, store).classify([new])
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
 
     assert decision.action == UpdateAction.DUPLICATE
     assert decision.target_ids == (old.fact_id,)
@@ -330,7 +331,8 @@ def test_classifier_uses_relevant_candidates_and_accepts_supported_duplicate():
         client.models.generate_content.call_args.kwargs["contents"].split("INPUT:\n")[1]
     )
     candidates = payload[0]["candidates"]
-    assert [candidate["fact_id"] for candidate in candidates] == [old.fact_id]
+    assert [candidate["id"] for candidate in candidates] == ["s0"]
+    assert payload[0]["id"] == "n0" and old.fact_id not in json.dumps(payload)
     config = client.models.generate_content.call_args.kwargs["config"]
     assert config["response_mime_type"] == "application/json"
     assert config["thinking_config"] == {"thinking_level": "low"}
@@ -342,7 +344,7 @@ def test_classifier_does_not_offer_project_fact_as_a_candidate_to_global_fact():
     client = Mock()
     store = ClassifierStore(similar=[(project_old, 0.99)])
 
-    (decision,) = GeminiSupersedeClassifier(client, store).classify([new])
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
 
     assert decision.action == UpdateAction.ADD
     client.models.generate_content.assert_not_called()
@@ -361,7 +363,7 @@ def test_classifier_does_not_reconcile_facts_from_different_speakers():
 
     (decision,) = GeminiSupersedeClassifier(
         client, ClassifierStore(similar=[(assistant_fact, 0.99)])
-    ).classify([new])
+    ).classify([new], updating={new.fact_id})
 
     assert decision.action == UpdateAction.ADD
     client.models.generate_content.assert_not_called()
@@ -379,7 +381,7 @@ def test_classifier_never_supersedes_global_memory_from_a_project_fact():
 
     (decision,) = GeminiSupersedeClassifier(
         client, ClassifierStore(similar=[(global_old, 0.99)])
-    ).classify([new])
+    ).classify([new], updating={new.fact_id})
 
     assert decision == UpdateDecision(new.fact_id)  # kept as new; the global fact stays current
 
@@ -388,10 +390,10 @@ def test_classifier_never_supersedes_global_memory_from_a_project_fact():
     "rows",
     [
         "not-json",
-        {"fact_id": "new"},
-        [{"fact_id": "new", "action": "unknown", "target_ids": []}],
-        [{"fact_id": "new", "action": "duplicate", "target_ids": ["unlisted"]}],
-        [{"fact_id": "invented", "action": "add", "target_ids": []}],
+        {"id": "n0"},
+        [{"id": "n0", "action": "unknown", "target_ids": []}],
+        [{"id": "n0", "action": "duplicate", "target_ids": ["s9"]}],
+        [{"id": "invented", "action": "add", "target_ids": []}],
         [],
     ],
 )
@@ -403,7 +405,7 @@ def test_classifier_falls_back_to_add_on_malformed_or_unsupported_output(rows):
     client.models.generate_content.return_value = SimpleNamespace(text=text)
 
     decisions = GeminiSupersedeClassifier(client, ClassifierStore(similar=[(old, 0.9)])).classify(
-        [new]
+        [new], updating={new.fact_id}
     )
 
     assert decisions == [UpdateDecision("new")]
@@ -416,11 +418,11 @@ def test_classifier_keeps_supported_contradiction_as_new_fact():
 
     (decision,) = GeminiSupersedeClassifier(
         client, ClassifierStore(similar=[(previous, 0.9)])
-    ).classify([current])
+    ).classify([current], updating={current.fact_id})
 
     assert decision.action == UpdateAction.ADD
     assert (
-        "Keep contradictions as separate facts"
+        "a contradiction without a stated correction is add"
         in client.models.generate_content.call_args.kwargs["contents"]
     )
 
@@ -440,12 +442,44 @@ def test_concept_and_technology_share_an_exact_name_but_other_types_stay_apart()
 def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch):
     monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
     old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
+    new = fact("The system uses two databases.", fact_id="new", category=Category.DECISION)
+    client = Mock()
+    client.models.generate_content.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+    store = ClassifierStore(similar=[(old, 0.85)])
+
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
+
+    assert decision.action == UpdateAction.ADD
+    assert client.models.generate_content.call_count == 4  # retried before giving up
+
+
+def test_a_failed_classifier_call_still_merges_same_day_copies(monkeypatch):
+    monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
+    old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
     new = fact("The system uses one database.", fact_id="new", category=Category.DECISION)
     client = Mock()
     client.models.generate_content.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
     store = ClassifierStore(similar=[(old, 0.99)])
 
-    (decision,) = GeminiSupersedeClassifier(client, store).classify([new])
+    (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
 
-    assert decision.action == UpdateAction.ADD
-    assert client.models.generate_content.call_count == 4  # retried before giving up
+    assert decision.action == UpdateAction.DUPLICATE
+    assert decision.target_ids == ("old",)
+
+
+def test_a_fact_that_updates_nothing_is_decided_without_the_model():
+    old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
+    same = fact("The system uses one database.", fact_id="same", category=Category.DECISION)
+    near = fact("The system uses two databases.", fact_id="near", category=Category.DECISION)
+    client = Mock()
+
+    (duplicate,) = GeminiSupersedeClassifier(
+        client, ClassifierStore(similar=[(old, 0.99)])
+    ).classify([same])
+    (added,) = GeminiSupersedeClassifier(client, ClassifierStore(similar=[(old, 0.9)])).classify(
+        [near]
+    )
+
+    assert duplicate.action == UpdateAction.DUPLICATE and duplicate.target_ids == ("old",)
+    assert added == UpdateDecision("near")
+    client.models.generate_content.assert_not_called()

@@ -20,7 +20,7 @@ from retain.models import (
     is_broader,
     is_code_built,
 )
-from shared.llm import is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 
@@ -249,19 +249,34 @@ def causal_links(
 
 
 class SupersedeClassifier(Protocol):
-    def classify(self, facts: Sequence[MemoryFact]) -> list[UpdateDecision]:
-        """One decision per new fact: add, duplicate of one stored fact, or supersede some."""
+    def classify(
+        self, facts: Sequence[MemoryFact], updating: frozenset[str] = frozenset()
+    ) -> list[UpdateDecision]:
+        """One decision per new fact: add, duplicate of one stored fact, or supersede some.
+
+        Only facts in `updating` (marked by the extractor as changing an earlier statement)
+        may supersede."""
         ...
 
 
-class GeminiSupersedeClassifier:
-    """LLM decides whether new facts repeat or replace stored ones.
+# A stored fact is worth comparing only when it says nearly the same thing: below this
+# cosine a new fact is simply added. Paraphrases score above it.
+DUPLICATE_SIMILARITY = 0.8
+# A fact that changes nothing earlier is a duplicate, without a model call, when a stored fact
+# on the same day scores at least this; restatements of one event do, separate events don't.
+SAME_SIMILARITY = 0.95
 
-    Candidates per new fact: current facts visible to its scope, same speaker and claim type,
-    either cosine >= `min_similarity` or sharing an entity in the same category; at most
-    `candidates_k`. A new fact may supersede only facts whose visibility is no broader than its
-    own (a project rule never closes a global preference); Retainer re-checks both rules.
-    Invalid or missing decisions leave that fact as add; facts with no candidates skip the LLM.
+
+class GeminiSupersedeClassifier:
+    """Decides whether new facts repeat or replace stored ones.
+
+    Candidates per new fact: current facts visible to its scope, same speaker, claim type and
+    category, with cosine >= DUPLICATE_SIMILARITY; at most `candidates_k`. Only facts the
+    extractor marked as changing an earlier statement (`updating`) can supersede, so only those
+    with candidates go to the model, as short texts with dates. Every other fact is a duplicate
+    of its closest candidate when that scores >= SAME_SIMILARITY on the same day, else an add. A new fact may supersede only facts whose
+    visibility is no broader than its own (a project rule never closes a global preference);
+    Retainer re-checks both rules. Invalid or missing decisions leave that fact as add.
     """
 
     def __init__(
@@ -269,23 +284,21 @@ class GeminiSupersedeClassifier:
         client,
         store,
         *,
-        model: str = "gemini-3.5-flash",
+        model: str = DEFAULT_MODEL,
         candidates_k: int = 6,
-        min_similarity: float = 0.6,
         thinking_level: str | None = "low",
     ):
         if candidates_k < 0:
             raise ValueError("candidates_k must be nonnegative")
-        if not 0 <= min_similarity <= 1:
-            raise ValueError("min_similarity must be in [0, 1]")
         self.client = client
         self.store = store
         self.model = model
         self.candidates_k = candidates_k
-        self.min_similarity = min_similarity
         self.thinking_level = thinking_level
 
-    def classify(self, facts: Sequence[MemoryFact]) -> list[UpdateDecision]:
+    def classify(
+        self, facts: Sequence[MemoryFact], updating: frozenset[str] = frozenset()
+    ) -> list[UpdateDecision]:
         facts = tuple(facts)
         if not facts:
             return []
@@ -294,49 +307,52 @@ class GeminiSupersedeClassifier:
         if self.candidates_k <= 0:
             return [UpdateDecision(fact.fact_id) for fact in facts]
 
-        candidate_map = {fact.fact_id: self._candidates(fact) for fact in facts}
-        if not any(candidate_map.values()):
-            return [UpdateDecision(fact.fact_id) for fact in facts]
+        scored = {fact.fact_id: self._candidates(fact) for fact in facts}
+        candidate_map = {key: [c for _, c in rows] for key, rows in scored.items()}
+        # Same-day near-copies decide every fact the model is not asked about, and the asked
+        # ones too when the model call fails.
+        local = {}
+        for fact in facts:
+            rows = scored[fact.fact_id]
+            if not rows:
+                continue
+            score, closest = rows[0]
+            if score >= SAME_SIMILARITY and _day(closest) == _day(fact):
+                local[fact.fact_id] = UpdateDecision(
+                    fact.fact_id, UpdateAction.DUPLICATE, (closest.fact_id,)
+                )
+        decisions = {key: value for key, value in local.items() if key not in updating}
+        asked = [fact for fact in facts if fact.fact_id in updating and candidate_map[fact.fact_id]]
+        if not asked:
+            return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
 
+        # Short IDs keep UUIDs out of the prompt and the answer.
+        new_ids = {f"n{index}": fact.fact_id for index, fact in enumerate(asked)}
+        stored_ids = {}
+        for fact in asked:
+            for candidate in candidate_map[fact.fact_id]:
+                if candidate.fact_id not in stored_ids.values():
+                    stored_ids[f"s{len(stored_ids)}"] = candidate.fact_id
+        short = {fact_id: key for key, fact_id in (*new_ids.items(), *stored_ids.items())}
         payload = [
             {
-                "fact_id": fact.fact_id,
+                "id": short[fact.fact_id],
                 "text": fact.text,
-                "evidence": fact.evidence,
-                "category": fact.category.value,
-                "claim_type": fact.claim_type.value,
-                "speaker": fact.speaker.value,
-                "visibility": fact.visibility.value,
-                "occurred_at": fact.occurred_at.isoformat() if fact.occurred_at else None,
-                "valid_from": fact.valid_from.isoformat(),
+                "date": _day(fact),
                 "candidates": [
-                    {
-                        "fact_id": candidate.fact_id,
-                        "text": candidate.text,
-                        "evidence": candidate.evidence,
-                        "category": candidate.category.value,
-                        "claim_type": candidate.claim_type.value,
-                        "speaker": candidate.speaker.value,
-                        "visibility": candidate.visibility.value,
-                        "occurred_at": candidate.occurred_at.isoformat()
-                        if candidate.occurred_at
-                        else None,
-                        "valid_from": candidate.valid_from.isoformat(),
-                    }
-                    for candidate in candidate_map[fact.fact_id]
+                    {"id": short[c.fact_id], "text": c.text, "date": _day(c)}
+                    for c in candidate_map[fact.fact_id]
                 ],
             }
-            for fact in facts
+            for fact in asked
         ]
         prompt = (
-            "Classify each new memory against only its listed candidates. Return one decision "
-            "per input fact. Use duplicate only when the meaning is materially the same; use "
-            "supersede only when the evidence explicitly corrects or replaces a current fact. "
-            "Keep contradictions as separate facts unless the source establishes a correction. "
-            "Historical events are not superseded merely because a later event occurred. "
-            "When uncertain, choose add. Add has no target IDs; duplicate has exactly one; "
-            "supersede has one or more listed target IDs. Never invent IDs.\nINPUT:\n"
-            + json.dumps(payload, ensure_ascii=False)
+            "For each new memory, compare it with its candidate stored memories only. Answer "
+            "duplicate (one target) when the meaning is materially the same; supersede (one or "
+            "more targets) only when it explicitly corrects or replaces a current memory; "
+            "otherwise add (no targets). A later event does not supersede an earlier one, and a "
+            "contradiction without a stated correction is add. When uncertain, add. Use only "
+            "the listed IDs.\nINPUT:\n" + json.dumps(payload, ensure_ascii=False)
         )
         try:
             response = self._generate(prompt)
@@ -345,13 +361,13 @@ class GeminiSupersedeClassifier:
             # (Gemini answered one 4-fact LoCoMo request with 429 on every attempt), the facts
             # are kept as new rather than losing the whole round.
             logger.warning("Supersede classifier failed; keeping %d facts as new: %s",
-                           len(facts), str(error)[:200])  # fmt: skip
-            return [UpdateDecision(fact.fact_id) for fact in facts]
+                           len(asked), str(error)[:200])  # fmt: skip
+            return [local.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
         rows = _decision_rows(response)
-        new_by_id = {fact.fact_id: fact for fact in facts}
-        decisions = {}
+        new_by_id = {fact.fact_id: fact for fact in asked}
         for row in rows:
             try:
+                row = _full_ids(row, new_ids, stored_ids)
                 decision = _parse_decision(row, new_by_id, candidate_map, decisions)
             except (TypeError, ValueError) as error:
                 # One bad row only costs that fact its update: it is kept as new.
@@ -361,35 +377,21 @@ class GeminiSupersedeClassifier:
         return [decisions.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
 
     def _candidates(self, fact):
+        if fact.embedding is None:
+            return []
         candidates = {}
         reader = _reader_for(fact)
-        if fact.embedding is not None:
-            for candidate, score in self.store.similar_facts(
-                reader,
-                fact.embedding,
-                limit=max(self.candidates_k * 3, self.candidates_k),
-                min_similarity=self.min_similarity,
-                category=fact.category,
-            ):
-                if self._eligible(fact, candidate) and score >= self.min_similarity:
-                    candidates[candidate.fact_id] = (float(score), candidate)
-        if fact.entity_ids:
-            for candidate in self.store.facts_with_entities(
-                reader, fact.entity_ids, limit=max(self.candidates_k * 3, self.candidates_k)
-            ):
-                if self._eligible(fact, candidate) and set(fact.entity_ids) & set(
-                    candidate.entity_ids
-                ):
-                    score = (
-                        _cosine(fact.embedding, candidate.embedding)
-                        if fact.embedding is not None and candidate.embedding is not None
-                        else 0.0
-                    )
-                    previous = candidates.get(candidate.fact_id)
-                    if previous is None or score > previous[0]:
-                        candidates[candidate.fact_id] = (score, candidate)
+        for candidate, score in self.store.similar_facts(
+            reader,
+            fact.embedding,
+            limit=self.candidates_k * 3,
+            min_similarity=DUPLICATE_SIMILARITY,
+            category=fact.category,
+        ):
+            if self._eligible(fact, candidate) and score >= DUPLICATE_SIMILARITY:
+                candidates[candidate.fact_id] = (float(score), candidate)
         ranked = sorted(candidates.values(), key=lambda row: (-row[0], row[1].fact_id))
-        return [candidate for _, candidate in ranked[: self.candidates_k]]
+        return ranked[: self.candidates_k]
 
     @staticmethod
     def _eligible(fact, candidate):
@@ -433,6 +435,27 @@ def _decision_rows(response):
     return rows
 
 
+def _day(fact):
+    moment = fact.occurred_at or fact.valid_from
+    return moment.date().isoformat() if moment else None
+
+
+def _full_ids(row, new_ids, stored_ids):
+    """A decision row with the prompt's short IDs mapped back to fact IDs."""
+    if not isinstance(row, dict) or set(row) != {"id", "action", "target_ids"}:
+        raise ValueError("invalid supersession fields")
+    targets = row["target_ids"]
+    if row["id"] not in new_ids or not isinstance(targets, list):
+        raise ValueError("unknown fact ID or target list")
+    if any(target not in stored_ids for target in targets):
+        raise ValueError("target outside the candidate set")
+    return {
+        "fact_id": new_ids[row["id"]],
+        "action": row["action"],
+        "target_ids": [stored_ids[target] for target in targets],
+    }
+
+
 def _parse_decision(row, new_by_id, candidate_map, seen):
     if not isinstance(row, dict) or set(row) != {"fact_id", "action", "target_ids"}:
         raise ValueError("invalid supersession fields")
@@ -461,11 +484,11 @@ def _decision_schema():
         "items": {
             "type": "object",
             "properties": {
-                "fact_id": {"type": "string"},
+                "id": {"type": "string"},
                 "action": {"type": "string", "enum": [action.value for action in UpdateAction]},
                 "target_ids": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["fact_id", "action", "target_ids"],
+            "required": ["id", "action", "target_ids"],
             "additionalProperties": False,
         },
     }

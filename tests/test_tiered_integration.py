@@ -24,7 +24,7 @@ from test_reflect import (
 from test_retain_extraction import chunks, fact_row, gemini_returning
 
 from bench.mem2act import verify_retained_history
-from bench.metering import BudgetStop, Ledger, Models
+from bench.metering import PRICES, BudgetStop, Ledger, Models, rates
 from devtools.worker import RETRIEVAL_QUERY_CHARS, answer_query, retrieval_query
 from recall import InMemoryRecallStore, Recaller
 from recall.alloydb_store import AlloyDBRecallStore
@@ -174,14 +174,14 @@ def test_reflect_enabled_sql_binds_tiers_and_includes_macros():
 @pytest.mark.parametrize("known", [True, False])
 def test_relative_day_counts_and_unknown_source_dates(known):
     chunk = chunks("The project starts in 3 days.")[0]
-    row = fact_row(chunk, text=chunk.text, evidence=chunk.text, category="event", entities=[])
-    row["details"]["when"] = "in 3 days"
+    row = fact_row(text=chunk.text, evidence=chunk.text, category="event", entities=[])
+    row["when"] = "in 3 days"
     client = gemini_returning(json.dumps([row]))
     result = GeminiFactExtractor(client, source_dates_known=known).extract([chunk])
     assert len(result) == 1
     assert (result[0].occurred_at is not None) == known
     prompt = client.models.generate_content.call_args.kwargs["contents"]
-    assert ('"timestamp": null' in prompt) != known
+    assert ("Date: " in prompt) == known
 
 
 def test_budget_counts_schema_before_provider_call_and_survives_restart(tmp_path):
@@ -220,6 +220,19 @@ def test_budget_settles_thinking_and_persists_provider_receipt(tmp_path):
     Models(client, client, ledger).generate_content(model="gemini-3.5-flash", contents="hello")
     assert ledger.state["accounted_usd"] == pytest.approx(0.0024)
     assert (tmp_path / "calls/00001.json").exists()
+
+
+def test_rates_follow_promotions_and_reject_unpriced_models():
+    from datetime import date
+
+    from shared.llm import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL in PRICES
+    assert rates("gemini-3.8-flash", date(2026, 12, 31)) == pytest.approx((0.75e-6, 3.75e-6))
+    assert rates("gemini-3.8-flash", date(2027, 1, 1)) == pytest.approx((1.5e-6, 7.5e-6))
+    assert rates("gemini-3.5-flash") == pytest.approx((1.5e-6, 9e-6))
+    with pytest.raises(ValueError):
+        rates("gemini-unpriced")
 
 
 def test_recovery_rejects_changed_or_uncommitted_source(tmp_path):

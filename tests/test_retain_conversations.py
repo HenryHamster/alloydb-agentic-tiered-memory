@@ -11,7 +11,7 @@ from retain.entities import normalize_name
 from retain.extraction import (
     GeminiFactExtractor,
     _is_chit_chat,
-    _preceding_contexts,
+    _pack_chunks,
     _relative_date,
     _resolve_relative_dates,
     _tool_call_facts,
@@ -59,9 +59,9 @@ def document(text, *, speaker=Speaker.ASSISTANT, name=None, position=0, at=MONDA
 
 
 def model_row(chunk, text, evidence, **overrides):
+    """A model row citing `chunk`, sent alone as chunk 0 of its request."""
     row = {
-        "key": 0,
-        "chunk_id": chunk.chunk_id,
+        "chunk": 0,
         "text": text,
         "evidence": evidence,
         "fact_type": "experience",
@@ -70,11 +70,10 @@ def model_row(chunk, text, evidence, **overrides):
         "visibility": "session",
         "occurred_at": None,
         "valid_from": None,
-        "details": {"who": None, "what": None, "when": None, "where": None, "why": None},
+        "when": None,
         "entities": [],
-        "relations": [],
+        "updates": False,
         "caused_by": [],
-        "evidenced_by": [],
     }
     row.update(overrides)
     return row
@@ -135,7 +134,7 @@ def test_named_speaker_is_sent_to_the_model_and_recorded_as_a_person():
     (fact,) = extractor.extract([chunk])
 
     payload = client.models.generate_content.call_args.kwargs["contents"]
-    assert '"speaker_name": "Melanie"' in payload
+    assert "[0] Melanie (assistant): " in payload
     assert fact.claim_type == ClaimType.ASSERTED and fact.fact_type == FactType.WORLD
 
 
@@ -146,7 +145,7 @@ def test_an_unnamed_agent_keeps_proposed_claims():
 
     (fact,) = extractor.extract([chunk])
 
-    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert "(assistant)" not in client.models.generate_content.call_args.kwargs["contents"]
     assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
 
 
@@ -199,7 +198,7 @@ def test_a_named_agent_is_still_an_agent_unless_the_assistant_is_human():
     row = model_row(chunk, "The assistant suggested Python 3.12.", "You should use Python 3.12.")
     extractor, client = extractor_returning([row], keep_unrecorded_user_messages=False)
     (fact,) = extractor.extract([chunk])
-    assert '"speaker_name"' not in client.models.generate_content.call_args.kwargs["contents"]
+    assert "(assistant)" not in client.models.generate_content.call_args.kwargs["contents"]
     assert fact.claim_type == ClaimType.PROPOSED and fact.fact_type == FactType.EXPERIENCE
     preference = dataclasses.replace(
         fact, category=Category.PREFERENCE, claim_type=ClaimType.ASSERTED
@@ -570,9 +569,9 @@ def test_the_previous_turn_is_context_for_the_next_round_and_a_retry():
     assert [d.context for d in docs] == [photo, None]
     assert [d.context for d in retry] == [photo, None]
     chunks = chunk_documents(docs)
-    contexts = _preceding_contexts(chunks, 600)
-    assert contexts[chunks[1].chunk_id].startswith(photo)
-    assert "trail" in contexts[chunks[0].chunk_id]
+    # Both chunks go in one request; the earlier turn is its context.
+    ((request, context),) = _pack_chunks(chunks, 600, 16000)
+    assert request == chunks and context == photo
 
 
 def test_the_text_may_word_the_phrase_differently_from_the_quote():
@@ -591,15 +590,14 @@ def test_a_named_speakers_fact_that_says_the_assistant_gets_their_name():
                    name="Melanie")  # fmt: skip
     (chunk,) = chunk_documents([doc])
     rows = [
-        {"key": 0, "chunk_id": chunk.chunk_id, "text": text, "evidence": "a stained glass window",
+        {"chunk": 0, "text": text, "evidence": "a stained glass window",
          "fact_type": "experience", "category": "event", "claim_type": "asserted",
          "visibility": "session", "occurred_at": None, "valid_from": None, "when": None,
-         "entities": [], "relations": [], "caused_by": [], "evidenced_by": []}
+         "entities": [], "updates": False, "caused_by": []}
         for text in ("The assistant shared a photo of a stained glass window.",
                      "The assistant's photo shows a stained glass window.")
     ]  # fmt: skip
-    rows[1]["key"] = 1
-    extractor, _ = extractor_returning(rows, lean=True)
+    extractor, _ = extractor_returning(rows)
 
     facts = extractor.extract([chunk])
 

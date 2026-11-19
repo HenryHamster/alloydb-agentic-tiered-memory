@@ -6,6 +6,7 @@ import redis
 
 from async_worker import AsyncMemoryWorker
 from hybrid_retriever import retrieve_hybrid_entities, rewrite_temporal_query
+from shared.llm import DEFAULT_MODEL
 from valkey_buffer import append_session_turn_with_rolling_summary, get_session_context_buffer
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ def run_agent_turn(
     for attempt in range(4):
         try:
             response = genai_client.models.generate_content(
-                model="gemini-3.5-flash", contents=system_prompt
+                model=DEFAULT_MODEL, contents=system_prompt
             )
             break
         except Exception as e:

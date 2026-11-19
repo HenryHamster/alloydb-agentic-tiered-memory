@@ -250,6 +250,8 @@ class ExtractedFact:
     relations: tuple[RelationMention, ...] = ()
     caused_by: tuple[int, ...] = ()
     evidenced_by: tuple[int, ...] = ()
+    # Changes or corrects an earlier statement: only these may supersede stored facts.
+    updates: bool = field(default=False, compare=False)
 
     def __post_init__(self):
         if not self.text.strip() or not self.evidence.strip():

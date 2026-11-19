@@ -202,7 +202,7 @@ def test_recall_reads_retains_tool_facts_ids_and_round_links(memories):
     # Retain's production extractor settings; the model returns no facts of its own, so every
     # fact below is built by Retain's code from the round itself.
     extractor = GeminiFactExtractor(
-        gemini_returning("[]"), lean=True, tool_result_facts=True, link_rounds=True
+        gemini_returning("[]"), tool_result_facts=True, link_rounds=True
     )
     retainer = Retainer(
         store=memories.retain_store,
