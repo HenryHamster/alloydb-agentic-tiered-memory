@@ -685,3 +685,11 @@ def test_code_built_facts_name_entities_by_field_and_skip_empty_results():
         "HD2020-98367",
     ]
     assert {e.entity_type for e in fact.entities} == {EntityType.OTHER}
+
+
+def test_the_prompt_sets_no_word_limit_and_names_the_details_to_keep():
+    prompt = GeminiFactExtractor(Mock())._prompt_prefix()
+    prompt = " ".join(prompt.split())
+    assert "no word limit" in prompt and "8-15" not in prompt
+    for detail in ("names", "numbers", "dates", "places", "reasons and causes", "conditions"):
+        assert detail in prompt
