@@ -1,0 +1,17 @@
+{
+  "name": "alloydb-agentic-tiered-memory",
+  "owner": {
+    "name": "HenryHamster"
+  },
+  "metadata": {
+    "description": "Tiered long-term memory for agents on AlloyDB and Valkey."
+  },
+  "plugins": [
+    {
+      "name": "tiered-memory",
+      "source": "./",
+      "description": "Long-term agent memory on AlloyDB and Valkey: retain facts from each conversation and recall them in later sessions.",
+      "version": "0.1.0"
+    }
+  ]
+}
