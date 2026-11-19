@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from retain.models import ClaimType, Observation, Scope, Visibility, stable_id
-from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
 
 
 class ObservationBuilder(Protocol):
@@ -239,7 +239,7 @@ class GeminiObservationBuilder:
         raise AssertionError("unreachable")
 
     def _generate(self, prompt):
-        for attempt in range(4):
+        for attempt in range(RETRY_ATTEMPTS):
             try:
                 return self.client.models.generate_content(
                     model=self.model,
@@ -251,9 +251,9 @@ class GeminiObservationBuilder:
                     },
                 )
             except Exception as error:
-                if not is_rate_limited(error) or attempt == 3:
+                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
                     raise
-                time.sleep(3 * (2**attempt))
+                time.sleep(backoff(attempt))
 
 
 def _group_key(scope, visibility, entity_id):

@@ -4,7 +4,7 @@ import math
 import time
 from collections.abc import Callable, Sequence
 
-from shared.llm import is_rate_limited
+from shared.llm import RETRY_ATTEMPTS, backoff, is_rate_limited
 
 Embedder = Callable[[Sequence[str]], list[list[float]]]
 EMBEDDING_DIMENSIONS = 768
@@ -35,13 +35,13 @@ class GeminiEmbedder:
         return vectors
 
     def _embed(self, batch):
-        for attempt in range(4):
+        for attempt in range(RETRY_ATTEMPTS):
             try:
                 return self.client.models.embed_content(model=self.model, contents=list(batch))
             except Exception as error:
-                if not is_rate_limited(error) or attempt == 3:
+                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
                     raise
-                time.sleep(3 * (2**attempt))
+                time.sleep(backoff(attempt))
 
 
 def _validate_vector(values):

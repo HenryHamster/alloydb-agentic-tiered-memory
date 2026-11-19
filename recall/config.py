@@ -67,7 +67,9 @@ class RecallConfig:
     # empty, so the count, not the score, is the main limit. Results with no positive score
     # still abstain. TODO(recall): confirm both on the full 10-question set.
     max_items: int = 10
-    # List and count questions ("what events has Caroline attended?") need room for every item.
+    # List and count questions ("what events has Caroline attended?") need room for every item,
+    # so they keep up to this many positive results even under min_relevance: one counted item
+    # scored 0.094 and dropped (LME-002 c4a1ceb8) while the context was under half full.
     list_max_items: int = 15
     min_relevance: float = 0.1
     # Reranker scores are not calibrated across questions: a vague back-reference ("the film

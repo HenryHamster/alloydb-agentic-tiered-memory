@@ -270,6 +270,14 @@ def test_low_but_positive_reranker_scores_are_kept_up_to_max_items(memories):
     assert len(floor) == RecallConfig().min_items
     strict = RecallConfig(min_relevance=0.2, min_items=0)
     assert memories.recaller(reranker=low, config=strict).recall(SCOPE, "favourite movie").abstained
+    # A list question fills list_max_items with positive results even under min_relevance.
+    lister = memories.recaller(
+        reranker=low,
+        config=RecallConfig(min_relevance=0.2),
+        generate=lambda prompt: '{"sub_queries": [], "time_window": null, "list": true}',
+    )
+    listed = [i for i in lister.recall(SCOPE, "favourite movie").items if i.memory.type == "fact"]
+    assert len(listed) == min(12, RecallConfig().list_max_items)
 
 
 def test_weak_results_bring_their_verbatim_source_round(memories):

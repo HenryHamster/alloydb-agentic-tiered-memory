@@ -345,6 +345,7 @@ def run_remote(cloud, args, source):
         "cache_epoch": args.cache_epoch,
         "shared_cache": True,
         "config": cloud.config,
+        "retain": retain_options(args),
     }
     archive = output / "upload.tar.gz"
     source_bundle(source, archive, job)
@@ -439,8 +440,24 @@ def run_remote(cloud, args, source):
         f"Reported new tokens: {totals['prompt_token_count']} input, "
         f"{totals['candidates_token_count']} output, {totals['thoughts_token_count']} thinking."
     )
+    blocked = report["status"].get("blocked_fact_requests")
+    if blocked:
+        print(
+            f"WARNING: {sum(blocked.values())} fact extraction requests were blocked "
+            f"({blocked}); their facts are missing, user messages kept verbatim."
+        )
     print(f"Full results: {output / 'report.json'}")
     return 0 if report["status"]["status"] == "completed" else 2
+
+
+def retain_options(args):
+    """Retain settings that differ from production for this run; empty means production."""
+    options = {
+        key: getattr(args, key, None)
+        for key in ("extract_thinking", "observation_thinking", "max_request_chars")
+    }
+    options["observations"] = False if getattr(args, "no_observations", False) else None
+    return {key: value for key, value in options.items() if value is not None}
 
 
 def main(argv=None):
@@ -466,6 +483,15 @@ def main(argv=None):
     run.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model for every stage")
     run.add_argument("--cache-epoch", default="1")
     run.add_argument("--output", type=Path, default=Path("dev_runs"))
+    levels = ["minimal", "low", "medium", "high"]
+    run.add_argument("--extract-thinking", choices=levels, help="Retain extraction thinking")
+    run.add_argument("--observation-thinking", choices=levels, help="Retain observation thinking")
+    run.add_argument(
+        "--max-request-chars", type=int, help="Characters of source and prompt per extraction"
+    )
+    run.add_argument(
+        "--no-observations", action="store_true", help="Skip the end-of-session observations"
+    )
     args = parser.parse_args(argv)
     try:
         cloud = Cloud(load_config(args.config))

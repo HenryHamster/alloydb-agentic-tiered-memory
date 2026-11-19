@@ -29,7 +29,7 @@ from devtools.cache import (
 from devtools.cli import collect_archive
 from devtools.files import read_json, save_json
 from devtools.state import PrefixedValkey, RunSchema
-from devtools.worker import run_job
+from devtools.worker import apply_retain_options, run_job, validate_retain_options
 from recall import InMemoryRecallStore, Recaller
 from reflect import Reflector
 from reflect.consolidation import LLMConflictJudge
@@ -81,9 +81,7 @@ class FixtureModels:
                         "occurred_at": None,
                         "valid_from": None,
                         "when": None,
-                        "entities": [
-                            {"name": "Inception", "entity_type": "other", "role": "subject"}
-                        ],
+                        "entities": [{"name": "Inception", "type": "other", "role": "subject"}],
                         "updates": False,
                         "caused_by": [],
                     }
@@ -163,6 +161,7 @@ class MemorySchema:
 class MemoryBackend:
     def __init__(self, config, cache, models, source, clock, run_id):
         self.cache, self.models, self.clock = cache, models, clock
+        self.retain = config.get("retain", {})
         self.schemas = []
         storage = MemoryValkey()
         storage.close = lambda: None
@@ -189,6 +188,7 @@ class MemoryBackend:
             config=RetainConfig(maintenance_every=0),
             clock=lambda: self.clock,
         )
+        apply_retain_options(retainer, self.retain)
         reflector = Reflector(
             store=schema.reflect,
             embedder=embedder,
@@ -592,3 +592,51 @@ def test_schema_ddl_applies_the_document_embedding_migration_in_one_transaction(
     assert "documents_embedding_idx" in ddl[2]
     assert not any("CONCURRENTLY" in part for part in ddl)
     assert not any("CREATE EXTENSION" in part for part in ddl)
+
+
+def _prompts(fixture, prefix):
+    return [r for r in fixture.requests if str(r.get("contents", "")).startswith(prefix)]
+
+
+def test_blocked_fact_requests_are_reported_also_from_the_prepared_cache(tmp_path):
+    first, fixture = execute(tmp_path, job())
+    assert first["status"] == "completed", first
+    assert first["blocked_fact_requests"] == {}
+    second, _ = execute(tmp_path, job(), "again", fixture)
+    assert second["prepared_cache_hit"]
+    assert second["blocked_fact_requests"] == {}
+
+
+def test_retain_options_change_extraction_and_skip_observations(tmp_path):
+    first, fixture = execute(tmp_path, job())
+    assert first["status"] == "completed"
+    assert _prompts(fixture, "Write a concise observation")
+    assert all(
+        r["config"]["thinking_config"]["thinking_level"] == "medium"
+        for r in _prompts(fixture, "Extract memories")
+    )
+    options = {"extract_thinking": "minimal", "observations": False, "max_request_chars": 9000}
+    second, other = execute(tmp_path, {**job(), "retain": options}, "lean")
+    assert second["status"] == "completed", second
+    assert not second["prepared_cache_hit"]
+    assert not _prompts(other, "Write a concise observation")
+    extraction = _prompts(other, "Extract memories")
+    assert extraction
+    assert all(r["config"]["thinking_config"]["thinking_level"] == "minimal" for r in extraction)
+    assert read_json(tmp_path / "lean/job.json")["retain"] == options
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"extract_thinking": "none"},
+        {"max_request_chars": 0},
+        {"max_request_chars": True},
+        {"observations": True},
+        {"reflect": False},
+        [],
+    ],
+)
+def test_retain_options_are_validated(options):
+    with pytest.raises(ValueError):
+        validate_retain_options(options)

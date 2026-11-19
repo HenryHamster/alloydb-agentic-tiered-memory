@@ -54,7 +54,7 @@ def fact_row(chunk=0, **overrides):
         "occurred_at": None,
         "valid_from": None,
         "when": None,
-        "entities": [{"name": "Python", "entity_type": "technology", "role": "object"}],
+        "entities": [{"name": "Python", "type": "technology", "role": "object"}],
         "updates": False,
         "caused_by": [],
     }
@@ -447,9 +447,9 @@ def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
     client.models.generate_content.assert_not_called()
 
     people = [
-        {"name": "the user", "entity_type": "person", "role": "subject"},
-        {"name": "Assistant", "entity_type": "person", "role": "mentioned"},
-        {"name": "Python", "entity_type": "technology", "role": "object"},
+        {"name": "the user", "type": "person", "role": "subject"},
+        {"name": "Assistant", "type": "person", "role": "mentioned"},
+        {"name": "Python", "type": "technology", "role": "object"},
     ]
     extractor, _ = extractor_for([fact_row(entities=people)])
     (fact,) = extractor.extract(chunks())
@@ -487,19 +487,24 @@ def test_extraction_asks_for_one_slim_row_and_finds_requoted_or_repeated_evidenc
 
 
 def test_fields_left_out_take_their_defaults_but_required_ones_reject_the_row():
-    defaults = {"fact_type", "claim_type", "visibility", "occurred_at", "caused_by", "updates"}
+    defaults = {
+        "fact_type", "claim_type", "visibility", "occurred_at", "valid_from", "when",
+        "caused_by", "updates",
+    }  # fmt: skip
     slim = {key: value for key, value in fact_row().items() if key not in defaults}
     uncategorized = {key: value for key, value in fact_row().items() if key != "category"}
-    extractor, client = extractor_for([slim, uncategorized])
+    no_entities = {key: value for key, value in fact_row().items() if key != "entities"}
+    extractor, client = extractor_for([slim, uncategorized, no_entities])
 
     (fact,) = extractor.extract(chunks())
 
     assert fact.fact_type == FactType.WORLD and fact.claim_type == ClaimType.ASSERTED
     assert fact.visibility == Visibility.GLOBAL and fact.occurred_at is None
     assert fact.caused_by == () and fact.updates is False
+    assert fact.valid_from is None and "when" not in fact.details
     schema = client.models.generate_content.call_args.kwargs["config"]["response_json_schema"]
     assert defaults.isdisjoint(schema["items"]["required"])
-    assert "category" in schema["items"]["required"]
+    assert {"category", "entities"} <= set(schema["items"]["required"])
 
 
 def test_each_session_is_its_own_request_and_states_its_date_once():
@@ -685,3 +690,35 @@ def test_code_built_facts_name_entities_by_field_and_skip_empty_results():
         "HD2020-98367",
     ]
     assert {e.entity_type for e in fact.entities} == {EntityType.OTHER}
+
+
+def test_safety_blocked_request_yields_no_facts_and_keeps_user_messages(caplog):
+    client = Mock()
+    response = client.models.generate_content.return_value
+    response.text = None
+    response.prompt_feedback = None
+    response.candidates = [Mock(finish_reason=Mock())]
+    response.candidates[0].finish_reason.name = "SAFETY"
+    request = "Can you check the status of the server with ID 'psql-001'?"
+
+    extractor = GeminiFactExtractor(client)
+    (fact,) = extractor.extract(chunks(request))
+
+    assert client.models.generate_content.call_count == 1
+    assert fact.text == "The user said: " + request
+    # Not silent: each block is tallied and logged.
+    assert extractor.blocked == {"SAFETY": 1}
+    assert "blocked a fact request (SAFETY)" in caplog.text
+    extractor.extract(chunks(request))
+    assert extractor.blocked == {"SAFETY": 2}
+
+
+def test_unblocked_empty_response_still_fails():
+    client = Mock()
+    response = client.models.generate_content.return_value
+    response.text = None
+    response.prompt_feedback = None
+    response.candidates = []
+
+    with pytest.raises(ValueError, match="no structured fact response"):
+        GeminiFactExtractor(client).extract(chunks())

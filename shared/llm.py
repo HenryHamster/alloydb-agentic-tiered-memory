@@ -88,13 +88,28 @@ def is_rate_limited(error: Exception) -> bool:
     return status in _RETRYABLE_STATUSES
 
 
-def generate_with_retry(generate: Generate, prompt: str, attempts: int = 4) -> str:
-    """Retries rate-limit errors with exponential backoff (3s, 6s, 12s); others raise at once."""
+# Gemini on the global endpoint draws on shared capacity, whose 429 spells can last minutes.
+# Background work (Retain stages, offline judging) waits 3, 6, 12, 24, 48, 60, 60 s, about
+# 3.5 min, before a request gives up. A user is waiting on interactive calls (answers,
+# compaction, query analysis), so they keep 4 attempts, about 21 s.
+RETRY_ATTEMPTS = 8
+INTERACTIVE_ATTEMPTS = 4
+
+
+def backoff(attempt: int) -> float:
+    """Seconds to wait after failed attempt `attempt` (0-based) of a retryable error."""
+    return min(60, 3 * 2**attempt)
+
+
+def generate_with_retry(
+    generate: Generate, prompt: str, attempts: int = INTERACTIVE_ATTEMPTS
+) -> str:
+    """Retries rate-limit and temporary server errors with `backoff`; others raise at once."""
     for attempt in range(attempts):
         try:
             return generate(prompt)
         except Exception as e:
             if not is_rate_limited(e) or attempt == attempts - 1:
                 raise
-            time.sleep(3 * (2**attempt))
+            time.sleep(backoff(attempt))
     raise AssertionError("unreachable")

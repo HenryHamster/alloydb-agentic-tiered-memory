@@ -6,7 +6,7 @@ comparable across runs of this harness, not directly with published numbers. For
 the hypotheses file to the official evaluator.
 """
 
-from shared.llm import Generate, generate_with_retry
+from shared.llm import RETRY_ATTEMPTS, Generate, generate_with_retry
 
 ANSWER_PROMPT = """I will give you memories retrieved from several past chats between you and a user. Each memory starts with its id and (type | date | speaker ...) labels. Answer the question based on the relevant memories. If the memories do not contain the information needed, say that you do not know.
 
@@ -68,7 +68,7 @@ def answer(generate: Generate, context: str, question: str, question_date: str) 
     prompt = ANSWER_PROMPT.format(
         context=context or "(no memories found)", question=question, question_date=question_date
     )
-    return generate_with_retry(generate, prompt).strip()
+    return generate_with_retry(generate, prompt, RETRY_ATTEMPTS).strip()
 
 
 def judge(
@@ -80,4 +80,4 @@ def judge(
     abstention: bool,
 ) -> bool:
     prompt = judge_prompt(question_type, question, answer_text, response, abstention)
-    return "yes" in generate_with_retry(generate, prompt).strip().lower()[:10]
+    return "yes" in generate_with_retry(generate, prompt, RETRY_ATTEMPTS).strip().lower()[:10]
