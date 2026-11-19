@@ -88,9 +88,12 @@ def is_rate_limited(error: Exception) -> bool:
     return status in _RETRYABLE_STATUSES
 
 
-# Gemini on the global endpoint draws on shared capacity, whose 429 spells can last minutes:
-# 8 attempts wait 3, 6, 12, 24, 48, 60, 60 s (about 3.5 min) before a request gives up.
+# Gemini on the global endpoint draws on shared capacity, whose 429 spells can last minutes.
+# Background work (Retain stages, offline judging) waits 3, 6, 12, 24, 48, 60, 60 s, about
+# 3.5 min, before a request gives up. A user is waiting on interactive calls (answers,
+# compaction, query analysis), so they keep 4 attempts, about 21 s.
 RETRY_ATTEMPTS = 8
+INTERACTIVE_ATTEMPTS = 4
 
 
 def backoff(attempt: int) -> float:
@@ -98,7 +101,9 @@ def backoff(attempt: int) -> float:
     return min(60, 3 * 2**attempt)
 
 
-def generate_with_retry(generate: Generate, prompt: str, attempts: int = RETRY_ATTEMPTS) -> str:
+def generate_with_retry(
+    generate: Generate, prompt: str, attempts: int = INTERACTIVE_ATTEMPTS
+) -> str:
     """Retries rate-limit and temporary server errors with `backoff`; others raise at once."""
     for attempt in range(attempts):
         try:

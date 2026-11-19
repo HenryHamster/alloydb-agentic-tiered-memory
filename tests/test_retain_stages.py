@@ -23,7 +23,7 @@ from retain.models import (
     Visibility,
     stable_id,
 )
-from shared.llm import RETRY_ATTEMPTS
+from shared.llm import INTERACTIVE_ATTEMPTS, RETRY_ATTEMPTS, generate_with_retry
 
 AT = datetime(2026, 10, 20, tzinfo=timezone.utc)
 SCOPE = Scope("user-stage", "project-a", "session-a")
@@ -484,3 +484,15 @@ def test_a_fact_that_updates_nothing_is_decided_without_the_model():
     assert duplicate.action == UpdateAction.DUPLICATE and duplicate.target_ids == ("old",)
     assert added == UpdateDecision("near")
     client.models.generate_content.assert_not_called()
+
+
+def test_interactive_generation_gives_up_sooner_than_background_stages(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda seconds: None)
+    error = Exception("429 RESOURCE_EXHAUSTED")
+    error.code = 429
+    generate = Mock(side_effect=error)
+
+    with pytest.raises(Exception, match="RESOURCE_EXHAUSTED"):
+        generate_with_retry(generate, "prompt")
+
+    assert generate.call_count == INTERACTIVE_ATTEMPTS < RETRY_ATTEMPTS
