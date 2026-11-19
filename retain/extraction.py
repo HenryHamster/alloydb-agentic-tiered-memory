@@ -65,7 +65,7 @@ else global. Entities are what the fact names, never the speakers;
 caused_by holds indexes of other facts in this array. `updates` is true only when the fact
 changes or corrects something said earlier in the conversation. Omit a field whose value is its
 default: fact_type world, claim_type asserted, visibility global, no occurred_at, valid_from or
-when, entities [], caused_by [], updates false.%s
+when, caused_by [], updates false. Always list entities ([] when the fact names none).%s
 SOURCE:
 """
 _TOOL_RESULT_NOTE = """
@@ -89,6 +89,7 @@ class FactExtractor(Protocol):
 
 
 # Fields the model omits when they hold these values; written out they were a third of its output.
+# Entities stay required: left optional, the model dropped about half of them (LME-002 lean2).
 _ROW_DEFAULTS = {
     "fact_type": "world",
     "claim_type": "asserted",
@@ -96,7 +97,6 @@ _ROW_DEFAULTS = {
     "occurred_at": None,
     "valid_from": None,
     "when": None,
-    "entities": [],
     "caused_by": [],
     "updates": False,
 }

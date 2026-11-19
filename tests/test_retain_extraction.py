@@ -489,21 +489,22 @@ def test_extraction_asks_for_one_slim_row_and_finds_requoted_or_repeated_evidenc
 def test_fields_left_out_take_their_defaults_but_required_ones_reject_the_row():
     defaults = {
         "fact_type", "claim_type", "visibility", "occurred_at", "valid_from", "when",
-        "entities", "caused_by", "updates",
+        "caused_by", "updates",
     }  # fmt: skip
     slim = {key: value for key, value in fact_row().items() if key not in defaults}
     uncategorized = {key: value for key, value in fact_row().items() if key != "category"}
-    extractor, client = extractor_for([slim, uncategorized])
+    no_entities = {key: value for key, value in fact_row().items() if key != "entities"}
+    extractor, client = extractor_for([slim, uncategorized, no_entities])
 
     (fact,) = extractor.extract(chunks())
 
     assert fact.fact_type == FactType.WORLD and fact.claim_type == ClaimType.ASSERTED
     assert fact.visibility == Visibility.GLOBAL and fact.occurred_at is None
     assert fact.caused_by == () and fact.updates is False
-    assert fact.valid_from is None and "when" not in fact.details and fact.entities == ()
+    assert fact.valid_from is None and "when" not in fact.details
     schema = client.models.generate_content.call_args.kwargs["config"]["response_json_schema"]
     assert defaults.isdisjoint(schema["items"]["required"])
-    assert "category" in schema["items"]["required"]
+    assert {"category", "entities"} <= set(schema["items"]["required"])
 
 
 def test_each_session_is_its_own_request_and_states_its_date_once():
