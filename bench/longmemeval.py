@@ -16,9 +16,10 @@ would retain a finished conversation, so extraction sees the whole conversation 
 than one request per round.
 
 Retrieval is scored on Recall's packed items (what the agent would see): an item counts for the
-session its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k at session level
-(answer_session_ids); abstention questions are left out, as in LongMemEval. With --qa, Gemini answers from the packed context
-and judges with LongMemEval's prompts (bench/qa.py).
+conversation its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k are taken
+over the conversations that hold the answer (answer_session_ids); abstention questions are left
+out, as in LongMemEval. With --qa, Gemini answers from the packed context and judges with
+LongMemEval's prompts (bench/qa.py).
 
 Results go to a JSONL file (one line per question, resumable), a summary JSON and a
 hypotheses JSONL in the format LongMemEval's own evaluate_qa.py reads.
@@ -266,11 +267,10 @@ def summarize(records: Sequence[dict]) -> dict:
 
     def means(rows: Sequence[dict]) -> dict:
         out: dict[str, Any] = {"count": len(rows)}
-        for level in ("session",):
-            scored = [r["retrieval"][level] for r in rows if r["retrieval"].get(level)]
-            if scored:
-                out[level] = {m: round(mean(s[m] for s in scored), 4) for m in scored[0]}
-                out[level]["count"] = len(scored)
+        scored = [r["retrieval"]["session"] for r in rows if r["retrieval"].get("session")]
+        if scored:
+            out["session"] = {m: round(mean(s[m] for s in scored), 4) for m in scored[0]}
+            out["session"]["count"] = len(scored)
         labels = [r["qa"]["correct"] for r in rows if r.get("qa")]
         if labels:
             out["qa_accuracy"] = round(mean(labels), 4)
