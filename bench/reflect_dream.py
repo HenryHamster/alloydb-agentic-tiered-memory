@@ -145,7 +145,7 @@ def frozen_payload(instance, store, dropped, drop_every):
     return {
         "schema_version": 1,
         "question_id": instance.question_id,
-        "history_sha256": digest(instance.rounds),
+        "history_sha256": digest(instance.sessions),
         "drop_every": drop_every,
         "dropped_fact_ids": dropped,
         **{
@@ -165,7 +165,7 @@ def load_frozen(path, instance, drop_every):
     if (
         data.get("schema_version") != 1
         or data["question_id"] != instance.question_id
-        or data["history_sha256"] != digest(instance.rounds)
+        or data["history_sha256"] != digest(instance.sessions)
         or data["drop_every"] != drop_every
     ):
         raise ValueError("Frozen snapshot does not match this history or omission configuration")
@@ -212,7 +212,7 @@ def prepare(instance, embedder, stages, drop_every):
         config=RetainConfig(document_ttl=None, maintenance_every=0),
         **stages(store),
     )
-    for round_ in sorted(instance.rounds, key=lambda r: (r.messages[0].timestamp, r.episode_id)):
+    for round_ in sorted(instance.sessions, key=lambda r: (r.messages[0].timestamp, r.episode_id)):
         if round_.messages[0].timestamp > instance.question_time:
             raise ValueError("History contains a session later than the evaluation question")
         clock.now = round_.messages[0].timestamp
@@ -236,7 +236,7 @@ def prepare(instance, embedder, stages, drop_every):
 
 
 def provenance_coverage(instance, result, store, lifecycle, job=None):
-    episodes = {r.episode_id: r.session_id for r in instance.rounds}
+    episodes = {r.episode_id: r.session_id for r in instance.sessions}
     derived = {m.macro_id: m.supporting_fact_ids for m in lifecycle.macros.values()}
     for state in lifecycle.states.values():
         if state.consolidated_into:
@@ -297,7 +297,7 @@ def compare(instance, frozen, generate, embedder, *, offline=True, qa_generate=N
                 embedder=embedder,
                 clock=lambda: instance.question_time,
             )
-            sessions = tuple(sorted({r.session_id for r in instance.rounds}))
+            sessions = tuple(sorted({r.session_id for r in instance.sessions}))
             job = dreamer.start(DreamRequest(scope, sessions))
             dreamer.worker_once()
             # Benchmark explicitly approves into this disposable in-memory fork only.
