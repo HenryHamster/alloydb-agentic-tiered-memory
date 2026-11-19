@@ -145,6 +145,24 @@ def _schema():
     }
 
 
+_BLOCK_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"}
+
+
+def _block_reason(response):
+    """Why Gemini refused the request instead of answering, or None when it answered."""
+    reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    name = getattr(reason, "name", reason)
+    if isinstance(name, str) and name not in ("", "BLOCKED_REASON_UNSPECIFIED"):
+        return name
+    candidates = getattr(response, "candidates", None)
+    for candidate in candidates if isinstance(candidates, (list, tuple)) else []:
+        finish = getattr(candidate, "finish_reason", None)
+        name = getattr(finish, "name", finish)
+        if isinstance(name, str) and name in _BLOCK_REASONS:
+            return name
+    return None
+
+
 class GeminiFactExtractor:
     """Extract structured facts and validate every citation against its source chunk.
 
@@ -257,6 +275,12 @@ class GeminiFactExtractor:
                 if not is_rate_limited(error) or attempt == 3:
                     raise
                 time.sleep(3 * (2**attempt))
+        reason = _block_reason(response)
+        if reason:
+            # A blocked request stays blocked on retry. Its user messages are still kept
+            # verbatim when keep_unrecorded_user_messages is on.
+            logger.warning("Gemini blocked a fact request (%s); it yields no facts", reason)
+            return []
         if response is None or not isinstance(getattr(response, "text", None), str):
             raise ValueError("Gemini returned no structured fact response")
         try:

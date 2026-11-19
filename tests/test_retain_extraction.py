@@ -690,3 +690,29 @@ def test_code_built_facts_name_entities_by_field_and_skip_empty_results():
         "HD2020-98367",
     ]
     assert {e.entity_type for e in fact.entities} == {EntityType.OTHER}
+
+
+def test_safety_blocked_request_yields_no_facts_and_keeps_user_messages():
+    client = Mock()
+    response = client.models.generate_content.return_value
+    response.text = None
+    response.prompt_feedback = None
+    response.candidates = [Mock(finish_reason=Mock())]
+    response.candidates[0].finish_reason.name = "SAFETY"
+    request = "Can you check the status of the server with ID 'psql-001'?"
+
+    (fact,) = GeminiFactExtractor(client).extract(chunks(request))
+
+    assert client.models.generate_content.call_count == 1
+    assert fact.text == "The user said: " + request
+
+
+def test_unblocked_empty_response_still_fails():
+    client = Mock()
+    response = client.models.generate_content.return_value
+    response.text = None
+    response.prompt_feedback = None
+    response.candidates = []
+
+    with pytest.raises(ValueError, match="no structured fact response"):
+        GeminiFactExtractor(client).extract(chunks())
