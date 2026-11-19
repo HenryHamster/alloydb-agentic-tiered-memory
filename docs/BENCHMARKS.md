@@ -16,11 +16,11 @@ for f in longmemeval_oracle.json longmemeval_s_cleaned.json; do
 done
 ```
 
-| File | Haystack per question | Use |
+| File | Chat history per question | Use |
 | --- | --- | --- |
-| `longmemeval_oracle.json` | Evidence sessions only | Quick checks; session-level retrieval is near trivial |
-| `longmemeval_s_cleaned.json` | About 50 sessions (~115k tokens) | The main retrieval benchmark |
-| `longmemeval_m_cleaned.json` | About 500 sessions | Scale test; slow on the in-memory backend |
+| `longmemeval_oracle.json` | Only the conversations holding the answer | Quick checks; session-level retrieval is near trivial |
+| `longmemeval_s_cleaned.json` | About 50 conversations (~115k tokens) | The main retrieval benchmark |
+| `longmemeval_m_cleaned.json` | About 500 conversations | Scale test; slow on the in-memory backend |
 
 ## Running
 
@@ -51,23 +51,24 @@ Cloud options read the same environment as the demos (`PROJECT_ID`, `REGION` for
 
 ## What is measured
 
-- **Ingestion.** Each round (a user turn and its replies) is one Retain episode, stored
+- **Ingestion.** Each conversation in the question's history is one Retain episode, stored
   through Retain's `Retainer` under scope `lme:<question_id>`, with the clock set to the
-  session date. `--retain` picks the stages:
+  conversation's date. `--retain` picks the stages:
   - `verbatim` (default): `VerbatimExtractor` turns every 700-character chunk of every message
     into one fact, dated at its session. No entities or links are created, so Recall's entity
     and graph channels are idle. These numbers measure Recall's vector, keyword and temporal
     search, fusion, reranking and packing on raw conversation. No LLM calls.
   - `gemini`: Retain's production stages, wired as `retain.build_retainer` does: Gemini fact
     extraction, fuzzy entity resolution, semantic and temporal links, supersession
-    classification and, once after the haystack is ingested, observations. This measures the
-    whole system. It makes several Gemini calls per round (about 500 rounds per question on
-    `longmemeval_s_cleaned.json`) and nothing is cached, so start with the oracle file or `--limit`.
+    classification and, once after the history is ingested, observations. This measures the
+    whole system. It makes a few Gemini calls per conversation (about 50 conversations per question on `longmemeval_s_cleaned.json`, about
+    USD1.4 per question with gemini-4-hydrogen) and nothing is cached, so start with the oracle
+    file or `--limit`.
     `--gemini-model` sets the model for every stage.
 - **Retrieval** is scored on Recall's packed items, which are what the agent sees, so `--max-tokens`
-  and `--depth` affect it. Each item counts for the session and round its
-  `source_episode_id` came from. The harness reports `recall_any@k`, `recall_all@k` and `ndcg@k`
-  at session level (`answer_session_ids`) and round level (rounds with a `has_answer` turn).
+  and `--depth` affect it. Each item counts for the conversation its `source_episode_id` came
+  from. The harness reports `recall_any@k`, `recall_all@k` and `ndcg@k` over the conversations
+  that hold the answer (`answer_session_ids`).
   Abstention questions (`*_abs`) are excluded, as in LongMemEval.
 - **QA** (`--qa`). Gemini answers from the packed context, then judges the answer with
   LongMemEval's per-type prompts (`bench/qa.py`). The paper's judge is GPT-4o, so to compare with
@@ -85,7 +86,7 @@ Cloud options read the same environment as the demos (`PROJECT_ID`, `REGION` for
 - `<run>.hypotheses.jsonl` has `{"question_id", "hypothesis"}` lines for LongMemEval's evaluator.
 
 Embeddings are cached in `.bench_cache/embeddings.sqlite`, keyed by model, task type and text.
-Reruns and haystack sessions shared between questions are embedded once.
+Reruns and conversations shared between questions are embedded once.
 
 ## Caveats
 
@@ -96,7 +97,7 @@ Reruns and haystack sessions shared between questions are embedded once.
   runs derive the same document ids, so clean up (or use a fresh database) before switching
   `--retain` on one database.
 - Retain's periodic maintenance is off in the benchmark: the observation builder closes old
-  versions at wall-clock time, which a replayed 2023 haystack would read as still open.
+  versions at wall-clock time, which a replayed 2023 history would read as still open.
 - Benchmark embeddings set a retrieval task type; Retain's `GeminiEmbedder` does not.
 - LongMemEval dates have no time zone and are read as UTC.
 

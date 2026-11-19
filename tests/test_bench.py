@@ -69,7 +69,7 @@ def test_dates_parse_as_utc():
         parse_date("yesterday")
 
 
-def test_each_haystack_session_is_one_episode():
+def test_each_conversation_is_one_episode():
     instance = Instance.from_json(record())
     assert [s.episode_id for s in instance.sessions] == ["q1:s1", "q1:s2", "q1:s3"]
     assert len(instance.sessions[1].messages) == 4
@@ -79,7 +79,7 @@ def test_each_haystack_session_is_one_episode():
     assert instance.scope.user_id == "lme:q1"
 
 
-def test_a_repeated_haystack_session_is_ingested_once():
+def test_a_repeated_conversation_is_ingested_once():
     data = record()
     data["haystack_session_ids"].append("s1")
     data["haystack_dates"].append("2023/05/25 (Thu) 08:00")

@@ -3,7 +3,7 @@
     python -m bench.longmemeval data/longmemeval_oracle.json --limit 20
     python -m bench.longmemeval data/longmemeval_s_cleaned.json --embedder vertex --qa
 
-Every question has its own haystack, ingested under its own Scope (user_id "lme:<question_id>")
+Every question has its own chat history, ingested under its own Scope (user_id "lme:<question_id>")
 through Retain's Retainer. By default (--retain verbatim) ingestion uses benchmark stages:
 VerbatimExtractor stores each 700-char chunk of each message as one fact (dated at its
 session), with no entities or links. That measures Recall's search, fusion, reranking and
@@ -11,8 +11,9 @@ packing on raw conversation. --retain gemini runs Retain's production stages ins
 extraction, entity resolution, linking, supersession and observations), so the entity, graph
 and observation channels are filled and the whole system is measured.
 
-Each haystack session is one Retain episode, as an agent would retain a finished conversation,
-so extraction sees the whole session at once rather than one request per round.
+Each conversation (a LongMemEval "session") in the history is one Retain episode, as an agent
+would retain a finished conversation, so extraction sees the whole conversation at once rather
+than one request per round.
 
 Retrieval is scored on Recall's packed items (what the agent would see): an item counts for the
 session its source_episode_id came from. recall_any@k / recall_all@k / ndcg@k at session level
@@ -76,7 +77,7 @@ def parse_date(text: str) -> datetime:
 
 @dataclass(frozen=True)
 class Session:
-    """One haystack session: one Retain episode."""
+    """One conversation from a question's chat history: one Retain episode."""
 
     episode_id: str
     session_id: str
@@ -105,13 +106,13 @@ class Instance:
     @classmethod
     def from_json(cls, record: dict[str, Any]) -> "Instance":
         question_id = str(record["question_id"])
-        haystack: list[Session] = []
+        kept: list[Session] = []
         sessions = zip(
             record["haystack_session_ids"], record["haystack_dates"], record["haystack_sessions"]
         )
         seen = set()
         for session_id, date, turns in sessions:
-            # A few _s haystacks repeat a session verbatim under a later date. Its episode ids
+            # A few _s histories repeat a conversation verbatim under a later date. Its episode ids
             # would repeat with a different occurred_at, which Retain rejects as a conflicting
             # replay; keep the first copy.
             if session_id in seen:
@@ -127,10 +128,10 @@ class Instance:
                 for t in turns
             )
             if messages:
-                haystack.append(
+                kept.append(
                     Session(
                         # Includes the question id: document ids derive from episode ids and
-                        # haystack sessions repeat across questions sharing one database.
+                        # conversations repeat across questions sharing one database.
                         episode_id=f"{question_id}:{session_id}",
                         session_id=str(session_id),
                         messages=messages,
@@ -144,7 +145,7 @@ class Instance:
             question_date=str(record["question_date"]),
             question_time=parse_date(record["question_date"]),
             answer_session_ids=tuple(str(s) for s in record.get("answer_session_ids") or ()),
-            sessions=tuple(haystack),
+            sessions=tuple(kept),
         )
 
 
@@ -336,7 +337,7 @@ class Harness:
             store=retain_store,
             embedder=self.doc_embedder,
             # No periodic maintenance: the observation builder closes versions at wall-clock
-            # time, which replayed haystacks would see as still open at the question date.
+            # time, which replayed histories would see as still open at the question date.
             config=RetainConfig(
                 max_chunk_chars=self.chunk_chars, document_ttl=None, maintenance_every=0
             ),
@@ -354,7 +355,7 @@ class Harness:
                 counts["entities"] += len(result.batch.entities)
                 counts["links"] += len(result.batch.links)
         if "observation_builder" in stages:
-            # One pass over the whole haystack, so each observation has a single version.
+            # One pass over the whole history, so each observation has a single version.
             counts["observations"] = len(retainer.consolidate(instance.scope))
         ingest_ms = (time.perf_counter() - started) * 1000
 
