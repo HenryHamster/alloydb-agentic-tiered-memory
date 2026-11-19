@@ -206,6 +206,17 @@ def test_graph_expansion_binds_relation_order_and_filter(relations):
     assert "explains DESC, weight DESC" in sql
 
 
+def test_similar_pairs_query_only_fact_ids_and_return_unordered_pairs():
+    other = "5c0e6a31-2f1b-4c7e-8e8b-3a4f2d9b7c10"
+    conn = FakeConnection(rows=[(FACT_ID, other)])
+    store = AlloyDBRecallStore(lambda: conn)
+
+    assert store.similar_pairs([FACT_ID, "round-1"]) == set()  # one fact: nothing to pair
+    assert queries(conn) == []
+    assert store.similar_pairs([other, FACT_ID, "round-1"]) == {frozenset((FACT_ID, other))}
+    assert queries(conn)[0][1]["ids"] == [other, FACT_ID]
+
+
 def test_get_episode_and_supporting():
     at = datetime(2026, 10, 2, 10, tzinfo=timezone.utc)
     conn = FakeConnection(rows=[("user", "Nightly backups", at), ("assistant", "Noted.", at)])
