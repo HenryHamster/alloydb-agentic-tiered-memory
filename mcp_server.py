@@ -53,6 +53,7 @@ def build_from_env():
     from google import genai
 
     from db_clients import get_db_connection, get_valkey_client
+    from shared.llm import DEFAULT_MODEL
     from tiered_memory import build_memory_system
 
     project = os.environ.get("PROJECT_ID", "").strip()
@@ -69,7 +70,7 @@ def build_from_env():
         get_valkey_client(),
         generation,
         embedding,
-        model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash"),
+        model=os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
     )
     return system, (generation, embedding)
 

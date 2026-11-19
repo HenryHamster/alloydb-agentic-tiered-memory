@@ -39,7 +39,7 @@ export MEMORY_PROJECT_ID="my-project"    # optional
 export PROJECT_ID="<gcp-project>" REGION="us-east1" GENAI_LOCATION="global"
 export DB_HOST="<alloydb-private-ip>" DB_USER="<iam-db-user>" DB_NAME="postgres"
 export VALKEY_HOST="<valkey-ip>"
-# export GEMINI_MODEL="gemini-3.5-flash"  MEMORY_LOG_LEVEL="INFO"
+# export GEMINI_MODEL="gemini-4-hydrogen"  MEMORY_LOG_LEVEL="INFO"
 ```
 
 The server starts without these and lists its tools; a tool call then returns an error
