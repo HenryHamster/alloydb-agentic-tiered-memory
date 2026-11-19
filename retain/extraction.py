@@ -25,7 +25,7 @@ from retain.models import (
     stable_id,
 )
 from shared.chunking import chunk_spans
-from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
@@ -259,7 +259,7 @@ class GeminiFactExtractor:
     def _extract_request(self, chunks, context):
         prompt = self._prompt_prefix() + _request_source(chunks, context, self.source_dates_known)
         response = None
-        for attempt in range(4):
+        for attempt in range(RETRY_ATTEMPTS):
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -272,9 +272,9 @@ class GeminiFactExtractor:
                 )
                 break
             except Exception as error:
-                if not is_rate_limited(error) or attempt == 3:
+                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
                     raise
-                time.sleep(3 * (2**attempt))
+                time.sleep(backoff(attempt))
         reason = _block_reason(response)
         if reason:
             # A blocked request stays blocked on retry. Its user messages are still kept

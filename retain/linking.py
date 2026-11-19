@@ -20,7 +20,7 @@ from retain.models import (
     is_broader,
     is_code_built,
 )
-from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 
@@ -405,7 +405,7 @@ class GeminiSupersedeClassifier:
         )
 
     def _generate(self, prompt):
-        for attempt in range(4):
+        for attempt in range(RETRY_ATTEMPTS):
             try:
                 return self.client.models.generate_content(
                     model=self.model,
@@ -417,9 +417,9 @@ class GeminiSupersedeClassifier:
                     },
                 )
             except Exception as error:
-                if not is_rate_limited(error) or attempt == 3:
+                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
                     raise
-                time.sleep(3 * (2**attempt))
+                time.sleep(backoff(attempt))
 
 
 def _decision_rows(response):
