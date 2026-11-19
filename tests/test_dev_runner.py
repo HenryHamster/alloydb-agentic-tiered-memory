@@ -81,9 +81,7 @@ class FixtureModels:
                         "occurred_at": None,
                         "valid_from": None,
                         "when": None,
-                        "entities": [
-                            {"name": "Inception", "entity_type": "other", "role": "subject"}
-                        ],
+                        "entities": [{"name": "Inception", "type": "other", "role": "subject"}],
                         "updates": False,
                         "caused_by": [],
                     }

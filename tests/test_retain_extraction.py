@@ -54,7 +54,7 @@ def fact_row(chunk=0, **overrides):
         "occurred_at": None,
         "valid_from": None,
         "when": None,
-        "entities": [{"name": "Python", "entity_type": "technology", "role": "object"}],
+        "entities": [{"name": "Python", "type": "technology", "role": "object"}],
         "updates": False,
         "caused_by": [],
     }
@@ -447,9 +447,9 @@ def test_acknowledgements_skip_the_model_and_speakers_are_not_entities():
     client.models.generate_content.assert_not_called()
 
     people = [
-        {"name": "the user", "entity_type": "person", "role": "subject"},
-        {"name": "Assistant", "entity_type": "person", "role": "mentioned"},
-        {"name": "Python", "entity_type": "technology", "role": "object"},
+        {"name": "the user", "type": "person", "role": "subject"},
+        {"name": "Assistant", "type": "person", "role": "mentioned"},
+        {"name": "Python", "type": "technology", "role": "object"},
     ]
     extractor, _ = extractor_for([fact_row(entities=people)])
     (fact,) = extractor.extract(chunks())
@@ -487,7 +487,10 @@ def test_extraction_asks_for_one_slim_row_and_finds_requoted_or_repeated_evidenc
 
 
 def test_fields_left_out_take_their_defaults_but_required_ones_reject_the_row():
-    defaults = {"fact_type", "claim_type", "visibility", "occurred_at", "caused_by", "updates"}
+    defaults = {
+        "fact_type", "claim_type", "visibility", "occurred_at", "valid_from", "when",
+        "entities", "caused_by", "updates",
+    }  # fmt: skip
     slim = {key: value for key, value in fact_row().items() if key not in defaults}
     uncategorized = {key: value for key, value in fact_row().items() if key != "category"}
     extractor, client = extractor_for([slim, uncategorized])
@@ -497,6 +500,7 @@ def test_fields_left_out_take_their_defaults_but_required_ones_reject_the_row():
     assert fact.fact_type == FactType.WORLD and fact.claim_type == ClaimType.ASSERTED
     assert fact.visibility == Visibility.GLOBAL and fact.occurred_at is None
     assert fact.caused_by == () and fact.updates is False
+    assert fact.valid_from is None and "when" not in fact.details and fact.entities == ()
     schema = client.models.generate_content.call_args.kwargs["config"]["response_json_schema"]
     assert defaults.isdisjoint(schema["items"]["required"])
     assert "category" in schema["items"]["required"]

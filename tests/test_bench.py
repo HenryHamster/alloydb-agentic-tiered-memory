@@ -143,7 +143,7 @@ class ScriptedGemini:
             "valid_from": None,
             "when": None,
             "entities": (
-                [{"name": "Max", "entity_type": "other", "role": "subject"}] if about_max else []
+                [{"name": "Max", "type": "other", "role": "subject"}] if about_max else []
             ),
             "updates": False,
             "caused_by": [],

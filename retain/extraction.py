@@ -64,8 +64,8 @@ holds only in the current project, session for one that holds only in this conve
 else global. Entities are what the fact names, never the speakers;
 caused_by holds indexes of other facts in this array. `updates` is true only when the fact
 changes or corrects something said earlier in the conversation. Omit a field whose value is its
-default: fact_type world, claim_type asserted, visibility global, occurred_at null, caused_by [],
-updates false.%s
+default: fact_type world, claim_type asserted, visibility global, no occurred_at, valid_from or
+when, entities [], caused_by [], updates false.%s
 SOURCE:
 """
 _TOOL_RESULT_NOTE = """
@@ -94,13 +94,12 @@ _ROW_DEFAULTS = {
     "claim_type": "asserted",
     "visibility": "global",
     "occurred_at": None,
+    "valid_from": None,
+    "when": None,
+    "entities": [],
     "caused_by": [],
     "updates": False,
 }
-
-
-def _nullable_string():
-    return {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
 
 def _schema():
@@ -115,10 +114,11 @@ def _schema():
             "additionalProperties": False,
         }
 
+    # Short keys: every fact repeats them, and output tokens are Retain's largest cost.
     entity = strict(
         {
             "name": {"type": "string"},
-            "entity_type": string_enum(EntityType),
+            "type": string_enum(EntityType),
             "role": string_enum(EntityRole),
         }
     )
@@ -133,9 +133,9 @@ def _schema():
                 "category": string_enum(Category),
                 "claim_type": string_enum(ClaimType),
                 "visibility": string_enum(Visibility),
-                "occurred_at": _nullable_string(),
-                "valid_from": _nullable_string(),
-                "when": _nullable_string(),
+                "occurred_at": {"type": "string"},
+                "valid_from": {"type": "string"},
+                "when": {"type": "string"},
                 "entities": {"type": "array", "items": entity},
                 "caused_by": {"type": "array", "items": {"type": "integer"}},
                 "updates": {"type": "boolean"},
@@ -1300,16 +1300,14 @@ def _parse_row(row, key, chunks, *, source_dates_known=True):
 
     entities = []
     for entity in row["entities"]:
-        if not isinstance(entity, dict) or set(entity) != {"name", "entity_type", "role"}:
+        if not isinstance(entity, dict) or set(entity) != {"name", "type", "role"}:
             raise ValueError("Entity mention fields do not match the schema")
         if not isinstance(entity["name"], str) or not entity["name"].strip():
             raise ValueError("Entity mention needs a name")
         if " ".join(entity["name"].casefold().split()) in _SPEAKER_NAMES:
             continue
         entities.append(
-            EntityMention(
-                entity["name"], EntityType(entity["entity_type"]), EntityRole(entity["role"])
-            )
+            EntityMention(entity["name"], EntityType(entity["type"]), EntityRole(entity["role"]))
         )
     return ExtractedFact(
         key=key,
