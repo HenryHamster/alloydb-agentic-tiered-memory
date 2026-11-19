@@ -12,6 +12,7 @@ from reflect.consolidation import (
     consolidate,
     domain_key,
     domain_scope,
+    dropped_details,
     find_candidates,
     resolve,
 )
@@ -498,8 +499,30 @@ def seeded_store(*facts, links=(), rows=()):
     return InMemoryReflectStore(retain)
 
 
+def test_resolve_keeps_redundant_facts_apart_when_the_merge_drops_a_detail():
+    a = fact("a", "Melanie has known her friends for 4 years.", days=0)
+    b = fact("b", "Melanie has longtime friends.", days=1)
+    candidate = Candidate(tuple(sorted((a.fact_id, b.fact_id))), ENTITY)
+    lossy = Judgment(candidate.fact_ids, Verdict.REDUNDANT, "Melanie has longtime friends.")
+    result = resolve([lossy], [candidate], by_id(a, b), {}, subject(a, b), now=T0)
+    assert not (result.consolidations or result.states or result.links)
+
+    full = Judgment(candidate.fact_ids, Verdict.REDUNDANT, "Melanie's friends of 4 years.")
+    (item,) = resolve([full], [candidate], by_id(a, b), {}, subject(a, b), now=T0).consolidations
+    assert item.merged.text == "Melanie's friends of 4 years."
+
+
+def test_dropped_details_reads_names_and_numbers_not_sentence_starts():
+    originals = [fact("a", "Caroline's necklace is from Sweden. It cost $40."), fact("b")]
+    assert dropped_details(originals, "Caroline has a necklace from Sweden.") == {"40"}
+    assert dropped_details(originals, "Caroline's $40 necklace is from Sweden.") == set()
+
+
 def redundant_judge(candidates, facts):
-    return [Judgment(c.fact_ids, Verdict.REDUNDANT, "User runs DuckDB.") for c in candidates]
+    return [
+        Judgment(c.fact_ids, Verdict.REDUNDANT, "User replaced Pandas with DuckDB.")
+        for c in candidates
+    ]
 
 
 def test_reflect_pass_consolidates_synthesizes_and_is_idempotent():
@@ -530,7 +553,10 @@ def test_reflect_pass_consolidates_synthesizes_and_is_idempotent():
     assert s3.fact_id not in macro.supporting_fact_ids  # replaced by the merged fact
     assert set(macro.supporting_fact_ids) == {s1.fact_id, s4.fact_id, merged_id}
     assert macro.causal_chain_ids == ((merged_id, s4.fact_id),)  # s4 caused_by s3 -> merged
-    assert embedder.calls == [["User runs DuckDB."], ["Faster pipeline\nStory of 3 facts."]]
+    assert embedder.calls == [
+        ["User replaced Pandas with DuckDB."],
+        ["Faster pipeline\nStory of 3 facts."],
+    ]
 
     clock[0] += timedelta(hours=1)
     again = reflector.reflect(USER)

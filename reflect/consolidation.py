@@ -6,6 +6,8 @@ for history is decided by code.
 """
 
 import json
+import logging
+import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -118,6 +120,8 @@ def find_candidates(
     return candidates
 
 
+logger = logging.getLogger(__name__)
+
 # Any callable that labels candidate groups can be injected, including offline fakes.
 ConflictJudge = Callable[[Sequence[Candidate], Mapping[str, MemoryFact]], list[Judgment]]
 
@@ -146,7 +150,9 @@ JUDGE_PROMPT = """You maintain a user's long-term memory. Each group below holds
 about the same subject and attribute that are worded similarly. Label each group:
 
 - "redundant": the facts state the same claim in different words. Give merged_text: one
-  sentence of 8-15 words that states the claim once, with no detail beyond the facts.
+  sentence that states the claim once and keeps every name, number, date, place, reason and
+  condition any of the facts gives, with no detail beyond the facts. If one sentence cannot
+  hold them all, the facts are "distinct".
 - "state_change": the same attribute moved to a new value over time ("works at X" and later
   "works at Y"). Do not say which fact is newer; the system orders them by time.
 - "conflict": the claims are incompatible and their times do not explain the difference
@@ -167,7 +173,7 @@ class LLMConflictJudge:
 
     Prompt input per fact: fact_id, text, evidence, speaker, claim_type, occurred_at,
     valid_from, recorded_at, source_episode_id. Output per group: verdict, fact_ids (subset of
-    the group, >= 2), merged_text (8-15 words, REDUNDANT only), reason.
+    the group, >= 2), merged_text (every detail of the originals, REDUNDANT only), reason.
     Guidance: REDUNDANT = same claim reworded; STATE_CHANGE = the same attribute moved to a new
     value over time ("works at X" then "works at Y"); CONFLICT = incompatible claims with no
     time order to explain them (different sources, same time); otherwise DISTINCT.
@@ -323,8 +329,14 @@ def resolve(
         ids = tuple(dict.fromkeys(judgment.fact_ids))
         if touched & set(ids):
             continue
-        touched.update(ids)
         ordered = sorted((facts[i] for i in ids), key=time_order)
+        if judgment.verdict == Verdict.REDUNDANT:
+            dropped = dropped_details(ordered, judgment.merged_text)
+            if dropped:
+                # The originals stay as they are rather than lose a name or number they hold.
+                logger.info("Keeping redundant facts apart; merge dropped %s", sorted(dropped))
+                continue
+        touched.update(ids)
         verdict = judgment.verdict
         if verdict == Verdict.STATE_CHANGE and ordered[-1].valid_from == ordered[-2].valid_from:
             verdict = Verdict.CONFLICT
@@ -408,6 +420,35 @@ def resolve(
         tuple(updated[i] for i in sorted(updated)),
         tuple(reviews),
     )
+
+
+_TOKEN = re.compile(r"[\w][\w'’.-]*")
+_SENTENCE_START = re.compile(r"(?:^|[.!?:;]\s+|[\"(\[]\s*)$")
+
+
+def _detail_tokens(text):
+    """Names and numbers: tokens holding a digit, or capitalized mid-sentence, casefolded."""
+    tokens = set()
+    for match in _TOKEN.finditer(text):
+        token = re.sub(r"['’]s$", "", match.group().rstrip(".")).casefold()
+        word = match.group()
+        mid_sentence = not _SENTENCE_START.search(text[: match.start()])
+        if any(c.isdigit() for c in word) or (word[0].isupper() and mid_sentence):
+            tokens.add(token)
+    return tokens
+
+
+def _all_tokens(text):
+    return {re.sub(r"['’]s$", "", t.rstrip(".")).casefold() for t in _TOKEN.findall(text)}
+
+
+def dropped_details(originals: Sequence[MemoryFact], merged_text: str | None) -> set[str]:
+    """Names and numbers some original states that the merged text leaves out.
+
+    A redundant merge archives its originals, so whatever its text drops is lost to Recall.
+    """
+    kept = _all_tokens(merged_text or "")
+    return {t for fact in originals for t in _detail_tokens(fact.text)} - kept
 
 
 def consolidate(originals: Sequence[MemoryFact], text: str, *, now: datetime) -> MemoryFact:

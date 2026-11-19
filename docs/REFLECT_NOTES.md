@@ -120,7 +120,7 @@ The LLM judge labels each group. The code decides everything else:
 
 | Verdict | Write |
 | --- | --- |
-| `redundant` | Writes one merged fact (the LLM provides its text). It sums `access_count` and `evidence_count`, keeps the earliest `valid_from` and copies the entity rows. The originals get `consolidated_into` and are archived, with a `consolidated_into` link. |
+| `redundant` | Writes one merged fact (the LLM provides its text). It sums `access_count` and `evidence_count`, keeps the earliest `valid_from` and copies the entity rows. The originals get `consolidated_into` and are archived, with a `consolidated_into` link. The merged text has no word cap and must keep every name and number of the originals; when it drops one (a digit token or a mid-sentence capitalized word), code keeps the originals apart instead, since an archived original's detail is otherwise lost to Recall. |
 | `state_change` | The newer `valid_from` wins. The old fact gets `valid_to = new.valid_from` and `superseded_by = new`, plus a `supersedes` link. The old fact is kept for history. |
 | `conflict` | Keeps both facts. Sets `conflicts_with` on each, multiplies confidence by 0.5, adds a `conflicts_with` link and queues a row in `memory_conflict_reviews`. Recall returns both, with timestamps. |
 | `distinct` | Nothing is written. |
