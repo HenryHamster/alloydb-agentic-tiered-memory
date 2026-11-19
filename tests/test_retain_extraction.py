@@ -693,3 +693,8 @@ def test_the_prompt_sets_no_word_limit_and_names_the_details_to_keep():
     assert "no word limit" in prompt and "8-15" not in prompt
     for detail in ("names", "numbers", "dates", "places", "reasons and causes", "conditions"):
         assert detail in prompt
+    assert (
+        "[shares a photo: ...] is what the speaker showed: always record it as its own fact"
+        in prompt
+    )
+    assert "words visible in it copied exactly" in prompt

@@ -110,6 +110,9 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   The prompt also lists dates, frequency, who took part, and reasons and causes, and states
   that a fact has no word limit and must not generalize a detail away ("three blue bowls", not
   "some bowls"), while adding nothing the source does not say, so length grows only with detail.
+- **Photo captions are facts.** A `[shares a photo: ...]` caption is always recorded as its own
+  fact, joined to what the turn says about it, with visible words (sign text) copied exactly.
+  PR13 almost never extracted them when the caption trailed a long turn (q110, q140).
 - **Classifier output is untrusted.** Each duplicate/supersede target must be stored, current,
   same user and visible from the new fact; a fact never supersedes a broader one.
 - **Fail-soft on model output.** A bad extraction row, repeated key or bad reference drops only

@@ -55,7 +55,10 @@ separately (a view phrased as a question is still a view); keep a detail in the 
 the Earlier text (never "did an activity"). Each line is "[chunk] speaker:" or "[chunk] Name
 (speaker):"; `chunk` is the index of the line holding `evidence`, a verbatim quote of at most 8
 words; Earlier text is not citable. A named speaker is a person: name them in every fact, never
-"the user"; state what they say as asserted world facts about the person they concern. [shares a photo: ...] is what the speaker showed: record what it shows. Copy
+"the user"; state what they say as asserted world facts about the person they concern.
+[shares a photo: ...] is what the speaker showed: always record it as its own fact, joined to
+what the turn says about it ("look what I baked!" + a cake shaped like a guitar -> she baked a
+cake shaped like a guitar), with any words visible in it copied exactly. Copy
 relative time words ("yesterday", "last Friday", "two weekends ago") exactly into text and
 evidence; the caller dates them, so never compute a date yourself. Set occurred_at/valid_from
 (ISO) only from a date the source states; a year or month alone goes in `when`. Copy IDs, codes,
