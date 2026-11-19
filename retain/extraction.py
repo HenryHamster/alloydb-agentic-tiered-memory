@@ -4,8 +4,9 @@ import dataclasses
 import json
 import logging
 import re
+import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
@@ -195,6 +196,10 @@ class GeminiFactExtractor:
         self.keep_unrecorded_user_messages = keep_unrecorded_user_messages
         self.tool_result_facts = tool_result_facts
         self.link_rounds = link_rounds
+        # Blocked requests by block reason over this extractor's lifetime. A block does not
+        # fail Retain, so callers read this to report the facts that were never extracted.
+        self.blocked = Counter()
+        self._blocked_lock = threading.Lock()
 
     def extract(self, chunks: Sequence[Chunk]) -> list[ExtractedFact]:
         chunks = tuple(chunks)
@@ -279,7 +284,16 @@ class GeminiFactExtractor:
         if reason:
             # A blocked request stays blocked on retry. Its user messages are still kept
             # verbatim when keep_unrecorded_user_messages is on.
-            logger.warning("Gemini blocked a fact request (%s); it yields no facts", reason)
+            with self._blocked_lock:
+                self.blocked[reason] += 1
+                total = sum(self.blocked.values())
+            logger.warning(
+                "Gemini blocked a fact request (%s) for chunks %s; it yields no facts "
+                "(%d blocked so far)",
+                reason,
+                [chunk.chunk_id for chunk in chunks],
+                total,
+            )
             return []
         if response is None or not isinstance(getattr(response, "text", None), str):
             raise ValueError("Gemini returned no structured fact response")

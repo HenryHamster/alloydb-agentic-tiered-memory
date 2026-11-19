@@ -282,6 +282,8 @@ def run_job(
                 if entry["hash"] != fingerprint(entry["snapshot"]):
                     raise ValueError("Prepared memory cache failed integrity validation")
                 snapshot = entry["snapshot"]
+                # Entries written before the tally existed report null (unknown), not zero.
+                status["blocked_fact_requests"] = entry.get("blocked_fact_requests")
                 status["prepared_cache_hit"] = True
             else:
                 schema = backend.schema()
@@ -291,8 +293,17 @@ def run_job(
                     system = backend.system(schema)
                     ingest(system, history, logical, clock, usage, output)
                     snapshot = schema.snapshot()
+                    blocked = dict(getattr(system.retainer.extractor, "blocked", {}))
                     if not prepared.exists():
-                        save_json(prepared, {"hash": fingerprint(snapshot), "snapshot": snapshot})
+                        save_json(
+                            prepared,
+                            {
+                                "hash": fingerprint(snapshot),
+                                "snapshot": snapshot,
+                                "blocked_fact_requests": blocked,
+                            },
+                        )
+                    status["blocked_fact_requests"] = blocked
                     status["prepared_cache_hit"] = False
                 finally:
                     try:

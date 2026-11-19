@@ -440,6 +440,12 @@ def run_remote(cloud, args, source):
         f"Reported new tokens: {totals['prompt_token_count']} input, "
         f"{totals['candidates_token_count']} output, {totals['thoughts_token_count']} thinking."
     )
+    blocked = report["status"].get("blocked_fact_requests")
+    if blocked:
+        print(
+            f"WARNING: {sum(blocked.values())} fact extraction requests were blocked "
+            f"({blocked}); their facts are missing, user messages kept verbatim."
+        )
     print(f"Full results: {output / 'report.json'}")
     return 0 if report["status"]["status"] == "completed" else 2
 

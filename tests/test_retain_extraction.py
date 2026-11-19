@@ -692,7 +692,7 @@ def test_code_built_facts_name_entities_by_field_and_skip_empty_results():
     assert {e.entity_type for e in fact.entities} == {EntityType.OTHER}
 
 
-def test_safety_blocked_request_yields_no_facts_and_keeps_user_messages():
+def test_safety_blocked_request_yields_no_facts_and_keeps_user_messages(caplog):
     client = Mock()
     response = client.models.generate_content.return_value
     response.text = None
@@ -701,10 +701,16 @@ def test_safety_blocked_request_yields_no_facts_and_keeps_user_messages():
     response.candidates[0].finish_reason.name = "SAFETY"
     request = "Can you check the status of the server with ID 'psql-001'?"
 
-    (fact,) = GeminiFactExtractor(client).extract(chunks(request))
+    extractor = GeminiFactExtractor(client)
+    (fact,) = extractor.extract(chunks(request))
 
     assert client.models.generate_content.call_count == 1
     assert fact.text == "The user said: " + request
+    # Not silent: each block is tallied and logged.
+    assert extractor.blocked == {"SAFETY": 1}
+    assert "blocked a fact request (SAFETY)" in caplog.text
+    extractor.extract(chunks(request))
+    assert extractor.blocked == {"SAFETY": 2}
 
 
 def test_unblocked_empty_response_still_fails():

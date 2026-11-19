@@ -598,6 +598,15 @@ def _prompts(fixture, prefix):
     return [r for r in fixture.requests if str(r.get("contents", "")).startswith(prefix)]
 
 
+def test_blocked_fact_requests_are_reported_also_from_the_prepared_cache(tmp_path):
+    first, fixture = execute(tmp_path, job())
+    assert first["status"] == "completed", first
+    assert first["blocked_fact_requests"] == {}
+    second, _ = execute(tmp_path, job(), "again", fixture)
+    assert second["prepared_cache_hit"]
+    assert second["blocked_fact_requests"] == {}
+
+
 def test_retain_options_change_extraction_and_skip_observations(tmp_path):
     first, fixture = execute(tmp_path, job())
     assert first["status"] == "completed"
