@@ -66,7 +66,16 @@ class TieredMemory:
     """
 
     def __init__(
-        self, *, retainer, recaller, reflector, buffer, generate, strict=True, reflect=False
+        self,
+        *,
+        retainer,
+        recaller,
+        reflector,
+        buffer,
+        generate,
+        strict=True,
+        reflect=False,
+        dreamer=None,
     ):
         self.retainer = retainer
         self.recaller = recaller
@@ -76,6 +85,7 @@ class TieredMemory:
         self.strict = strict
         # Reflect (fact merging and macro induction) is off for now; Retain observations still run.
         self.reflect_enabled = reflect
+        self.dreamer = dreamer
 
     def record_turn(
         self,
@@ -214,6 +224,14 @@ class TieredMemory:
     def finish_session(self, scope):
         return self.maintain(scope, ReflectTrigger.SESSION_END)
 
+    def start_dream(self, scope, session_ids, *, request_key=None):
+        """Queue selected sessions; the separate worker computes staged output."""
+        from reflect.dream import DreamRequest
+
+        if self.dreamer is None:
+            raise RuntimeError("Build the memory system with dream_config to enable Dream")
+        return self.dreamer.start(DreamRequest(scope, tuple(session_ids), request_key))
+
     def tools(self, scope):
         """Native ADK memory tools, bound to the caller's scope."""
         return make_recall_tools(self.recaller, scope)
@@ -244,6 +262,7 @@ def build_memory_system(
     retain_config=RetainConfig(maintenance_every=0),
     recall_config=RecallConfig(),
     reflect=False,
+    dream_config=None,
 ):
     """Uses migrations 004/005, separate generation/embedding endpoints and ai.rank.
 
@@ -270,6 +289,19 @@ def build_memory_system(
         config=recall_config,
     )
     recaller.generate = GeminiGenerator(generation_client, model=model)
+    dreamer = None
+    if dream_config is not None:
+        from reflect.dream import Dreamer
+        from reflect.dream_recall import DreamRecallStore
+        from reflect.dream_store import AlloyDBDreamStore
+
+        dreamer = Dreamer(
+            store=AlloyDBDreamStore(conn_factory),
+            embedder=embedder,
+            generate=GeminiStructuredGenerator(generation_client, model=model),
+            config=dream_config,
+        )
+        recaller.store = DreamRecallStore(recaller.store, dreamer)
     generate = GeminiGenerator(generation_client, model=model)
     return TieredMemory(
         retainer=retainer,
@@ -279,6 +311,7 @@ def build_memory_system(
         generate=generate,
         strict=strict,
         reflect=reflect,
+        dreamer=dreamer,
     )
 
 

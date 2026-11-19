@@ -122,3 +122,10 @@ can't be set beside theirs. For a fair comparison, run the other system, or a fu
 baseline, through this harness with the same judge. About 6% of LoCoMo's gold answers are wrong,
 so no system can score above roughly 94%.
 
+## Reflect and Dream diagnostics
+
+For paired baseline / Reflect / Reflect+Dream runs with frozen inputs and
+immutable reports, see [Dream diagnostics](DREAM.md#reproducible-diagnostics).
+The separate `bench.reflect_dream` runner supports the 14 selected development
+questions and local cached LongMemEval-s data. Its default offline/hash mode is
+a plumbing smoke test and does not establish model answer quality.

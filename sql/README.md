@@ -14,6 +14,8 @@ database user described in the setup guide.
 6. Run `006_document_embeddings.sql` by itself, outside a transaction, before deploying Retain
    code that stores message vectors (`documents.embedding`). It is additive, and its index is
    built `CONCURRENTLY` so Retain writes are not blocked while it builds.
+7. Optionally run `007_dream_schema.sql` for the durable Dream queue and separate
+   insight versions. See [Dream setup and review flow](../docs/DREAM.md).
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine
