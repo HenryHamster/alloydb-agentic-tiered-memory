@@ -661,6 +661,7 @@ def fact_row(f):
         "evidence_count": f.evidence_count,
         "embedding": None,
         "entity_ids": list(f.entity_ids),
+        "speaker_name": f.speaker_name,
     }
 
 

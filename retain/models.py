@@ -1,4 +1,4 @@
-"""Retain records. Field names mirror sql/004_retain_schema.sql."""
+"""Retain records. Field names mirror sql/004_retain_schema.sql (speaker_name: 007)."""
 
 import re
 from dataclasses import dataclass, field, replace
@@ -301,6 +301,8 @@ class MemoryFact:
     evidence_count: int = 1
     embedding: tuple[float, ...] | None = field(default=None, compare=False)
     entity_ids: tuple[str, ...] = ()
+    # The person who said it ("Melanie"), from the source message; None for agents and tools.
+    speaker_name: str | None = None
 
     def __post_init__(self):
         _require_aware(self.recorded_at, self.valid_from, self.occurred_at, self.valid_to)
@@ -374,7 +376,11 @@ class Supersession:
 
 @dataclass(frozen=True)
 class Observation:
-    """Consolidated summary of facts sharing an entity in one visibility domain."""
+    """Consolidated summary of one person's facts sharing an entity in one visibility domain.
+
+    `speaker_name` is who said the facts, so two people's claims are never merged; unnamed
+    facts (None) group together.
+    """
 
     observation_id: str
     scope: Scope
@@ -385,6 +391,7 @@ class Observation:
     entity_id: str | None = None
     valid_to: datetime | None = None
     embedding: tuple[float, ...] | None = field(default=None, compare=False)
+    speaker_name: str | None = None
 
     def same_version(self, other: "Observation") -> bool:
         """Same version apart from valid_to, the only field closing it may change.

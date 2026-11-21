@@ -270,10 +270,10 @@ SAME_SIMILARITY = 0.95
 class GeminiSupersedeClassifier:
     """Decides whether new facts repeat or replace stored ones.
 
-    Candidates per new fact: current facts visible to its scope, same speaker, claim type and
-    category, with cosine >= DUPLICATE_SIMILARITY; at most `candidates_k`. Only facts the
-    extractor marked as changing an earlier statement (`updating`) can supersede, so only those
-    with candidates go to the model, as short texts with dates. Every other fact is a duplicate
+    Candidates per new fact: current facts visible to its scope, same speaker and speaker name
+    (one person's claim never repeats or replaces another's), claim type and category, with
+    cosine >= DUPLICATE_SIMILARITY; at most `candidates_k`. Only facts the extractor marked as
+    changing an earlier statement (`updating`) can supersede, so only those with candidates go to the model, as short texts with dates. Every other fact is a duplicate
     of its closest candidate when that scores >= SAME_SIMILARITY on the same day, else an add. A new fact may supersede only facts whose
     visibility is no broader than its own (a project rule never closes a global preference);
     Retainer re-checks both rules. Invalid or missing decisions leave that fact as add.
@@ -401,6 +401,7 @@ class GeminiSupersedeClassifier:
             and candidate.claim_type == fact.claim_type
             and candidate.category == fact.category
             and candidate.speaker == fact.speaker
+            and candidate.speaker_name == fact.speaker_name
             and _candidate_visible(fact, candidate)
         )
 

@@ -130,6 +130,10 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   text drops the "Melanie:" prefix so the name is not repeated. Rejected model rows are counted by
   reason in one log line per extraction.
 - **Duplicates** reinforce the stored fact (`evidence_count + 1`) instead of inserting a copy.
+- **Speaker names on facts.** A fact stores the person who said it as `speaker_name`
+  (`sql/007`); agents and tools store none. A fact only repeats or replaces a fact with the same
+  speaker and the same `speaker_name`, so when two people share a role one person's claim never
+  closes the other's. The classifier and the Retainer both check this.
 - **Links.** `link_type` is semantic, temporal or causal as proposed; `relation` gives direction
   (`similar`, `near_in_time`, `supersedes`, `caused_by`, `evidenced_by`). Weight is in [0, 1].
   Entity links live in `memory_entities`, not `memory_links`. Temporal links use `occurred_at`
@@ -149,7 +153,9 @@ is passed to Retain as the `episode_id`, so Recall can skip rounds still in the 
   model updates the previous summary from the new facts alone. The prompt says newer facts win
   (with their date), every person, pet and item is named, and each fact belongs to the person it
   is about. A version is dated from its facts, never the wall clock, so a replayed history
-  doesn't make a summary look newer than the facts it covers.
+  doesn't make a summary look newer than the facts it covers. Facts are grouped per
+  `speaker_name` too, so two people's claims about one thing get separate observations; unnamed
+  facts group as before and keep their observation IDs.
 - **Graph.** Stored relationally (`memory_links`, `entity_relations`); traversals are SQL joins or
   recursive CTEs. Apache Spark can read these tables for offline graph analytics; it is not on
   the per-turn path.

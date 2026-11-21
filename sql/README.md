@@ -14,6 +14,8 @@ database user described in the setup guide.
 6. Run `006_document_embeddings.sql` by itself, outside a transaction, before deploying Retain
    code that stores message vectors (`documents.embedding`). It is additive, and its index is
    built `CONCURRENTLY` so Retain writes are not blocked while it builds.
+7. Run `007_fact_speaker_names.sql` before deploying Retain code that stores
+   `speaker_name` on facts and observations. It is additive.
 
 These files preserve the codelab SQL. They require AlloyDB AI, the
 `google_ml_integration`, `vector`, and `rum` extensions, the AI query engine

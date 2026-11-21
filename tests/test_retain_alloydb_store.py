@@ -86,6 +86,7 @@ def database_row(fact):
         "evidence_count": fact.evidence_count,
         "embedding": "[" + ",".join(map(str, fact.embedding)) + "]",
         "entity_ids": list(fact.entity_ids),
+        "speaker_name": fact.speaker_name,
     }
 
 
@@ -506,6 +507,7 @@ def test_observation_reads_map_scoped_facts_and_existing_observations():
         "valid_from": AT,
         "valid_to": None,
         "embedding": "[" + ",".join(map(str, observation.embedding)) + "]",
+        "speaker_name": None,
     }
 
     def respond(sql, _params):
@@ -566,6 +568,7 @@ def test_observation_version_close_and_insert_roll_back_as_one_transaction():
         "valid_from": old.valid_from,
         "valid_to": None,
         "embedding": "[" + ",".join(map(str, old.embedding)) + "]",
+        "speaker_name": None,
     }
 
     def respond(sql, _params):
@@ -627,6 +630,7 @@ def test_stale_observation_refresh_cannot_create_a_second_current_version():
                 "valid_from": old.valid_from,
                 "valid_to": old.valid_to,
                 "embedding": "[" + ",".join(map(str, old.embedding)) + "]",
+                "speaker_name": None,
             }
             return (row, [], 1)
         if "AND valid_to IS NULL FOR UPDATE" in sql:

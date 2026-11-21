@@ -380,7 +380,7 @@ class Retainer:
 def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | None:
     """Why `decision` cannot be applied, or None.
 
-    Targets must be stored, current, same speaker, visible from the new fact's scope (so same
+    Targets must be stored, current, same speaker and speaker name, visible from the new fact's scope (so same
     user) and not narrower than it; a supersede target must also be no broader than it.
     """
     for target_id in decision.target_ids:
@@ -390,6 +390,7 @@ def _target_problem(decision: UpdateDecision, new: MemoryFact, stored) -> str | 
             or not old.is_current
             or not old.visible_to(new.scope)
             or old.speaker != new.speaker
+            or old.speaker_name != new.speaker_name
         ):
             return f"invalid {decision.action} target {target_id}"
         if is_broader(new.visibility, old.visibility):
@@ -498,6 +499,7 @@ def _build_fact(
         occurred_at=fact.occurred_at,
         valid_from=fact.valid_from or fact.occurred_at or document.occurred_at,
         entity_ids=tuple(sorted(set(by_name.values()))),
+        speaker_name=document.name or None,
     )
     return memory, entity_rows, relation_rows
 
