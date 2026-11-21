@@ -187,7 +187,7 @@ def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int
 3. If the question uses an abbreviation, add one query with it spelled out, e.g. "AI" -> "artificial intelligence".
 4. If answering needs a fact about another person or thing first, add one query for that fact, e.g. "which book did Melanie read on Caroline's advice?" -> "books Caroline mentioned or loves". If the question names a general status or trait, add one query in the concrete words an answer would use, e.g. "Caroline's relationship status" -> "Caroline single, partner, dating, breakup".
 5. Only return a time_window for an explicit period such as "last week", "in March" or "before the launch". Words like now, currently, right now, latest and recent are not windows; return null. The current time is {query_time.isoformat()}. The end date is exclusive.
-6. Set list to true when the question asks for several items or a count ("what events", "which books", "how many times"); otherwise false.
+6. Set list to true when the question asks for several items or a count ("what events", "which books", "how many times"); otherwise false. For a list, also add up to two queries naming other kinds of item the answer could include, in everyday words, e.g. "what LGBTQ+ events has Caroline attended?" -> "talks or speeches Caroline gave", "groups or meetings Caroline joined".
 7. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false}}
 
 Question: {query}

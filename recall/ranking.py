@@ -153,13 +153,14 @@ def filter_and_abstain(
     `min_relevance`. A result with no positive relevance is never kept, so a query with
     nothing relevant still abstains. With `similar_cap`, a result is skipped once that many
     kept results share a pair in `similar` with it, so near-repeats leave room for distinct
-    answers. Stores already exclude superseded rows; this check also covers stores that do
-    not. The returned detail counts each kind of drop and lists the best dropped candidates,
-    so a missing memory can be traced.
+    answers; the best of those kept results counts it in `similar_skipped`, so how often a
+    thing came up is not lost. Stores already exclude superseded rows; this check also
+    covers stores that do not. The returned detail counts each kind of drop and lists the
+    best dropped candidates, so a missing memory can be traced.
     """
 
-    def repeats_kept(item: Scored) -> int:
-        return sum(frozenset((item.memory.id, k.memory.id)) in similar for k in kept)
+    def linked_kept(item: Scored) -> list[Scored]:
+        return [k for k in kept if frozenset((item.memory.id, k.memory.id)) in similar]
 
     kept, below_min, repeats, over_max, stale = [], [], [], [], 0
     for item in scored:
@@ -167,7 +168,8 @@ def filter_and_abstain(
             stale += 1
         elif item.relevance <= 0 or (item.relevance < min_relevance and len(kept) >= min_items):
             below_min.append(item)
-        elif similar_cap and repeats_kept(item) >= similar_cap:
+        elif similar_cap and len(linked := linked_kept(item)) >= similar_cap:
+            linked[0].similar_skipped += 1
             repeats.append(item)
         elif len(kept) >= max_items:
             over_max.append(item)

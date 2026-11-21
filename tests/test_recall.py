@@ -355,6 +355,8 @@ def test_near_repeats_leave_room_for_distinct_answers_to_a_list_question(memorie
     assert sum(f.fact_id in ids(result) for f in pride) == on.similar_cap
     stage = next(s for s in result.trace if s.stage == "filter_and_abstain").to_dict()
     assert stage["repeats"] == 3
+    # The skipped repeats still count: the best kept Pride fact says how many were left out.
+    assert "similar facts not shown: 3" in result.context
 
 
 def test_counting_questions_keep_every_near_repeat(memories):

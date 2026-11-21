@@ -10,7 +10,7 @@ from shared.tokens import TokenCounter, estimate_tokens
 ORIGINAL_WORDING_HEADING = "Original wording (exact words behind the memories above):"
 
 
-def format_line(memory: Memory, stale: bool) -> str:
+def format_line(memory: Memory, stale: bool, similar_skipped: int = 0) -> str:
     """`[id] (type | date | speaker | claim_type | superseded date) text`, omitting unknowns."""
     labels = [str(memory.type)]
     date = memory.primary_date()
@@ -26,6 +26,8 @@ def format_line(memory: Memory, stale: bool) -> str:
         labels.append("unresolved conflict: " + ", ".join(memory.conflicts_with))
     if memory.confidence < 1:
         labels.append(f"confidence {memory.confidence:g}")
+    if similar_skipped:
+        labels.append(f"similar facts not shown: {similar_skipped}")
     return f"[{memory.id}] ({' | '.join(labels)}) {memory.text}"
 
 
@@ -40,7 +42,7 @@ def pack(
     quoting = False
     for item in scored:
         stale = item.memory.is_stale(as_of)
-        line = format_line(item.memory, stale)
+        line = format_line(item.memory, stale, item.similar_skipped)
         heading = item.memory.type == MemoryType.MESSAGE and not quoting
         if heading:
             # Quotes sit under their own heading so the memories above stay the answer's basis.

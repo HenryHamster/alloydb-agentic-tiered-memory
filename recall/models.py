@@ -218,6 +218,8 @@ class Scored:
     score: float = 0.0
     # The search lists that found this memory ("vector:0", "keyword:1", "graph", ...).
     channels: tuple[str, ...] = ()
+    # Near-repeats of this memory the filter left out; shown in its context line.
+    similar_skipped: int = 0
 
     def summary(self) -> dict[str, Any]:
         """A short trace line for a candidate, kept or dropped."""
