@@ -4,8 +4,9 @@ import dataclasses
 import json
 import logging
 import re
+import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
@@ -25,7 +26,7 @@ from retain.models import (
     stable_id,
 )
 from shared.chunking import chunk_spans
-from shared.llm import DEFAULT_MODEL, is_rate_limited, thinking
+from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
@@ -64,8 +65,8 @@ holds only in the current project, session for one that holds only in this conve
 else global. Entities are what the fact names, never the speakers;
 caused_by holds indexes of other facts in this array. `updates` is true only when the fact
 changes or corrects something said earlier in the conversation. Omit a field whose value is its
-default: fact_type world, claim_type asserted, visibility global, occurred_at null, caused_by [],
-updates false.%s
+default: fact_type world, claim_type asserted, visibility global, no occurred_at, valid_from or
+when, caused_by [], updates false. Always list entities ([] when the fact names none).%s
 SOURCE:
 """
 _TOOL_RESULT_NOTE = """
@@ -89,18 +90,17 @@ class FactExtractor(Protocol):
 
 
 # Fields the model omits when they hold these values; written out they were a third of its output.
+# Entities stay required: left optional, the model dropped about half of them (LME-002 lean2).
 _ROW_DEFAULTS = {
     "fact_type": "world",
     "claim_type": "asserted",
     "visibility": "global",
     "occurred_at": None,
+    "valid_from": None,
+    "when": None,
     "caused_by": [],
     "updates": False,
 }
-
-
-def _nullable_string():
-    return {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
 
 def _schema():
@@ -115,10 +115,11 @@ def _schema():
             "additionalProperties": False,
         }
 
+    # Short keys: every fact repeats them, and output tokens are Retain's largest cost.
     entity = strict(
         {
             "name": {"type": "string"},
-            "entity_type": string_enum(EntityType),
+            "type": string_enum(EntityType),
             "role": string_enum(EntityRole),
         }
     )
@@ -133,9 +134,9 @@ def _schema():
                 "category": string_enum(Category),
                 "claim_type": string_enum(ClaimType),
                 "visibility": string_enum(Visibility),
-                "occurred_at": _nullable_string(),
-                "valid_from": _nullable_string(),
-                "when": _nullable_string(),
+                "occurred_at": {"type": "string"},
+                "valid_from": {"type": "string"},
+                "when": {"type": "string"},
                 "entities": {"type": "array", "items": entity},
                 "caused_by": {"type": "array", "items": {"type": "integer"}},
                 "updates": {"type": "boolean"},
@@ -143,6 +144,24 @@ def _schema():
             optional=_ROW_DEFAULTS,
         ),
     }
+
+
+_BLOCK_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"}
+
+
+def _block_reason(response):
+    """Why Gemini refused the request instead of answering, or None when it answered."""
+    reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    name = getattr(reason, "name", reason)
+    if isinstance(name, str) and name not in ("", "BLOCKED_REASON_UNSPECIFIED"):
+        return name
+    candidates = getattr(response, "candidates", None)
+    for candidate in candidates if isinstance(candidates, (list, tuple)) else []:
+        finish = getattr(candidate, "finish_reason", None)
+        name = getattr(finish, "name", finish)
+        if isinstance(name, str) and name in _BLOCK_REASONS:
+            return name
+    return None
 
 
 class GeminiFactExtractor:
@@ -177,6 +196,10 @@ class GeminiFactExtractor:
         self.keep_unrecorded_user_messages = keep_unrecorded_user_messages
         self.tool_result_facts = tool_result_facts
         self.link_rounds = link_rounds
+        # Blocked requests by block reason over this extractor's lifetime. A block does not
+        # fail Retain, so callers read this to report the facts that were never extracted.
+        self.blocked = Counter()
+        self._blocked_lock = threading.Lock()
 
     def extract(self, chunks: Sequence[Chunk]) -> list[ExtractedFact]:
         chunks = tuple(chunks)
@@ -241,7 +264,7 @@ class GeminiFactExtractor:
     def _extract_request(self, chunks, context):
         prompt = self._prompt_prefix() + _request_source(chunks, context, self.source_dates_known)
         response = None
-        for attempt in range(4):
+        for attempt in range(RETRY_ATTEMPTS):
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -254,9 +277,24 @@ class GeminiFactExtractor:
                 )
                 break
             except Exception as error:
-                if not is_rate_limited(error) or attempt == 3:
+                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
                     raise
-                time.sleep(3 * (2**attempt))
+                time.sleep(backoff(attempt))
+        reason = _block_reason(response)
+        if reason:
+            # A blocked request stays blocked on retry. Its user messages are still kept
+            # verbatim when keep_unrecorded_user_messages is on.
+            with self._blocked_lock:
+                self.blocked[reason] += 1
+                total = sum(self.blocked.values())
+            logger.warning(
+                "Gemini blocked a fact request (%s) for chunks %s; it yields no facts "
+                "(%d blocked so far)",
+                reason,
+                [chunk.chunk_id for chunk in chunks],
+                total,
+            )
+            return []
         if response is None or not isinstance(getattr(response, "text", None), str):
             raise ValueError("Gemini returned no structured fact response")
         try:
@@ -1300,16 +1338,14 @@ def _parse_row(row, key, chunks, *, source_dates_known=True):
 
     entities = []
     for entity in row["entities"]:
-        if not isinstance(entity, dict) or set(entity) != {"name", "entity_type", "role"}:
+        if not isinstance(entity, dict) or set(entity) != {"name", "type", "role"}:
             raise ValueError("Entity mention fields do not match the schema")
         if not isinstance(entity["name"], str) or not entity["name"].strip():
             raise ValueError("Entity mention needs a name")
         if " ".join(entity["name"].casefold().split()) in _SPEAKER_NAMES:
             continue
         entities.append(
-            EntityMention(
-                entity["name"], EntityType(entity["entity_type"]), EntityRole(entity["role"])
-            )
+            EntityMention(entity["name"], EntityType(entity["type"]), EntityRole(entity["role"]))
         )
     return ExtractedFact(
         key=key,

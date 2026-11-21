@@ -1,0 +1,28 @@
+{
+  "name": "tiered-memory",
+  "version": "0.1.0",
+  "description": "Long-term agent memory on AlloyDB and Valkey: retain facts from each conversation and recall them in later sessions.",
+  "author": {
+    "name": "HenryHamster"
+  },
+  "homepage": "https://github.com/HenryHamster/alloydb-agentic-tiered-memory",
+  "repository": "https://github.com/HenryHamster/alloydb-agentic-tiered-memory",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "alloydb", "valkey", "rag", "mcp"],
+  "mcpServers": {
+    "tiered-memory": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "--extra",
+        "mcp",
+        "python",
+        "-m",
+        "mcp_server"
+      ]
+    }
+  }
+}

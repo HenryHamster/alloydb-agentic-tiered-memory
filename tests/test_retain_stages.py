@@ -23,6 +23,7 @@ from retain.models import (
     Visibility,
     stable_id,
 )
+from shared.llm import INTERACTIVE_ATTEMPTS, RETRY_ATTEMPTS, generate_with_retry
 
 AT = datetime(2026, 10, 20, tzinfo=timezone.utc)
 SCOPE = Scope("user-stage", "project-a", "session-a")
@@ -450,7 +451,7 @@ def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch
     (decision,) = GeminiSupersedeClassifier(client, store).classify([new], updating={new.fact_id})
 
     assert decision.action == UpdateAction.ADD
-    assert client.models.generate_content.call_count == 4  # retried before giving up
+    assert client.models.generate_content.call_count == RETRY_ATTEMPTS  # retried before giving up
 
 
 def test_a_failed_classifier_call_still_merges_same_day_copies(monkeypatch):
@@ -483,3 +484,15 @@ def test_a_fact_that_updates_nothing_is_decided_without_the_model():
     assert duplicate.action == UpdateAction.DUPLICATE and duplicate.target_ids == ("old",)
     assert added == UpdateDecision("near")
     client.models.generate_content.assert_not_called()
+
+
+def test_interactive_generation_gives_up_sooner_than_background_stages(monkeypatch):
+    monkeypatch.setattr("shared.llm.time.sleep", lambda seconds: None)
+    error = Exception("429 RESOURCE_EXHAUSTED")
+    error.code = 429
+    generate = Mock(side_effect=error)
+
+    with pytest.raises(Exception, match="RESOURCE_EXHAUSTED"):
+        generate_with_retry(generate, "prompt")
+
+    assert generate.call_count == INTERACTIVE_ATTEMPTS < RETRY_ATTEMPTS

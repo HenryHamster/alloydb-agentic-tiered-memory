@@ -92,6 +92,38 @@ def preparation_source(source):
     }
 
 
+_THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+
+
+def validate_retain_options(options):
+    """A run's Retain overrides (dev.py run flags); unknown keys or values fail the job."""
+    if not isinstance(options, dict):
+        raise ValueError("retain options must be an object")
+    known = {"extract_thinking", "observation_thinking", "max_request_chars", "observations"}
+    if set(options) - known:
+        raise ValueError(f"Unknown retain options: {sorted(set(options) - known)}")
+    for key in ("extract_thinking", "observation_thinking"):
+        if key in options and options[key] not in _THINKING_LEVELS:
+            raise ValueError(f"{key} must be one of {sorted(_THINKING_LEVELS)}")
+    chars = options.get("max_request_chars", 1)
+    if isinstance(chars, bool) or not isinstance(chars, int) or chars <= 0:
+        raise ValueError("max_request_chars must be a positive integer")
+    if options.get("observations", False) is not False:
+        raise ValueError("observations can only be turned off")
+    return dict(options)
+
+
+def apply_retain_options(retainer, options):
+    if "extract_thinking" in options:
+        retainer.extractor.thinking_level = options["extract_thinking"]
+    if "max_request_chars" in options:
+        retainer.extractor.max_request_chars = options["max_request_chars"]
+    if "observation_thinking" in options and retainer.observation_builder:
+        retainer.observation_builder.thinking_level = options["observation_thinking"]
+    if options.get("observations") is False:
+        retainer.observation_builder = None  # consolidate() is then a no-op
+
+
 def ingest(system, history, logical, clock, usage, output):
     from bench.mem2act import HistoryVisibility, exchanges
     from retain import Scope
@@ -163,6 +195,7 @@ class CloudBackend:
         self.valkey.client.ping()
         self.cache, self.models, self.source, self.clock = cache, models, source, clock
         self.model = config.get("model", DEFAULT_MODEL)
+        self.retain = config.get("retain", {})
 
     def schema(self):
         from devtools.state import RunSchema
@@ -182,6 +215,7 @@ class CloudBackend:
         )
         for component in (system.retainer, system.reflector, system.recaller):
             component.clock = lambda: self.clock
+        apply_retain_options(system.retainer, self.retain)
         return system
 
     def close(self):
@@ -199,7 +233,8 @@ def run_job(
         raise ValueError("Scoring labels must not be sent to the worker")
     save_json(output / "job.json", job)
     usage = Usage(output)
-    config = {**job["config"], "model": job.get("model", DEFAULT_MODEL)}
+    retain = validate_retain_options(job.get("retain", {}))
+    config = {**job["config"], "model": job.get("model", DEFAULT_MODEL), "retain": retain}
     cache = RequestCache(
         Path(cache_folder) / "requests",
         usage,
@@ -235,6 +270,8 @@ def run_job(
                 "epoch": cache.epoch,
                 "max_output_tokens": job["max_output_tokens"],
                 "format": 3,
+                # Empty for production settings, so earlier prepared memory stays valid.
+                **({"retain": retain} if retain else {}),
             }
         )
         prepared = Path(cache_folder) / "prepared" / f"{prep_key}.json"
@@ -245,6 +282,8 @@ def run_job(
                 if entry["hash"] != fingerprint(entry["snapshot"]):
                     raise ValueError("Prepared memory cache failed integrity validation")
                 snapshot = entry["snapshot"]
+                # Entries written before the tally existed report null (unknown), not zero.
+                status["blocked_fact_requests"] = entry.get("blocked_fact_requests")
                 status["prepared_cache_hit"] = True
             else:
                 schema = backend.schema()
@@ -254,8 +293,17 @@ def run_job(
                     system = backend.system(schema)
                     ingest(system, history, logical, clock, usage, output)
                     snapshot = schema.snapshot()
+                    blocked = dict(getattr(system.retainer.extractor, "blocked", {}))
                     if not prepared.exists():
-                        save_json(prepared, {"hash": fingerprint(snapshot), "snapshot": snapshot})
+                        save_json(
+                            prepared,
+                            {
+                                "hash": fingerprint(snapshot),
+                                "snapshot": snapshot,
+                                "blocked_fact_requests": blocked,
+                            },
+                        )
+                    status["blocked_fact_requests"] = blocked
                     status["prepared_cache_hit"] = False
                 finally:
                     try:
