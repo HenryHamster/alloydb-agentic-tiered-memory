@@ -137,6 +137,35 @@ def _is_user_fact(memory: Memory) -> bool:
     return memory.type == MemoryType.FACT and memory.speaker == Speaker.USER
 
 
+def select_evidence_first(
+    scored: Sequence[Scored],
+    evidence_ids: set[str],
+    already_kept: set[str],
+    max_items: int,
+    relative_floor: float,
+) -> list[Scored]:
+    """The evidence check's selection over current candidates in `scored` (best-first).
+
+    Evidence comes first (marked `evidence`), in score order. Then, in score order, every
+    memory `already_kept` by filter_and_abstain, so the check never loses a fact the normal path
+    would show, and other positive candidates at or above `relative_floor` * the best relevance
+    while fewer than `max_items` are selected. A floor relative to each question's own scores
+    replaces min_relevance here: reranker scores are not comparable across questions.
+    """
+    top = max((item.relevance for item in scored), default=0.0)
+    floor = top * relative_floor
+    first = [replace(item, evidence=True) for item in scored if item.memory.id in evidence_ids]
+    rest = []
+    for item in scored:
+        if item.memory.id in evidence_ids:
+            continue
+        if item.memory.id in already_kept:
+            rest.append(item)
+        elif len(first) + len(rest) < max_items and item.relevance > 0 and item.relevance >= floor:
+            rest.append(item)
+    return [*first, *rest]
+
+
 def filter_and_abstain(
     scored: Sequence[Scored],
     as_of: datetime,

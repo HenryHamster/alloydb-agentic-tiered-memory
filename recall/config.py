@@ -97,6 +97,23 @@ class RecallConfig:
     quote_messages: int = 2
     quote_min_relevance: float = 0.5
     quote_pool: int = 20
+    # Evidence check (LME-002 c4a1ceb8, PR 30 discussion). The reranker scores topic, not whether
+    # a fact answers: on "how many citrus fruits have I used in cocktails?" every candidate sat
+    # between 0.08 and 0.17, requests like "asked for cocktail ideas" outranked the Sangria fact
+    # naming lemon, and min_relevance dropped it while the context was 41% full. On hard
+    # questions only (top relevance under judge_below, a list or count, or a question about what
+    # the user did) one LLM call marks which of the top judge_candidates are evidence. Evidence
+    # leads the context; everything the normal filter keeps stays; the rest of the slots (up to
+    # judge_max_items / judge_list_max_items) take candidates at or above
+    # judge_relative_floor * the best relevance. The check never drops a kept fact and never
+    # changes abstention; if it fails, the same fill runs without evidence. Easy questions run
+    # exactly as before. judge=False turns it off.
+    judge: bool = True
+    judge_below: float = 0.5
+    judge_candidates: int = 40
+    judge_max_items: int = 15
+    judge_list_max_items: int = 25
+    judge_relative_floor: float = 0.35
     # Boosts are multiplied in as relevance * (1 + boost), total clipped to +/-max_boost.
     max_boost: float = 0.25
     recency_boost: float = 0.10
