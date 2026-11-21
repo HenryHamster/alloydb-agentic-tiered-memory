@@ -1,8 +1,7 @@
 # Integrated candidate
 
 `tiered_memory.build_memory_system` connects the production Retain stages, AlloyDB
-Recall, Reflect and Valkey. Gemini generation uses the global endpoint and
-text-embedding-005 uses a regional endpoint. Apply schemas 004, 005 and 006. Enable
+Recall, Reflect and Valkey. Apply schemas 004, 005 and 006. Enable
 Discovery Engine and grant the AlloyDB service agent `roles/discoveryengine.viewer`
 for `ai.rank`; the database AI query engine flag must already be enabled.
 
@@ -15,6 +14,31 @@ conflicts carry identifiers and confidence. A conflict's counterpart is not
 guaranteed to fit the context budget. Macro memories share the existing search,
 ranking and packing path and expose their supporting facts. Strict mode propagates
 provider/storage failures. The original demos retain their existing behavior.
+
+## LLM generation
+
+Set these variables in the environment that starts the integrated CLI or MCP server.
+For Claude and OpenAI, choose a model that supports native structured outputs and
+set the named API key in your shell or secret manager.
+
+| Provider | Settings | Optional install |
+| --- | --- | --- |
+| Gemini (default) | Leave `LLM_PROVIDER` unset or set it to `gemini`. `LLM_MODEL` is optional. | Included |
+| Anthropic Claude | `LLM_PROVIDER=anthropic`, `LLM_MODEL=<claude-model-id>`, `ANTHROPIC_API_KEY` | `uv sync --extra anthropic` |
+| OpenAI | `LLM_PROVIDER=openai`, `LLM_MODEL=<openai-model-id>`, `OPENAI_API_KEY` | `uv sync --extra openai` |
+
+Start the CLI with `python -m tiered_memory --user USER --project SCOPE --session SESSION`
+from the project environment. Gemini uses Vertex AI with `GENAI_LOCATION` (default
+`global`) and defaults to `gemini-4-hydrogen`. With Gemini selected, MCP also honors the
+legacy `GEMINI_MODEL` when `LLM_MODEL` is unset. The Claude and OpenAI adapters use
+their model's default reasoning settings.
+
+Generation sends the prompts for memory operations to the selected provider. All
+providers still use AlloyDB for memory and `ai.rank()` reranking, Valkey for the session
+window, and Vertex AI `text-embedding-005` in `REGION` for 768-dimensional embeddings.
+Google application credentials are still required.
+
+## Benchmark
 
 The candidate benchmark is `python -m bench.mem2act --help` from the repository.
 It consumes the same gold-free cases as the original pilot, preserves every source

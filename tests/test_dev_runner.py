@@ -52,6 +52,44 @@ SOURCE = Path(__file__).resolve().parents[1]
 DSN = os.environ.get("DEV_TEST_DSN")
 
 
+def test_replay_uses_the_legacy_gemini_observation_correction_after_max_tokens(tmp_path):
+    correction = (
+        "The previous response failed validation: Gemini returned malformed observation JSON. "
+        "Return a corrected response; do not drop any input IDs for a nonempty summary.\n"
+    )
+    upstream = Mock()
+    call = upstream.models.generate_content
+    call.side_effect = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    finish_reason="MAX_TOKENS",
+                    content=types.Content(parts=[types.Part(text='{"summary":')]),
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    finish_reason="STOP",
+                    content=types.Content(parts=[types.Part(text='{"summary":"","fact_ids":[]}')]),
+                )
+            ]
+        ),
+    ]
+    cache = RequestCache(tmp_path / "cache", Usage(tmp_path / "receipts"))
+    client = SimpleNamespace(models=CachedModels(upstream, None, cache))
+    builder = GeminiObservationBuilder(client, Mock(), Mock())
+    assert builder._summarize([]) is None
+    first, second = [request.kwargs["contents"] for request in call.call_args_list]
+    assert second == correction + first
+
+    cache.mode = "replay"
+    assert builder._summarize([]) is None
+    assert call.call_count == 2
+    assert len(cache.usage.hits) == 2
+
+
 class FixtureModels:
     def __init__(self):
         self.requests = []

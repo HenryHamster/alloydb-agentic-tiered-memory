@@ -1,13 +1,20 @@
 """Consolidate scoped fact groups into observations."""
 
 import json
-import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Protocol
 
 from retain.models import ClaimType, Observation, Scope, Visibility, stable_id
-from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
+from shared.llm import (
+    DEFAULT_MODEL,
+    RETRY_ATTEMPTS,
+    GeminiGenerator,
+    InvalidResponse,
+    LLMProvider,
+    RefusedResponse,
+    generate_json_with_retry,
+)
 
 
 class ObservationBuilder(Protocol):
@@ -33,6 +40,7 @@ class GeminiObservationBuilder:
         model=DEFAULT_MODEL,
         min_facts=3,
         thinking_level="low",
+        provider: LLMProvider | None = None,
     ):
         if min_facts < 2:
             raise ValueError("Observations require at least two supporting facts")
@@ -40,6 +48,11 @@ class GeminiObservationBuilder:
         self.store = store
         self.embedder = embedder
         self.model = model
+        self._provider = provider
+        # The validation messages are part of the existing Gemini correction prompt.
+        self._response_label = (
+            "Gemini" if provider is None or isinstance(provider, GeminiGenerator) else "Model"
+        )
         self.min_facts = min_facts
         self.thinking_level = thinking_level
 
@@ -198,15 +211,9 @@ class GeminiObservationBuilder:
         original_prompt = prompt
         for attempt in range(2):
             try:
-                response = self._generate(prompt)
-                if not isinstance(getattr(response, "text", None), str):
-                    raise ValueError("Gemini returned no observation")
-                try:
-                    row = json.loads(response.text)
-                except (TypeError, json.JSONDecodeError) as error:
-                    raise ValueError("Gemini returned malformed observation JSON") from error
+                row = self._generate(prompt)
                 if not isinstance(row, dict) or set(row) != {"summary", "fact_ids"}:
-                    raise ValueError("Gemini returned invalid observation fields")
+                    raise ValueError(f"{self._response_label} returned invalid observation fields")
                 summary, fact_ids = row["summary"], row["fact_ids"]
                 expected_ids = {fact.fact_id for fact in facts}
                 if (
@@ -214,7 +221,7 @@ class GeminiObservationBuilder:
                     or not isinstance(fact_ids, list)
                     or any(not isinstance(fact_id, str) for fact_id in fact_ids)
                 ):
-                    raise ValueError("Gemini returned invalid observation values")
+                    raise ValueError(f"{self._response_label} returned invalid observation values")
                 summary = summary.strip()
                 if not summary and not fact_ids:
                     return None
@@ -239,21 +246,30 @@ class GeminiObservationBuilder:
         raise AssertionError("unreachable")
 
     def _generate(self, prompt):
-        for attempt in range(RETRY_ATTEMPTS):
-            try:
-                return self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": _summary_schema(),
-                        **thinking(self.thinking_level),
-                    },
-                )
-            except Exception as error:
-                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
-                    raise
-                time.sleep(backoff(attempt))
+        provider = self._provider
+        if provider is None:
+            provider = GeminiGenerator(self.client, model=self.model)
+        try:
+            return generate_json_with_retry(
+                provider,
+                prompt,
+                _summary_schema(),
+                attempts=RETRY_ATTEMPTS,
+                thinking_level=self.thinking_level,
+            )
+        except RefusedResponse as error:
+            if not isinstance(provider, GeminiGenerator):
+                raise
+            # Gemini historically corrected a blocked observation as a missing response.
+            raise ValueError("Gemini returned no observation") from error
+        except InvalidResponse as error:
+            descriptions = {
+                "empty": "no observation",
+                "malformed": "malformed observation JSON",
+                "shape": "invalid observation fields",
+            }
+            description = descriptions.get(error.kind, "invalid observation output")
+            raise ValueError(f"{self._response_label} returned {description}") from error
 
 
 def _group_key(scope, visibility, entity_id):

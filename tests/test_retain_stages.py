@@ -441,7 +441,7 @@ def test_concept_and_technology_share_an_exact_name_but_other_types_stay_apart()
 
 
 def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch):
-    monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: None)
     old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
     new = fact("The system uses two databases.", fact_id="new", category=Category.DECISION)
     client = Mock()
@@ -455,7 +455,7 @@ def test_a_classifier_call_that_keeps_failing_keeps_the_facts_as_new(monkeypatch
 
 
 def test_a_failed_classifier_call_still_merges_same_day_copies(monkeypatch):
-    monkeypatch.setattr("retain.linking.time.sleep", lambda _: None)
+    monkeypatch.setattr("shared.llm.time.sleep", lambda _: None)
     old = fact("The system uses one database.", fact_id="old", category=Category.DECISION)
     new = fact("The system uses one database.", fact_id="new", category=Category.DECISION)
     client = Mock()

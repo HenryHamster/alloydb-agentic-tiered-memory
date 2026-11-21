@@ -39,11 +39,17 @@ export MEMORY_PROJECT_ID="my-project"    # optional
 export PROJECT_ID="<gcp-project>" REGION="us-east1" GENAI_LOCATION="global"
 export DB_HOST="<alloydb-private-ip>" DB_USER="<iam-db-user>" DB_NAME="postgres"
 export VALKEY_HOST="<valkey-ip>"
-# export GEMINI_MODEL="gemini-4-hydrogen"  MEMORY_LOG_LEVEL="INFO"
+# export LLM_MODEL="gemini-4-hydrogen"  MEMORY_LOG_LEVEL="INFO"
 ```
 
 The server starts without these and lists its tools; a tool call then returns an error
 naming the missing setting.
+
+Gemini is the default for the server's own generation. To use Claude or OpenAI, set
+`LLM_PROVIDER`, `LLM_MODEL`, and the corresponding API key as described in
+[LLM generation](CANDIDATE.md#llm-generation). Install the matching extra in the
+checkout used by the server, for example `uv sync --extra mcp --extra anthropic`.
+AlloyDB, Valkey, and Google embeddings are still required.
 
 ## Install in Claude Code
 
@@ -77,7 +83,9 @@ Any client that runs stdio servers can use the same command:
 }
 ```
 
-Without uv: `pip install -e '.[mcp]'`, then run `tiered-memory-mcp`.
+For Claude or OpenAI, add `"--extra", "anthropic"` or `"--extra", "openai"` before
+`"python"` in the args above. Without uv, use `pip install -e '.[mcp]'` (or
+`'.[mcp,anthropic]'` or `'.[mcp,openai]'`) and run `tiered-memory-mcp`.
 
 Copy the guidance in [skills/tiered-memory/SKILL.md](../skills/tiered-memory/SKILL.md) into
 your agent's system prompt if it doesn't support skills.

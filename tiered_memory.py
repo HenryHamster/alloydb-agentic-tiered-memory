@@ -7,8 +7,10 @@ The original codelab entry points remain available for baseline comparisons.
 import argparse
 import os
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 
 from recall import build_recaller, make_recall_tools
 from recall.config import RecallConfig, RecallDepth
@@ -20,9 +22,11 @@ from retain.models import Message, Speaker
 from shared.llm import (
     DEFAULT_MODEL,
     GeminiGenerator,
-    GeminiStructuredGenerator,
+    LLMProvider,
+    generate_object_with_retry,
     generate_with_retry,
 )
+from shared.providers import provider_from_env
 from turn_context import TurnContext, build_turn_context
 from valkey_buffer import SessionBuffer
 
@@ -236,41 +240,51 @@ class TieredMemory:
 def build_memory_system(
     conn_factory,
     valkey_client,
-    generation_client,
-    embedding_client,
+    generation_client=None,
+    embedding_client=None,
     *,
     model=DEFAULT_MODEL,
     strict=True,
     retain_config=RetainConfig(maintenance_every=0),
     recall_config=RecallConfig(),
     reflect=False,
+    provider: LLMProvider | None = None,
 ):
     """Uses migrations 004/005, separate generation/embedding endpoints and ai.rank.
 
     Observation/Reflect maintenance happens explicitly at session boundaries, not every
     N turns. This keeps maintenance timing deterministic for both the app and benchmark.
     """
+    if embedding_client is None:
+        raise ValueError("The memory system requires a separate Google embedding client")
+    if provider is None and generation_client is None:
+        raise ValueError("The memory system requires a generation provider or a Gemini client")
+    generation = (
+        provider if provider is not None else GeminiGenerator(generation_client, model=model)
+    )
+    generate = generation.generate_text
     embedder = GeminiEmbedder(embedding_client)
     reflector = build_reflector(
         conn_factory,
         embedder=embedder,
-        generate=GeminiStructuredGenerator(generation_client, model=model),
+        generate=partial(generate_object_with_retry, generation),
     )
     retainer = build_retainer(
-        conn_factory, generation_client, embedding_client=embedding_client, config=retain_config
-    )
-    for stage in (retainer.extractor, retainer.classifier, retainer.observation_builder):
-        stage.model = model
-    recaller = build_recaller(
         conn_factory,
         generation_client,
+        embedding_client=embedding_client,
+        config=retain_config,
+        model=model,
+        provider=provider,
+    )
+    recaller = build_recaller(
+        conn_factory,
         embedding_client=embedding_client,
         reflect_store=reflector.store,
         strict=strict,
         config=recall_config,
+        generate=generate,
     )
-    recaller.generate = GeminiGenerator(generation_client, model=model)
-    generate = GeminiGenerator(generation_client, model=model)
     return TieredMemory(
         retainer=retainer,
         recaller=recaller,
@@ -282,6 +296,35 @@ def build_memory_system(
     )
 
 
+def build_memory_system_from_env(*, use_legacy_gemini_model=False):
+    """Share startup configuration between the CLI and MCP. The caller closes both SDKs."""
+    from google import genai
+
+    from db_clients import get_db_connection, get_valkey_client
+
+    project = os.getenv("PROJECT_ID", "").strip()
+    if not project:
+        raise RuntimeError("Set PROJECT_ID for AlloyDB and Google embeddings")
+    with ExitStack() as startup:
+        provider, generation = provider_from_env(
+            project, use_legacy_gemini_model=use_legacy_gemini_model
+        )
+        startup.callback(generation.close)
+        embedding = genai.Client(
+            vertexai=True, project=project, location=os.getenv("REGION", "us-east1")
+        )
+        startup.callback(embedding.close)
+        system = build_memory_system(
+            get_db_connection,
+            get_valkey_client(),
+            embedding_client=embedding,
+            model=provider.model,
+            provider=provider,
+        )
+        startup.pop_all()
+    return system, (generation, embedding)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--user", required=True)
@@ -289,20 +332,12 @@ def main(argv=None):
     parser.add_argument("--session", required=True)
     parser.add_argument("--reflect-only", action="store_true")
     args = parser.parse_args(argv)
-    from google import genai
-
-    from db_clients import get_db_connection, get_valkey_client
-
-    project = os.environ["PROJECT_ID"]
-    generation = genai.Client(
-        vertexai=True, project=project, location=os.getenv("GENAI_LOCATION", "global")
-    )
-    embedding = genai.Client(
-        vertexai=True, project=project, location=os.getenv("REGION", "us-east1")
-    )
-    system = build_memory_system(get_db_connection, get_valkey_client(), generation, embedding)
     scope = Scope(args.user, args.project, args.session)
-    try:
+    system, clients = build_memory_system_from_env()
+    with ExitStack() as resources:
+        for client in clients:
+            resources.callback(client.close)
+        resources.callback(system.close)
         if args.reflect_only:
             system.maintain(scope)
             return
@@ -315,10 +350,6 @@ def main(argv=None):
                 break
             print(system.answer(scope, query).text)
         system.finish_session(scope)
-    finally:
-        system.close()
-        generation.close()
-        embedding.close()
 
 
 if __name__ == "__main__":

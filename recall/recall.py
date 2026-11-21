@@ -431,25 +431,34 @@ _ASKS_DATE = re.compile(
 
 def build_recaller(
     conn_factory,
-    genai_client,
+    genai_client=None,
     *,
     embedding_client=None,
     reflect_store=None,
     strict: bool = False,
     config: RecallConfig = RecallConfig(),
+    generate: Generate | None = None,
 ):
-    """Production wiring: AlloyDB store, Retain's embedder, ai.rank() and Gemini."""
+    """Wire AlloyDB search, Google embeddings, ai.rank(), and text generation."""
     from recall.alloydb_store import AlloyDBRecallStore
     from recall.reranker import AlloyDBReranker
     from retain.embeddings import GeminiEmbedder
     from shared.llm import GeminiGenerator
 
+    if embedding_client is None:
+        embedding_client = genai_client
+    if embedding_client is None:
+        raise ValueError("Recall requires a Google embedding client")
+    if generate is None:
+        if genai_client is None:
+            raise ValueError("Recall requires a text generator or a Gemini client")
+        generate = GeminiGenerator(genai_client)
     return Recaller(
         store=AlloyDBRecallStore(conn_factory, reflect_enabled=reflect_store is not None),
         # Same model as the write path, so query and fact vectors are comparable.
-        embedder=GeminiEmbedder(embedding_client or genai_client),
+        embedder=GeminiEmbedder(embedding_client),
         reranker=AlloyDBReranker(conn_factory),
-        generate=GeminiGenerator(genai_client),
+        generate=generate,
         config=config,
         reflect_store=reflect_store,
         strict=strict,
