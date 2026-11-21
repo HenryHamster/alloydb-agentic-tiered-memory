@@ -1,47 +1,147 @@
-"""Text generation boundary shared by the summarizer and Recall's query analysis."""
+"""Generation contracts, Gemini adapter, and retry policy for the memory stages."""
 
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol, TypeVar
+
+from google.genai.errors import APIError
 
 Generate = Callable[[str], str]
+JsonValue = dict[str, Any] | list[Any]
+T = TypeVar("T")
 
 # The one Gemini model every stage uses unless a caller passes another. Benchmark
 # metering prices it in bench/metering.py.
 DEFAULT_MODEL = "gemini-4-hydrogen"
 
 
+class LLMProvider(Protocol):
+    """One SDK attempt per call. Memory stages choose their own retry budget."""
+
+    def generate_text(self, prompt: str) -> str: ...
+
+    def generate_json(
+        self, prompt: str, schema: Mapping[str, Any], *, thinking_level: str | None = None
+    ) -> JsonValue: ...
+
+
+class ProviderError(RuntimeError):
+    """Request failed. The message contains no request body or credentials."""
+
+    def __init__(self, message: str, *, retryable: bool = False, retry_after: float | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+class RefusedResponse(RuntimeError):
+    def __init__(self, reason: str):
+        super().__init__(f"Model refused the request ({reason})")
+        self.reason = reason
+
+
+class IncompleteResponse(RuntimeError):
+    """The provider stopped before producing a complete answer."""
+
+
+class InvalidResponse(ValueError):
+    """A missing or invalid response, eligible for stage-specific validation handling."""
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+
+
+def response_text(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidResponse("empty", "Model returned no text")
+    return value
+
+
+def decode_json(text: str | None, schema: Mapping[str, Any]) -> JsonValue:
+    if not isinstance(text, str):
+        raise InvalidResponse("empty", "Model returned no text")
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        raise InvalidResponse("malformed", "Model returned malformed JSON") from None
+    expected = list if schema.get("type") == "array" else dict
+    if not isinstance(value, expected):
+        kind = "array" if expected is list else "object"
+        raise InvalidResponse("shape", f"Model must return a JSON {kind}")
+    return value
+
+
+# Keep Retain's legacy candidate refusals. Other finishes still require valid JSON.
+_GEMINI_BLOCK_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"}
+
+
 class GeminiGenerator:
-    """Plain-text Gemini call: prompt in, response text out."""
+    """Gemini adapter that also preserves the original text callable."""
 
     def __init__(self, client, *, model: str = DEFAULT_MODEL):
         self.client = client
         self.model = model
 
     def __call__(self, prompt: str) -> str:
-        return self.client.models.generate_content(model=self.model, contents=prompt).text
+        return self.generate_text(prompt)
+
+    def generate_text(self, prompt: str) -> str:
+        # Benchmarks and legacy callers consume Gemini's text as returned by the SDK.
+        return self._generate(prompt).text
+
+    def generate_json(
+        self, prompt: str, schema: Mapping[str, Any], *, thinking_level: str | None = None
+    ) -> JsonValue:
+        response = self._generate(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_json_schema": dict(schema),
+                **thinking(thinking_level),
+            },
+        )
+        feedback = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+        reason = getattr(feedback, "name", feedback)
+        if isinstance(reason, str) and reason not in ("", "BLOCKED_REASON_UNSPECIFIED"):
+            raise RefusedResponse(reason)
+        candidates = getattr(response, "candidates", None)
+        for candidate in candidates if isinstance(candidates, (list, tuple)) else []:
+            finish = getattr(candidate, "finish_reason", None)
+            reason = getattr(finish, "name", finish)
+            if isinstance(reason, str) and reason in _GEMINI_BLOCK_REASONS:
+                raise RefusedResponse(reason)
+        # A capped JSON response still goes through the stage's existing validation.
+        return decode_json(getattr(response, "text", None), schema)
+
+    def _generate(self, prompt, **kwargs):
+        try:
+            return self.client.models.generate_content(model=self.model, contents=prompt, **kwargs)
+        except APIError as error:
+            message = f"Gemini generation failed (HTTP {error.code})"
+            if error.code in (400, 404):
+                message += ". Check the Gemini model and GENAI_LOCATION"
+            elif error.code in (401, 403):
+                message += ". Check Google application credentials and Vertex AI model access"
+            raise ProviderError(message, retryable=is_rate_limited(error)) from None
 
 
 class GeminiStructuredGenerator(GeminiGenerator):
     """Reflect's provider-neutral prompt/schema interface backed by Gemini JSON output."""
 
     def __call__(self, prompt, response_schema):
-        def generate(text):
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=text,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_json_schema": dict(response_schema),
-                },
-            )
-            return response.text
+        return generate_object_with_retry(self, prompt, response_schema)
 
-        value = json.loads(generate_with_retry(generate, prompt))
-        if not isinstance(value, dict):
-            raise ValueError("Reflect generation must return a JSON object")
-        return value
+
+def generate_object_with_retry(
+    provider: LLMProvider, prompt: str, schema: Mapping[str, Any]
+) -> dict[str, Any]:
+    value = generate_json_with_retry(provider, prompt, schema)
+    if not isinstance(value, dict):
+        raise InvalidResponse("shape", "Reflect generation must return a JSON object")
+    return value
 
 
 def thinking(level: str | None) -> dict:
@@ -78,6 +178,10 @@ def _status_code(error: Exception) -> int | None:
 def is_rate_limited(error: Exception) -> bool:
     """True for errors a retry can fix: rate limits and temporary server failures, judged by
     the HTTP status code (or, without one, the leading gRPC status name)."""
+    if isinstance(error, ProviderError):
+        return error.retryable
+    if isinstance(error, (RefusedResponse, IncompleteResponse, InvalidResponse)):
+        return False
     code = _status_code(error)
     if code is not None:
         return code in _RETRYABLE_CODES
@@ -102,14 +206,36 @@ def backoff(attempt: int) -> float:
 
 
 def generate_with_retry(
-    generate: Generate, prompt: str, attempts: int = INTERACTIVE_ATTEMPTS
-) -> str:
-    """Retries rate-limit and temporary server errors with `backoff`; others raise at once."""
+    generate: Callable[[str], T], prompt: str, attempts: int = INTERACTIVE_ATTEMPTS
+) -> T:
+    """Retry transient errors within the attempt count and the usual total backoff."""
+    remaining_wait = sum(backoff(attempt) for attempt in range(attempts - 1))
     for attempt in range(attempts):
         try:
             return generate(prompt)
         except Exception as e:
             if not is_rate_limited(e) or attempt == attempts - 1:
                 raise
-            time.sleep(backoff(attempt))
+            delay = backoff(attempt)
+            if isinstance(e, ProviderError) and e.retry_after is not None:
+                delay = max(delay, e.retry_after)
+            if delay > remaining_wait:
+                raise
+            time.sleep(delay)
+            remaining_wait -= delay
     raise AssertionError("unreachable")
+
+
+def generate_json_with_retry(
+    provider: LLMProvider,
+    prompt: str,
+    schema: Mapping[str, Any],
+    *,
+    attempts: int = INTERACTIVE_ATTEMPTS,
+    thinking_level: str | None = None,
+) -> JsonValue:
+    return generate_with_retry(
+        lambda text: provider.generate_json(text, schema, thinking_level=thinking_level),
+        prompt,
+        attempts,
+    )

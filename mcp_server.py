@@ -49,30 +49,10 @@ def scope_from_env(env: dict[str, str] | None = None) -> Scope:
 
 
 def build_from_env():
-    """Connects to AlloyDB, Valkey and Vertex AI the same way tiered_memory.main does."""
-    from google import genai
+    """Use the shared application factory, including MCP's legacy Gemini model override."""
+    from tiered_memory import build_memory_system_from_env
 
-    from db_clients import get_db_connection, get_valkey_client
-    from shared.llm import DEFAULT_MODEL
-    from tiered_memory import build_memory_system
-
-    project = os.environ.get("PROJECT_ID", "").strip()
-    if not project:
-        raise RuntimeError("Set PROJECT_ID (and the DB_* / VALKEY_* settings); see docs/MCP.md")
-    generation = genai.Client(
-        vertexai=True, project=project, location=os.getenv("GENAI_LOCATION", "global")
-    )
-    embedding = genai.Client(
-        vertexai=True, project=project, location=os.getenv("REGION", "us-east1")
-    )
-    system = build_memory_system(
-        get_db_connection,
-        get_valkey_client(),
-        generation,
-        embedding,
-        model=os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
-    )
-    return system, (generation, embedding)
+    return build_memory_system_from_env(use_legacy_gemini_model=True)
 
 
 class MemoryService:

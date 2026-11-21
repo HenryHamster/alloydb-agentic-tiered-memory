@@ -38,6 +38,7 @@ from retain.models import (
 )
 from retain.observations import ObservationBuilder
 from retain.store import RetainStore
+from shared.llm import DEFAULT_MODEL, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -522,9 +523,15 @@ def _apply_decisions(facts, decisions):
 
 
 def build_retainer(
-    conn_factory, genai_client, *, embedding_client=None, config: RetainConfig = RetainConfig()
+    conn_factory,
+    genai_client=None,
+    *,
+    embedding_client=None,
+    config: RetainConfig = RetainConfig(),
+    model: str = DEFAULT_MODEL,
+    provider: LLMProvider | None = None,
 ):
-    """Production wiring for AlloyDB storage and Gemini stages."""
+    """Wire AlloyDB, Google embeddings, and the selected generation provider."""
     from retain.alloydb_store import AlloyDBRetainStore
     from retain.embeddings import GeminiEmbedder
     from retain.entities import FuzzyEntityResolver
@@ -532,14 +539,22 @@ def build_retainer(
     from retain.linking import GeminiSupersedeClassifier, StoreLinker
     from retain.observations import GeminiObservationBuilder
 
+    if embedding_client is None:
+        embedding_client = genai_client
+    if embedding_client is None:
+        raise ValueError("Retain requires a Google embedding client")
+    if provider is None and genai_client is None:
+        raise ValueError("Retain requires a generation provider or a Gemini client")
     store = AlloyDBRetainStore(conn_factory)
-    embedder = GeminiEmbedder(embedding_client or genai_client)
+    embedder = GeminiEmbedder(embedding_client)
     return Retainer(
         store=store,
         # Low thinking; tool results are recorded by code, since low thinking tends to skip
         # them. Round links join each request, tool call, tool result and answer exactly.
         extractor=GeminiFactExtractor(
             genai_client,
+            model=model,
+            provider=provider,
             thinking_level="low",
             tool_result_facts=True,
             link_rounds=True,
@@ -547,7 +562,9 @@ def build_retainer(
         entity_resolver=FuzzyEntityResolver(store),
         embedder=embedder,
         linker=StoreLinker(store),
-        classifier=GeminiSupersedeClassifier(genai_client, store),
-        observation_builder=GeminiObservationBuilder(genai_client, store, embedder),
+        classifier=GeminiSupersedeClassifier(genai_client, store, model=model, provider=provider),
+        observation_builder=GeminiObservationBuilder(
+            genai_client, store, embedder, model=model, provider=provider
+        ),
         config=config,
     )

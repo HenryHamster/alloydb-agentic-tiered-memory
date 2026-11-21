@@ -5,7 +5,6 @@ import json
 import logging
 import re
 import threading
-import time
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
@@ -26,7 +25,15 @@ from retain.models import (
     stable_id,
 )
 from shared.chunking import chunk_spans
-from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
+from shared.llm import (
+    DEFAULT_MODEL,
+    RETRY_ATTEMPTS,
+    GeminiGenerator,
+    InvalidResponse,
+    LLMProvider,
+    RefusedResponse,
+    generate_json_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 _DETAIL_FIELDS = ("who", "what", "when", "where", "why")
@@ -146,24 +153,6 @@ def _schema():
     }
 
 
-_BLOCK_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"}
-
-
-def _block_reason(response):
-    """Why Gemini refused the request instead of answering, or None when it answered."""
-    reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
-    name = getattr(reason, "name", reason)
-    if isinstance(name, str) and name not in ("", "BLOCKED_REASON_UNSPECIFIED"):
-        return name
-    candidates = getattr(response, "candidates", None)
-    for candidate in candidates if isinstance(candidates, (list, tuple)) else []:
-        finish = getattr(candidate, "finish_reason", None)
-        name = getattr(finish, "name", finish)
-        if isinstance(name, str) and name in _BLOCK_REASONS:
-            return name
-    return None
-
-
 class GeminiFactExtractor:
     """Extract structured facts and validate every citation against its source chunk.
 
@@ -184,11 +173,13 @@ class GeminiFactExtractor:
         keep_unrecorded_user_messages: bool = True,
         tool_result_facts: bool = False,
         link_rounds: bool = False,
+        provider: LLMProvider | None = None,
     ):
         if max_request_chars <= 0 or context_chars < 0:
             raise ValueError("Extraction character limits must be positive")
         self.client = client
         self.model = model
+        self._provider = provider
         self.max_request_chars = max_request_chars
         self.context_chars = context_chars
         self.source_dates_known = source_dates_known
@@ -206,7 +197,7 @@ class GeminiFactExtractor:
         if not chunks:
             return []
         if any(not isinstance(chunk, Chunk) for chunk in chunks):
-            raise ValueError("Gemini extraction requires Chunk records")
+            raise ValueError("Fact extraction requires Chunk records")
         if len({chunk.chunk_id for chunk in chunks}) != len(chunks):
             raise ValueError("Chunk IDs must be unique")
 
@@ -225,13 +216,13 @@ class GeminiFactExtractor:
                             row, index, request_chunks, source_dates_known=self.source_dates_known
                         )
                     except (KeyError, TypeError, ValueError) as error:
-                        logger.warning("Discarding invalid Gemini fact row: %s", error)
+                        logger.warning("Discarding invalid fact row: %s", error)
                         rejected[str(error)[:60]] += 1
                         continue
                     key_map[index] = len(output) + len(key_map)
                     parsed.append(fact)
                 if rows and not parsed:
-                    logger.warning("Gemini returned no valid facts in a nonempty response")
+                    logger.warning("Model returned no valid facts in a nonempty response")
 
                 by_id = {c.chunk_id: c for c in request_chunks}
                 for fact in parsed:
@@ -263,48 +254,39 @@ class GeminiFactExtractor:
 
     def _extract_request(self, chunks, context):
         prompt = self._prompt_prefix() + _request_source(chunks, context, self.source_dates_known)
-        response = None
-        for attempt in range(RETRY_ATTEMPTS):
-            try:
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": _schema(),
-                        **thinking(self.thinking_level),
-                    },
-                )
-                break
-            except Exception as error:
-                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
-                    raise
-                time.sleep(backoff(attempt))
-        reason = _block_reason(response)
-        if reason:
+        provider = self._provider
+        if provider is None:
+            provider = GeminiGenerator(self.client, model=self.model)
+        try:
+            rows = generate_json_with_retry(
+                provider,
+                prompt,
+                _schema(),
+                attempts=RETRY_ATTEMPTS,
+                thinking_level=self.thinking_level,
+            )
+        except RefusedResponse as error:
             # A blocked request stays blocked on retry. Its user messages are still kept
             # verbatim when keep_unrecorded_user_messages is on.
             with self._blocked_lock:
-                self.blocked[reason] += 1
+                self.blocked[error.reason] += 1
                 total = sum(self.blocked.values())
             logger.warning(
-                "Gemini blocked a fact request (%s) for chunks %s; it yields no facts "
+                "Model blocked a fact request (%s) for chunks %s; it yields no facts "
                 "(%d blocked so far)",
-                reason,
+                error.reason,
                 [chunk.chunk_id for chunk in chunks],
                 total,
             )
             return []
-        if response is None or not isinstance(getattr(response, "text", None), str):
-            raise ValueError("Gemini returned no structured fact response")
-        try:
-            rows = json.loads(response.text)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise ValueError("Gemini returned malformed JSON") from error
+        except InvalidResponse as error:
+            if error.kind == "empty":
+                raise ValueError("Model returned no structured fact response") from error
+            raise
         if not isinstance(rows, list):
-            raise ValueError("Gemini response must be a fact array")
+            raise ValueError("Model response must be a fact array")
         if any(not isinstance(row, dict) for row in rows):
-            logger.warning("Discarding non-object Gemini fact rows")
+            logger.warning("Discarding non-object fact rows")
         # Non-objects stay in place (and fail parsing) so caused_by indexes stay aligned.
         return rows
 
@@ -813,7 +795,7 @@ def _pack_chunks(chunks, context_chars, limit, prefix=_PROMPT % "", dates_known=
             added = len(prefix) + len(_request_source([chunk], context, dates_known))
             used = 0
             if added > limit:
-                raise ValueError("Chunk and context exceed Gemini request character limit")
+                raise ValueError("Chunk and context exceed the extraction request character limit")
         current.append(chunk)
         used += added
         date = chunk.document.occurred_at
@@ -1298,7 +1280,7 @@ _ROW_REQUIRED = frozenset(_schema()["items"]["required"])
 def _parse_row(row, key, chunks, *, source_dates_known=True):
     """One response row as an ExtractedFact keyed by its response index; raises on bad rows."""
     if not isinstance(row, dict) or not _ROW_REQUIRED <= set(row) <= _ROW_FIELDS:
-        raise ValueError("Gemini fact fields do not match the extraction schema")
+        raise ValueError("Fact fields do not match the extraction schema")
     row = {**_ROW_DEFAULTS, **row}
     index = row["chunk"]
     if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(chunks):

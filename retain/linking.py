@@ -3,7 +3,6 @@
 import json
 import logging
 import math
-import time
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Protocol
@@ -20,7 +19,16 @@ from retain.models import (
     is_broader,
     is_code_built,
 )
-from shared.llm import DEFAULT_MODEL, RETRY_ATTEMPTS, backoff, is_rate_limited, thinking
+from shared.llm import (
+    DEFAULT_MODEL,
+    RETRY_ATTEMPTS,
+    GeminiGenerator,
+    IncompleteResponse,
+    InvalidResponse,
+    LLMProvider,
+    RefusedResponse,
+    generate_json_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,12 +295,14 @@ class GeminiSupersedeClassifier:
         model: str = DEFAULT_MODEL,
         candidates_k: int = 6,
         thinking_level: str | None = "low",
+        provider: LLMProvider | None = None,
     ):
         if candidates_k < 0:
             raise ValueError("candidates_k must be nonnegative")
         self.client = client
         self.store = store
         self.model = model
+        self._provider = provider
         self.candidates_k = candidates_k
         self.thinking_level = thinking_level
 
@@ -355,7 +365,10 @@ class GeminiSupersedeClassifier:
             "the listed IDs.\nINPUT:\n" + json.dumps(payload, ensure_ascii=False)
         )
         try:
-            response = self._generate(prompt)
+            rows = self._generate(prompt)
+        except (InvalidResponse, RefusedResponse, IncompleteResponse) as error:
+            logger.warning("Skipping model supersession decisions: %s", error)
+            rows = []
         except Exception as error:  # noqa: BLE001 - the model call only; store errors still raise
             # Deduplication is an optimisation: when the model call fails after its retries
             # (Gemini answered one 4-fact LoCoMo request with 429 on every attempt), the facts
@@ -363,7 +376,6 @@ class GeminiSupersedeClassifier:
             logger.warning("Supersede classifier failed; keeping %d facts as new: %s",
                            len(asked), str(error)[:200])  # fmt: skip
             return [local.get(fact.fact_id, UpdateDecision(fact.fact_id)) for fact in facts]
-        rows = _decision_rows(response)
         new_by_id = {fact.fact_id: fact for fact in asked}
         for row in rows:
             try:
@@ -405,34 +417,19 @@ class GeminiSupersedeClassifier:
         )
 
     def _generate(self, prompt):
-        for attempt in range(RETRY_ATTEMPTS):
-            try:
-                return self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": _decision_schema(),
-                        **thinking(self.thinking_level),
-                    },
-                )
-            except Exception as error:
-                if not is_rate_limited(error) or attempt == RETRY_ATTEMPTS - 1:
-                    raise
-                time.sleep(backoff(attempt))
-
-
-def _decision_rows(response):
-    """Decision rows from a response; a malformed response yields none (every fact is added)."""
-    try:
-        rows = json.loads(response.text)
-    except (AttributeError, TypeError, json.JSONDecodeError):
-        logger.warning("Gemini returned no valid supersession JSON; adding every fact")
-        return []
-    if not isinstance(rows, list):
-        logger.warning("Gemini supersession response is not an array; adding every fact")
-        return []
-    return rows
+        provider = self._provider
+        if provider is None:
+            provider = GeminiGenerator(self.client, model=self.model)
+        rows = generate_json_with_retry(
+            provider,
+            prompt,
+            _decision_schema(),
+            attempts=RETRY_ATTEMPTS,
+            thinking_level=self.thinking_level,
+        )
+        if not isinstance(rows, list):
+            raise InvalidResponse("shape", "Supersession response must be an array")
+        return rows
 
 
 def _day(fact):

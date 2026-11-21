@@ -325,7 +325,7 @@ def test_extractor_retries_retryable_gemini_failure(monkeypatch):
         SimpleNamespace(text=json.dumps([fact_row()])),
     ]
     sleep = Mock()
-    monkeypatch.setattr("retain.extraction.time.sleep", sleep)
+    monkeypatch.setattr("shared.llm.time.sleep", sleep)
 
     assert len(GeminiFactExtractor(client).extract(selected)) == 1
     assert client.models.generate_content.call_count == 2
@@ -722,3 +722,38 @@ def test_unblocked_empty_response_still_fails():
 
     with pytest.raises(ValueError, match="no structured fact response"):
         GeminiFactExtractor(client).extract(chunks())
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "text"),
+    [("MODEL_ARMOR", None), ("IMAGE_PROHIBITED_CONTENT", "{"), ("RECITATION", None)],
+)
+def test_invalid_gemini_candidate_leaves_the_episode_retryable(finish_reason, text):
+    client = Mock()
+    call = client.models.generate_content
+    call.side_effect = [
+        SimpleNamespace(text=text, candidates=[SimpleNamespace(finish_reason=finish_reason)]),
+        SimpleNamespace(text=json.dumps([fact_row(entities=[])])),
+    ]
+    store = InMemoryRetainStore()
+    retainer = Retainer(
+        store=store,
+        extractor=GeminiFactExtractor(client),
+        entity_resolver=None,
+        embedder=lambda texts: [[0.25] * EMBEDDING_DIMENSIONS for _ in texts],
+        linker=Mock(link=Mock(return_value=[])),
+        clock=lambda: STAMP,
+    )
+    scope = Scope("user-a", "project-a", "session-a")
+    messages = [Message(Speaker.USER, SOURCE, STAMP)]
+
+    with pytest.raises(ValueError, match="no structured fact response|malformed JSON"):
+        retainer.retain(scope, messages, episode_id="episode-a")
+    assert not store.retained and not store.documents and not store.facts
+    call.assert_called_once()
+
+    result = retainer.retain(scope, messages, episode_id="episode-a")
+    (fact,) = result.batch.facts
+    assert store.facts[fact.fact_id] == fact
+    assert store.retained == {document.document_id for document in result.batch.documents}
+    assert call.call_count == 2
