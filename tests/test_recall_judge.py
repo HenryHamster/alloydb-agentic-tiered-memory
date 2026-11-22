@@ -224,9 +224,8 @@ def test_query_analysis_reads_the_done_flag():
     assert not analyze_query("Where is Caroline from?", NOW, generate=lambda p: "{}").asks_done
 
 
-def test_query_analysis_asks_for_answer_words_on_kind_questions():
+def test_query_analysis_asks_for_the_done_flag():
+    # The kind-of-thing example once made the model copy it and drop the paraphrase query, and
+    # every relevance score fell from 0.45 to 0.17; rule 4's concrete-words query covers it.
     prompt = _decomposition_prompt(QUESTION, NOW, 4)
-    assert "lime lemon orange grapefruit" in prompt and '"done": true or false' in prompt
-    reply = '{"sub_queries": ["lime lemon orange grapefruit in cocktails"], "time_window": null}'
-    plan = analyze_query(QUESTION, NOW, generate=lambda p: reply)
-    assert plan.sub_queries == [QUESTION, "lime lemon orange grapefruit in cocktails"]
+    assert '"done": true or false' in prompt and "lime lemon orange grapefruit" not in prompt
