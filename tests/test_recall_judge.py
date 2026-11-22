@@ -159,22 +159,38 @@ def test_a_small_candidate_limit_still_keeps_every_kept_fact(cocktails):
     assert len(calls) == 1 and before <= facts_of(result)
 
 
-def test_list_questions_use_the_check_even_with_a_strong_top_score(cocktails):
+def test_list_questions_use_the_check_with_a_middling_top_score(cocktails):
+    memories, _ = cocktails
+
+    def middling(query, texts):
+        return [0.6 if "Daiquiri" in t else 0.1 for t in texts]
+
+    calls = []
+    listing = {"refers_back": False, "list": True, "done": False}
+    result = memories.recaller(reranker=middling, generate=router(listing, calls=calls)).recall(
+        SCOPE, "Which cocktail recipes have I learned?"
+    )
+    assert result.items[0].relevance == 0.6
+    assert len(calls) == 1
+    stage = next(s for s in result.trace if s.stage == "judge").to_dict()
+    assert stage["reasons"] == ["list"]
+    assert len(result.items) <= RecallConfig().judge_list_max_items
+
+
+def test_strong_list_and_done_questions_skip_the_check(cocktails):
     memories, _ = cocktails
 
     def strong(query, texts):
         return [0.9 if "Daiquiri" in t else 0.1 for t in texts]
 
     calls = []
-    listing = {"refers_back": False, "list": True, "done": False}
-    result = memories.recaller(reranker=strong, generate=router(listing, calls=calls)).recall(
-        SCOPE, "Which cocktail recipes have I learned?"
+    both = {"refers_back": False, "list": True, "done": True}
+    result = memories.recaller(reranker=strong, generate=router(both, calls=calls)).recall(
+        SCOPE, "Which cocktail recipes have I made?"
     )
     assert result.items[0].relevance == 0.9
-    assert len(calls) == 1
-    stage = next(s for s in result.trace if s.stage == "judge").to_dict()
-    assert stage["reasons"] == ["list"]
-    assert len(result.items) <= RecallConfig().judge_list_max_items
+    assert calls == []
+    assert not any(s.stage == "judge" for s in result.trace)
 
 
 def test_nothing_relevant_still_abstains_without_a_check():

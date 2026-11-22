@@ -102,7 +102,7 @@ class RecallConfig:
     # between 0.08 and 0.17, requests like "asked for cocktail ideas" outranked the Sangria fact
     # naming lemon, and min_relevance dropped it while the context was 41% full. On hard
     # questions only (top relevance under judge_below, a list or count, or a question about what
-    # the user did) one LLM call marks which of the top judge_candidates are evidence. Evidence
+    # the user did, both only while the top relevance is under judge_kind_below) one LLM call marks which of the top judge_candidates are evidence. Evidence
     # leads the context; everything the normal filter keeps stays; the rest of the slots (up to
     # judge_max_items / judge_list_max_items) take candidates at or above
     # judge_relative_floor * the best relevance. The check never drops a kept fact and never
@@ -110,6 +110,7 @@ class RecallConfig:
     # exactly as before. judge=False turns it off.
     judge: bool = True
     judge_below: float = 0.5
+    judge_kind_below: float = 0.7
     judge_candidates: int = 40
     judge_max_items: int = 15
     judge_list_max_items: int = 25

@@ -326,10 +326,13 @@ class Recaller:
         reasons = []
         if top < config.judge_below:
             reasons.append("weak")
-        if plan.wants_list:
-            reasons.append("list")
-        if plan.asks_done:
-            reasons.append("done")
+        # A list or "what did I do" question with a strong top score already has its facts in
+        # view; on the 6-question LongMemEval run the check never changed those contexts.
+        if top < config.judge_kind_below:
+            if plan.wants_list:
+                reasons.append("list")
+            if plan.asks_done:
+                reasons.append("done")
         return reasons
 
     def _judge(self, plan, query, pool, kept, as_of, include_invalid, reasons):
