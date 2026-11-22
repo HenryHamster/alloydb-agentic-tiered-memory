@@ -11,6 +11,9 @@
     filter_and_abstain  the best max_items at or above min_relevance, never fewer than
                         min_items positive ones (both apply to reranked scores only); hides
                         superseded memories
+    judge            hard questions only (weak top score, list/count, "what did I do"): one LLM
+                     call marks evidence among the top candidates; evidence leads, nothing the
+                     filter kept is lost, free slots fill above a floor relative to the top score
     graph_followup   adds the round links (request, tool call, result) of the top kept facts
     source_rounds    for back-references or weak results, adds the verbatim rounds behind
                      the top kept facts
@@ -34,10 +37,18 @@ from recall.config import (
     RecallDepth,
     parse_types,
 )
+from recall.judge import judge_evidence
 from recall.models import Memory, QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
 from recall.query import analyze_query, said_on_day
-from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
+from recall.ranking import (
+    Reranker,
+    apply_boosts,
+    filter_and_abstain,
+    fuse_rrf,
+    rerank,
+    select_evidence_first,
+)
 from recall.store import RecallStore
 from retain.embeddings import Embedder
 from retain.models import Scope
@@ -195,14 +206,17 @@ class Recaller:
                 stage.count = len(fused)
 
             with tracer.stage("rerank") as stage:
-                ranked, reranked = rerank(
+                # Keep enough for the evidence check; the normal path still sees rerank_top,
+                # the same head as before (rerank sorts by relevance before cutting).
+                pool_ranked, reranked = rerank(
                     plan.sub_queries,
                     fused,
                     self.reranker,
                     config.rerank_pool,
-                    config.rerank_top,
+                    max(config.rerank_top, config.judge_candidates if config.judge else 0),
                     strict=self.strict,
                 )
+                ranked = pool_ranked[: config.rerank_top]
                 stage.count = len(ranked)
                 stage.detail = {"reranked": reranked}
 
@@ -226,11 +240,22 @@ class Recaller:
             if reranked and len(kept) >= config.tier_min_hits:
                 break
 
+        reasons = self._judge_reasons(plan, pool_ranked, reranked, decompose)
+        if reasons:
+            with tracer.stage("judge") as stage:
+                kept, stage.detail = self._judge(
+                    plan, query, pool_ranked, kept, as_of, include_invalid, reasons
+                )
+                stage.count = len(kept)
+
         with tracer.stage("graph_followup") as stage:
             added = self._follow_round_links(
                 scope, plan, kept, types, as_of, include_invalid, visited, exclude_episode_ids
             )
-            kept = sorted([*kept, *added], key=lambda item: item.score, reverse=True)
+            # Evidence leads; otherwise best score first, as before.
+            kept = sorted(
+                [*kept, *added], key=lambda item: (item.evidence, item.score), reverse=True
+            )
             stage.count = len(added)
             stage.detail = {"added": [item.summary() for item in added]}
 
@@ -283,6 +308,74 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _judge_reasons(
+        self, plan: QueryPlan, pool: Sequence[Scored], reranked: bool, decompose: bool
+    ) -> list[str]:
+        """Why this question needs the evidence check; empty runs Recall as before.
+
+        Needs reranked scores (the gate reads them), an LLM, and decompose (Reflect turns LLM
+        calls off with it). A question where nothing scores above 0 still abstains.
+        """
+        config = self.config
+        if not (config.judge and reranked and decompose and self.generate is not None):
+            return []
+        top = max((item.relevance for item in pool), default=0.0)
+        if top <= 0:
+            return []
+        reasons = []
+        if top < config.judge_below:
+            reasons.append("weak")
+        # A list or "what did I do" question with a strong top score already has its facts in
+        # view; on the 6-question LongMemEval run the check never changed those contexts.
+        if top < config.judge_kind_below:
+            if plan.wants_list:
+                reasons.append("list")
+            if plan.asks_done:
+                reasons.append("done")
+        return reasons
+
+    def _judge(self, plan, query, pool, kept, as_of, include_invalid, reasons):
+        """Runs the evidence check and selects with it (see RecallConfig.judge)."""
+        config = self.config
+        boosted = apply_boosts(pool, as_of, plan.window, config, refers_back=plan.refers_back)
+        kept_ids = {item.memory.id for item in kept}
+        current = [
+            item
+            for item in boosted
+            if not item.memory.consolidated_into
+            and (include_invalid or not item.memory.is_stale(as_of))
+        ]
+        # The top judge_candidates, plus any kept fact ranked below them, so the check can
+        # never lose a fact the normal filter kept, whatever judge_candidates is set to.
+        current = [
+            item
+            for index, item in enumerate(current)
+            if index < config.judge_candidates or item.memory.id in kept_ids
+        ]
+        error = None
+        try:
+            evidence = judge_evidence(self.generate, query, [item.memory for item in current])
+        except Exception as e:
+            if self.strict:
+                raise
+            logger.warning("Evidence check failed; filling by score: %s", e)
+            evidence, error = set(), str(e)
+        max_items = config.judge_list_max_items if plan.wants_list else config.judge_max_items
+        selected = select_evidence_first(
+            current,
+            evidence,
+            kept_ids,
+            max_items,
+            config.judge_relative_floor,
+        )
+        return selected, {
+            "reasons": reasons,
+            "candidates": len(current),
+            "evidence": [item.memory.id for item in current if item.memory.id in evidence],
+            "added": [item.summary() for item in selected if item.memory.id not in kept_ids],
+            "error": error,
+        }
 
     def _quote_messages(self, scope, plan, kept, embeddings, exclude_episode_ids, day=None):
         """Original messages that match the question on their own, placed after the facts.

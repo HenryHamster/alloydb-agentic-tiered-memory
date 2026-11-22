@@ -206,6 +206,8 @@ class QueryPlan:
     refers_back: bool = False
     # The question asks for several items or a count ("what events", "how many").
     wants_list: bool = False
+    # The question asks what the user actually did, used or made ("have I used", "did I").
+    asks_done: bool = False
 
 
 @dataclass
@@ -216,6 +218,8 @@ class Scored:
     score: float = 0.0
     # The search lists that found this memory ("vector:0", "keyword:1", "graph", ...).
     channels: tuple[str, ...] = ()
+    # The evidence check marked it as helping answer the question; such items lead the context.
+    evidence: bool = False
 
     def summary(self) -> dict[str, Any]:
         """A short trace line for a candidate, kept or dropped."""

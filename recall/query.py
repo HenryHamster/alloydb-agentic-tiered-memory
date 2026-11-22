@@ -187,7 +187,8 @@ def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int
 4. If answering needs a fact about another person or thing first, add one query for that fact, e.g. "which book did Melanie read on Caroline's advice?" -> "books Caroline mentioned or loves". If the question names a general status or trait, add one query in the concrete words an answer would use, e.g. "Caroline's relationship status" -> "Caroline single, partner, dating, breakup".
 5. Only return a time_window for an explicit period such as "last week", "in March" or "before the launch". Words like now, currently, right now, latest and recent are not windows; return null. The current time is {query_time.isoformat()}. The end date is exclusive.
 6. Set list to true when the question asks for several items or a count ("what events", "which books", "how many times"); otherwise false.
-7. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false}}
+7. Set done to true when the question asks what the user actually did, used, made, bought, visited or attended ("have I used", "did I make", "how many times have I"); otherwise false.
+8. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false, "done": true or false}}
 
 Question: {query}
 JSON:"""
@@ -235,6 +236,7 @@ def analyze_query(
                 plan.sub_queries.append(sub_query)
         plan.refers_back = confirm_refers_back(query, data.get("refers_back") is True)
         plan.wants_list = data.get("list") is True
+        plan.asks_done = data.get("done") is True
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")
         if plan.window is None and has_window:
