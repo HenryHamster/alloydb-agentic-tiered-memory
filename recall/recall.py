@@ -336,12 +336,20 @@ class Recaller:
         """Runs the evidence check and selects with it (see RecallConfig.judge)."""
         config = self.config
         boosted = apply_boosts(pool, as_of, plan.window, config, refers_back=plan.refers_back)
+        kept_ids = {item.memory.id for item in kept}
         current = [
             item
             for item in boosted
             if not item.memory.consolidated_into
             and (include_invalid or not item.memory.is_stale(as_of))
-        ][: config.judge_candidates]
+        ]
+        # The top judge_candidates, plus any kept fact ranked below them, so the check can
+        # never lose a fact the normal filter kept, whatever judge_candidates is set to.
+        current = [
+            item
+            for index, item in enumerate(current)
+            if index < config.judge_candidates or item.memory.id in kept_ids
+        ]
         error = None
         try:
             evidence = judge_evidence(self.generate, query, [item.memory for item in current])
@@ -354,16 +362,15 @@ class Recaller:
         selected = select_evidence_first(
             current,
             evidence,
-            {item.memory.id for item in kept},
+            kept_ids,
             max_items,
             config.judge_relative_floor,
         )
-        before = {item.memory.id for item in kept}
         return selected, {
             "reasons": reasons,
             "candidates": len(current),
             "evidence": [item.memory.id for item in current if item.memory.id in evidence],
-            "added": [item.summary() for item in selected if item.memory.id not in before],
+            "added": [item.summary() for item in selected if item.memory.id not in kept_ids],
             "error": error,
         }
 

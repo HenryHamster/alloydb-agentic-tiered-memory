@@ -60,6 +60,10 @@ def cocktails():
     return memories, facts
 
 
+def facts_of(result):
+    return {item.memory.id for item in result.items if item.memory.type == "fact"}
+
+
 def kept_texts(result):
     return [item.memory.text for item in result.items]
 
@@ -137,6 +141,22 @@ def test_the_check_never_drops_a_kept_fact_or_abstains(cocktails):
     none = router(done, judge_reply=lambda prompt: '{"evidence": []}')
     result = memories.recaller(reranker=scores, generate=none).recall(SCOPE, QUESTION)
     assert before <= {i.memory.id for i in result.items} and not result.abstained
+
+
+def test_a_small_candidate_limit_still_keeps_every_kept_fact(cocktails):
+    # Source rounds follow the top kept facts, which the check reorders; facts must all stay.
+    memories, _ = cocktails
+    done = {"refers_back": False, "list": False, "done": True}
+    off = memories.recaller(
+        reranker=scores, generate=router(done), config=RecallConfig(judge=False)
+    )
+    before = facts_of(off.recall(SCOPE, QUESTION))
+    calls = []
+    tiny = RecallConfig(judge_candidates=2)
+    result = memories.recaller(
+        reranker=scores, generate=router(done, calls=calls), config=tiny
+    ).recall(SCOPE, QUESTION)
+    assert len(calls) == 1 and before <= facts_of(result)
 
 
 def test_list_questions_use_the_check_even_with_a_strong_top_score(cocktails):
