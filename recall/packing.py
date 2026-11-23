@@ -8,10 +8,16 @@ from recall.models import Memory, RecallItem, Scored
 from shared.tokens import TokenCounter, estimate_tokens
 
 ORIGINAL_WORDING_HEADING = "Original wording (exact words behind the memories above):"
+# Experiment (recall-show-relevance): tell the answer model the order and each memory's score.
+RELEVANCE_NOTE = (
+    "Memories are sorted most relevant first. rel is each memory's retrieval relevance to the "
+    "question (0 to 1, higher is a closer match). It measures topic match, not whether the "
+    "memory answers the question. Lines without rel are supporting source text."
+)
 
 
-def format_line(memory: Memory, stale: bool) -> str:
-    """`[id] (type | date | speaker | claim_type | superseded date) text`, omitting unknowns."""
+def format_line(memory: Memory, stale: bool, relevance: float = 0.0) -> str:
+    """`[id] (type | date | speaker | claim_type | superseded date | rel) text`, omitting unknowns."""
     labels = [str(memory.type)]
     date = memory.primary_date()
     if date:
@@ -26,6 +32,8 @@ def format_line(memory: Memory, stale: bool) -> str:
         labels.append("unresolved conflict: " + ", ".join(memory.conflicts_with))
     if memory.confidence < 1:
         labels.append(f"confidence {memory.confidence:g}")
+    if relevance > 0:
+        labels.append(f"rel {relevance:.2f}")
     return f"[{memory.id}] ({' | '.join(labels)}) {memory.text}"
 
 
@@ -35,12 +43,16 @@ def pack(
     max_tokens: int,
     count_tokens: TokenCounter = estimate_tokens,
 ) -> tuple[list[RecallItem], str, int, bool]:
-    """Fills the budget best-first; skips items that do not fit so smaller ones still can."""
+    """Fills the budget best-first; skips items that do not fit so smaller ones still can.
+
+    The context opens with RELEVANCE_NOTE, whose tokens come out of the budget first.
+    """
     items, lines, used, truncated = [], [], 0, False
+    max_tokens -= count_tokens(RELEVANCE_NOTE)
     quoting = False
     for item in scored:
         stale = item.memory.is_stale(as_of)
-        line = format_line(item.memory, stale)
+        line = format_line(item.memory, stale, item.relevance)
         heading = item.memory.type == MemoryType.MESSAGE and not quoting
         if heading:
             # Quotes sit under their own heading so the memories above stay the answer's basis.
@@ -63,4 +75,5 @@ def pack(
                 item.channels,
             )
         )
-    return items, "\n".join(lines), used, truncated
+    context = "\n".join([RELEVANCE_NOTE, *lines]) if lines else ""
+    return items, context, used, truncated

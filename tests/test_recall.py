@@ -13,6 +13,7 @@ from test_retain_extraction import gemini_returning
 from recall import MemoryType, RecallConfig, RecallDepth, TimeWindow, make_recall_tool_functions
 from recall.config import ROUND_RELATIONS
 from recall.models import Memory, Scored
+from recall.packing import RELEVANCE_NOTE
 from recall.query import analyze_query, parse_time_phrase, points_back, said_on_day
 from recall.ranking import apply_boosts, fuse_rrf
 from retain import Retainer, Scope
@@ -346,9 +347,11 @@ def test_items_are_ranked_best_first_and_labelled_in_the_context(memories):
     assert [item.rank for item in result.items] == list(range(1, len(result.items) + 1))
     scores = [item.score for item in result.items]
     assert scores == sorted(scores, reverse=True)
-    lines = result.context.splitlines()
+    note, *lines = result.context.splitlines()
+    assert note == RELEVANCE_NOTE
     for item, line in zip(result.items, lines, strict=True):
         assert item.memory.id in line and item.memory.primary_date().date().isoformat() in line
+        assert f"rel {item.relevance:.2f}" in line
 
 
 def test_boosts_cannot_overturn_a_clear_relevance_gap():
