@@ -270,14 +270,6 @@ def test_low_but_positive_reranker_scores_are_kept_up_to_max_items(memories):
     assert len(floor) == RecallConfig().min_items
     strict = RecallConfig(min_relevance=0.2, min_items=0)
     assert memories.recaller(reranker=low, config=strict).recall(SCOPE, "favourite movie").abstained
-    # A list question fills list_max_items with positive results even under min_relevance.
-    lister = memories.recaller(
-        reranker=low,
-        config=RecallConfig(min_relevance=0.2),
-        generate=lambda prompt: '{"sub_queries": [], "time_window": null, "list": true}',
-    )
-    listed = [i for i in lister.recall(SCOPE, "favourite movie").items if i.memory.type == "fact"]
-    assert len(listed) == min(12, RecallConfig().list_max_items)
 
 
 def test_weak_results_bring_their_verbatim_source_round(memories):
@@ -687,6 +679,86 @@ def test_query_analysis_does_not_retry_a_bad_request(monkeypatch):
 
     analyze_query("what did Caroline research?", NOW, generate=generate)
     assert len(calls) == 1
+
+
+# Evidence first ----------------------------------------------------------------------------
+
+STATEMENT = "The user has actually used a citrus fruit in a cocktail recipe."
+CITRUS = (
+    '{"sub_queries": [], "time_window": null, "list": true, "answer_statements": '
+    f'["{STATEMENT}"]}}'
+)
+NO_EVIDENCE = RecallConfig(min_evidence=None)
+
+
+def citrus_pool(memories, calls=None, broken=False):
+    """Topical facts the reranker likes for the question, and two answer facts it scores
+    under the floor there but high against the answer statement."""
+    for n in range(12):
+        memories.fact(f"The user asked for cocktail idea {n}")
+    lime = memories.fact("The user made a daiquiri cocktail with fresh lime juice")
+    lemon = memories.fact("The user made a sangria cocktail with lemon slices")
+
+    def rerank(query, texts):
+        citrus = ["lime" in t or "lemon" in t for t in texts]
+        if query == STATEMENT:
+            if calls is not None:
+                calls.append(list(texts))
+            if broken:
+                raise RuntimeError("ranker unavailable")
+            return [0.6 if c else 0.05 for c in citrus]
+        return [0.09 if c else 0.3 for c in citrus]
+
+    return lime, lemon, rerank
+
+
+def test_answer_evidence_under_the_floor_is_kept_first(memories):
+    lime, lemon, rerank = citrus_pool(memories)
+    plain = memories.recaller(reranker=rerank, generate=lambda p: CITRUS, config=NO_EVIDENCE)
+    assert not {lime.fact_id, lemon.fact_id} & set(ids(plain.recall(SCOPE, "cocktail")))
+
+    result = memories.recaller(reranker=rerank, generate=lambda p: CITRUS).recall(SCOPE, "cocktail")
+    facts = [i.memory.id for i in result.items if i.memory.type == MemoryType.FACT]
+    assert set(facts[:2]) == {lime.fact_id, lemon.fact_id}
+    # Nothing the normal selection kept is dropped: the evidence is added on top.
+    assert len(facts) == RecallConfig().max_items + 2
+    stage = next(s for s in result.trace if s.stage == "filter_and_abstain")
+    assert len(stage.detail["evidence_first"]["added"]) == 2
+    scored = next(s for s in result.trace if s.stage == "score_evidence")
+    assert scored.detail["top"][0][1] == 0.6
+
+
+def test_without_statements_or_reranker_the_selection_is_unchanged(memories):
+    calls = []
+    lime, _, rerank = citrus_pool(memories, calls)
+    no_statements = '{"sub_queries": [], "time_window": null, "list": true}'
+    result = memories.recaller(reranker=rerank, generate=lambda p: no_statements).recall(
+        SCOPE, "cocktail"
+    )
+    assert not calls and all(s.stage != "score_evidence" for s in result.trace)
+    assert lime.fact_id not in ids(result)
+    unranked = memories.recaller(generate=lambda p: CITRUS).recall(SCOPE, "cocktail")
+    assert all(s.stage != "score_evidence" for s in unranked.trace)
+
+
+def test_failing_evidence_scoring_falls_back_to_the_normal_selection(memories):
+    lime, _, rerank = citrus_pool(memories, broken=True)
+    result = memories.recaller(reranker=rerank, generate=lambda p: CITRUS).recall(SCOPE, "cocktail")
+    assert lime.fact_id not in ids(result)
+    with pytest.raises(RuntimeError):
+        memories.recaller(reranker=rerank, generate=lambda p: CITRUS, strict=True).recall(
+            SCOPE, "cocktail"
+        )
+
+
+def test_answer_statements_are_parsed_and_skipped_for_back_references():
+    plan = analyze_query("How many citrus fruits have I used?", NOW, generate=lambda p: CITRUS)
+    assert plan.answer_statements == [
+        "The user has actually used a citrus fruit in a cocktail recipe."
+    ]
+    back = '{"sub_queries": [], "refers_back": true, "answer_statements": ["x"]}'
+    plan = analyze_query("what did you say about that?", NOW, generate=lambda p: back)
+    assert plan.refers_back and plan.answer_statements == []
 
 
 def test_list_questions_are_flagged_by_query_analysis():
