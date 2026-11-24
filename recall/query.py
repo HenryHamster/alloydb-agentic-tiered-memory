@@ -187,7 +187,14 @@ def _decomposition_prompt(query: str, query_time: datetime, max_sub_queries: int
 4. If answering needs a fact about another person or thing first, add one query for that fact, e.g. "which book did Melanie read on Caroline's advice?" -> "books Caroline mentioned or loves". If the question names a general status or trait, add one query in the concrete words an answer would use, e.g. "Caroline's relationship status" -> "Caroline single, partner, dating, breakup".
 5. Only return a time_window for an explicit period such as "last week", "in March" or "before the launch". Words like now, currently, right now, latest and recent are not windows; return null. The current time is {query_time.isoformat()}. The end date is exclusive.
 6. Set list to true when the question asks for several items or a count ("what events", "which books", "how many times"); otherwise false.
-7. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false}}
+7. Write answer_statements: 1 to 3 short declarative sentences, each a claim that one stored memory needed for the answer would make true. They are checked by entailment against each memory, and a memory counts if it makes any one of them true, so:
+   - If the answer combines several facts (a difference, a comparison, an order, a duration between two events), write one statement per fact, never one sentence joining them, e.g. how many days after buying the tent did I go camping? -> The user actually bought a tent. and The user actually went camping.
+   - Always make the person the subject who actually did, has or experienced the thing, and say so with actually or personally, e.g. which sports does Caroline play? -> Caroline actually plays a sport.; how many bikes have I repaired? -> The user has personally repaired a bike. A memory where someone only asked about, planned, wanted or considered it must not make the sentence true.
+   - If the question itself asks about plans, wishes, preferences or what was asked, state that instead, e.g. The user plans to travel somewhere., The user asked the assistant for a recipe.
+   - Name the general class, never a list of members or alternatives: berries, not strawberries, blueberries or raspberries.
+   - Leave out question words, counts and the answer itself.
+   - Return [] if refers_back is true or the question is not about stored facts.
+8. Return ONLY JSON: {{"sub_queries": ["..."], "time_window": {{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}} or null, "refers_back": true or false, "list": true or false, "answer_statements": ["..."]}}
 
 Question: {query}
 JSON:"""
@@ -235,6 +242,9 @@ def analyze_query(
                 plan.sub_queries.append(sub_query)
         plan.refers_back = confirm_refers_back(query, data.get("refers_back") is True)
         plan.wants_list = data.get("list") is True
+        if not plan.refers_back:
+            statements = [str(x).strip() for x in data.get("answer_statements") or []]
+            plan.answer_statements = [x for x in statements if x][:3]
         window = data.get("time_window")
         has_window = isinstance(window, dict) and window.get("start") and window.get("end")
         if plan.window is None and has_window:

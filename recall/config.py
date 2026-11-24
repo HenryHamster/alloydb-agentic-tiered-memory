@@ -67,15 +67,24 @@ class RecallConfig:
     # empty, so the count, not the score, is the main limit. Results with no positive score
     # still abstain. TODO(recall): confirm both on the full 10-question set.
     max_items: int = 10
-    # List and count questions ("what events has Caroline attended?") need room for every item,
-    # so they keep up to this many positive results even under min_relevance: one counted item
-    # scored 0.094 and dropped (LME-002 c4a1ceb8) while the context was under half full.
-    list_max_items: int = 15
     min_relevance: float = 0.1
     # Reranker scores are not calibrated across questions: a vague back-reference ("the film
     # we picked") scores its own evidence 0.06-0.08. Keep this many best positive results even
     # under min_relevance; 0 restores strict abstention.
     min_items: int = 5
+    # Evidence first: query analysis writes answer_statements (what a memory holding part of
+    # the answer would say), the reranker scores every candidate against each of them, and a
+    # candidate scoring at least min_evidence is kept ahead of the normal selection, even
+    # under min_relevance or past max_items. Scored against the question, a fact where the
+    # user only asked about cocktails outranks one where they made one; against "The user has
+    # personally used a citrus fruit in a cocktail recipe." the Daiquiri-with-lime fact
+    # scores 0.51 and the asked-about ones under 0.2 (LME c4a1ceb8). Reranker scores are not
+    # calibrated: 0.37 best matched an NLI reference over 25 LongMemEval candidate pools with
+    # semantic-ranker-default-003 (benchmark-kit recall-nli-001); retune it with the ranker.
+    # None turns the stage off. Nothing the normal selection keeps is removed, and at most
+    # evidence_max_items are added.
+    min_evidence: float | None = 0.37
+    evidence_max_items: int = 15
     # After filtering, follow the round links of the top kept facts so a request, its tool
     # call and the result arrive together.
     followup_seeds: int = 3

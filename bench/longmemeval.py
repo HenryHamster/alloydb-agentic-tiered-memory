@@ -612,6 +612,7 @@ def build_harness(args) -> Harness:
         make_stores=make_stores,
         retain_stages=retain_stages,
         reranker=reranker,
+        config=RecallConfig(min_evidence=None) if args.no_evidence else RecallConfig(),
         generate=generate if args.decompose else None,
         qa_generate=qa_generate,
         depth=RecallDepth.parse(args.depth),
@@ -640,6 +641,11 @@ def parse_args(argv=None):
         help="ingestion stages: verbatim chunks (baseline) or Retain's Gemini pipeline",
     )
     parser.add_argument("--reranker", choices=["none", "alloydb"], default="none")
+    parser.add_argument(
+        "--no-evidence",
+        action="store_true",
+        help="skip evidence-first selection (it needs --decompose and --reranker alloydb)",
+    )
     parser.add_argument("--decompose", action="store_true", help="LLM query analysis (Gemini)")
     parser.add_argument("--qa", action="store_true", help="answer and judge with Gemini")
     parser.add_argument("--gemini-model", default=os.getenv("GEMINI_MODEL", DEFAULT_MODEL))

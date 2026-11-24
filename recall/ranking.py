@@ -173,3 +173,39 @@ def filter_and_abstain(
         "stale_hidden": stale,
         "dropped": [item.summary() for item in dropped[:TRACE_DROPPED]],
     }
+
+
+def evidence_first(
+    selected: Sequence[Scored],
+    scored: Sequence[Scored],
+    as_of: datetime,
+    include_invalid: bool,
+    min_evidence: float | None,
+    max_evidence: int,
+) -> tuple[list[Scored], dict[str, Any]]:
+    """Puts candidates that match an answer statement ahead of the normal selection.
+
+    `selected` is filter_and_abstain's output over `scored` (best-first). Evidence is every
+    visible candidate with positive relevance and evidence score >= `min_evidence`, at most
+    `max_evidence`, in `scored` order; it is kept even under min_relevance or past
+    max_items. The rest of `selected` follows in its own order, so nothing it kept is
+    removed. Without evidence scores the selection is returned unchanged.
+    """
+    evidence = [
+        item
+        for item in scored
+        if min_evidence is not None
+        and item.evidence is not None
+        and item.evidence >= min_evidence
+        and item.relevance > 0
+        and not item.memory.consolidated_into
+        and (include_invalid or not item.memory.is_stale(as_of))
+    ][:max_evidence]
+    ids = {item.memory.id for item in evidence}
+    chosen = {item.memory.id for item in selected}
+    kept = [*evidence, *(item for item in selected if item.memory.id not in ids)]
+    return kept, {
+        "min_evidence": min_evidence,
+        "evidence": len(evidence),
+        "added": [item.summary() for item in evidence if item.memory.id not in chosen],
+    }

@@ -206,6 +206,10 @@ class QueryPlan:
     refers_back: bool = False
     # The question asks for several items or a count ("what events", "how many").
     wants_list: bool = False
+    # Sentences a memory holding part of the answer would make true; the evidence stage
+    # scores each candidate against them. Empty when the question refers back or is not
+    # about facts.
+    answer_statements: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -216,15 +220,20 @@ class Scored:
     score: float = 0.0
     # The search lists that found this memory ("vector:0", "keyword:1", "graph", ...).
     channels: tuple[str, ...] = ()
+    # Reranker score against the best-matching answer statement (None: unscored).
+    evidence: float | None = None
 
     def summary(self) -> dict[str, Any]:
         """A short trace line for a candidate, kept or dropped."""
-        return {
+        line = {
             "id": self.memory.id,
             "text": self.memory.text[:80],
             "relevance": round(self.relevance, 4),
             "channels": list(self.channels),
         }
+        if self.evidence is not None:
+            line["evidence"] = round(self.evidence, 4)
+        return line
 
 
 @dataclass

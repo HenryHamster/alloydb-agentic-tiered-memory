@@ -8,9 +8,12 @@
     fuse_rrf         reciprocal rank fusion; drops memories from rounds the caller already shows
     rerank           cross-encode the fused head against every sub-query
     apply_boosts     small capped recency / window-fit / evidence / user-request boosts
+    score_evidence   rerank each candidate against the query's answer statements (what a
+                     memory holding part of the answer would say)
     filter_and_abstain  the best max_items at or above min_relevance, never fewer than
                         min_items positive ones (both apply to reranked scores only); hides
-                        superseded memories
+                        superseded memories. Candidates that match an answer statement go
+                        first, even under min_relevance; nothing else kept is removed
     graph_followup   adds the round links (request, tool call, result) of the top kept facts
     source_rounds    for back-references or weak results, adds the verbatim rounds behind
                      the top kept facts
@@ -37,7 +40,14 @@ from recall.config import (
 from recall.models import Memory, QueryPlan, RecallResult, Scored, TimeWindow, Tracer, as_aware
 from recall.packing import pack
 from recall.query import analyze_query, said_on_day
-from recall.ranking import Reranker, apply_boosts, filter_and_abstain, fuse_rrf, rerank
+from recall.ranking import (
+    Reranker,
+    apply_boosts,
+    evidence_first,
+    filter_and_abstain,
+    fuse_rrf,
+    rerank,
+)
 from recall.store import RecallStore
 from retain.embeddings import Embedder
 from retain.models import Scope
@@ -150,6 +160,7 @@ class Recaller:
         # hot set may finish early; uncalibrated fusion always searches every tier.
         lists = {}
         visited = []
+        evidence: dict[str, float] = {}  # memory id -> score, reused across tier passes
         passes = ("hot", "warm", "archived") if self.reflect_store is not None else (None,)
         for tier in passes:
             if tier is not None:
@@ -212,15 +223,20 @@ class Recaller:
                 )
                 stage.count = len(boosted)
 
+            if config.min_evidence is not None and reranked and plan.answer_statements:
+                with tracer.stage("score_evidence") as stage:
+                    boosted, stage.detail = self._score_evidence(plan, boosted, evidence)
+                    stage.count = stage.detail.pop("scored")
+
             with tracer.stage("filter_and_abstain") as stage:
                 min_relevance = config.min_relevance if reranked else 0.0
-                max_items = config.list_max_items if plan.wants_list else config.max_items
-                # A list question fills its limit with positive results: one under the floor
-                # may be the item the count needs.
-                min_items = max_items if plan.wants_list else config.min_items
                 kept, stage.detail = filter_and_abstain(
-                    boosted, as_of, include_invalid, min_relevance, max_items,
-                    min_items if reranked else 0,
+                    boosted, as_of, include_invalid, min_relevance, config.max_items,
+                    config.min_items if reranked else 0,
+                )  # fmt: skip
+                kept, stage.detail["evidence_first"] = evidence_first(
+                    kept, boosted, as_of, include_invalid,
+                    config.min_evidence, config.evidence_max_items,
                 )  # fmt: skip
                 stage.count = len(kept)
             if reranked and len(kept) >= config.tier_min_hits:
@@ -230,7 +246,8 @@ class Recaller:
             added = self._follow_round_links(
                 scope, plan, kept, types, as_of, include_invalid, visited, exclude_episode_ids
             )
-            kept = sorted([*kept, *added], key=lambda item: item.score, reverse=True)
+            # Evidence stays ahead; follow-ups merge into the rest by score.
+            kept = sorted([*kept, *added], key=self._evidence_key, reverse=True)
             stage.count = len(added)
             stage.detail = {"added": [item.summary() for item in added]}
 
@@ -283,6 +300,40 @@ class Recaller:
             window=plan.window,
             trace=tracer.stages,
         )
+
+    def _score_evidence(self, plan, boosted, cache):
+        """Reranks candidates against each answer statement; returns them with evidence set
+        to their best score. One reranker call per statement.
+
+        A failure leaves them unscored, so the filter selects as it would without this stage.
+        """
+        todo = [item for item in boosted if item.memory.id not in cache]
+        if todo:
+            texts = [item.memory.text for item in todo]
+            try:
+                columns = [self.reranker(s, texts) for s in plan.answer_statements]
+                for column in columns:
+                    if len(column) != len(texts):
+                        raise ValueError(f"Reranker returned {len(column)} scores for {len(texts)}")
+            except Exception as e:
+                if self.strict:
+                    raise
+                logger.warning("Evidence scoring failed; selecting without it: %s", e)
+                return boosted, {"scored": 0, "error": str(e)}
+            for i, item in enumerate(todo):
+                cache[item.memory.id] = max(float(column[i]) for column in columns)
+        scored = [replace(item, evidence=cache[item.memory.id]) for item in boosted]
+        best = sorted(scored, key=lambda item: item.evidence, reverse=True)
+        return scored, {
+            "scored": len(todo),
+            "statements": plan.answer_statements,
+            "top": [(item.memory.id, round(item.evidence, 3)) for item in best[:5]],
+        }
+
+    def _evidence_key(self, item: Scored) -> tuple[bool, float]:
+        floor = self.config.min_evidence
+        hit = floor is not None and item.evidence is not None and item.evidence >= floor
+        return hit, item.score
 
     def _quote_messages(self, scope, plan, kept, embeddings, exclude_episode_ids, day=None):
         """Original messages that match the question on their own, placed after the facts.
